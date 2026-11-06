@@ -321,6 +321,7 @@ jobs:
       base_p99: ${{ steps.bench.outputs.base_p99 }}
       base_ok: ${{ steps.bench.outputs.base_ok }}
       hw: ${{ steps.hw.outputs.summary }}
+      lb: ${{ steps.bench.outputs.lb }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -393,17 +394,36 @@ jobs:
           package main
 
           import (
+              "fmt"
               "net/http"
+              "os"
+              "strconv"
+              "sync/atomic"
               "time"
           )
 
+          // PORT (default 4000) and DELAY_MS (default 0) are read from the environment; the load-balancing
+          // scenarios start four of these and read each one's request count from /__count.
           func main() {
+              port := os.Getenv("PORT")
+              if port == "" {
+                  port = "4000"
+              }
+              delay, _ := strconv.Atoi(os.Getenv("DELAY_MS"))
+              var count atomic.Int64
               body := []byte(`{"status":"ok","ts":0}`)
+              http.HandleFunc("/__count", func(w http.ResponseWriter, r *http.Request) {
+                  fmt.Fprint(w, count.Load())
+              })
               http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+                  if delay > 0 {
+                      time.Sleep(time.Duration(delay) * time.Millisecond)
+                  }
+                  count.Add(1)
                   w.Header().Set("Content-Type", "application/json")
                   w.Write(body)
               })
-              srv := &http.Server{Addr: ":4000", ReadTimeout: 5 * time.Second}
+              srv := &http.Server{Addr: ":" + port, ReadTimeout: 5 * time.Second}
               srv.ListenAndServe()
           }
           GOEOF
@@ -428,6 +448,7 @@ jobs:
         id: bench
         env:
           BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HW: ${{ steps.hw.outputs.summary }}
         run: |
           set -euo pipefail
 
@@ -473,7 +494,14 @@ jobs:
           print(f'${label}_p99={round(m[\"latency_ms\"][\"p99\"], 2)}')
           print(f'${label}_ok={round(m[\"success_rate\"] * 100, 1)}')
           " >> /tmp/bench-outputs
+
+            # The same build through four upstreams with each load-balancing strategy (issue #629).
+            # Informational: a failure here leaves the section out and must not fail the job.
+            bash /tmp/bench_lb.sh "$label" "/tmp/lb-${label}.json" || echo '{}' > "/tmp/lb-${label}.json"
           }
+
+          # Copied out of the checkout: the base commit is checked out below and has no such script.
+          cp scripts/ci/bench_lb.sh /tmp/bench_lb.sh
 
           measure head
 
@@ -485,7 +513,30 @@ jobs:
             git checkout --quiet "$head_sha"
           fi
 
+          # Both builds' load-balancing numbers as one single-line JSON output (parsed defensively by the
+          # comment job).
+          python3 - >> /tmp/bench-outputs <<'PY'
+          import json
+
+          def load(label):
+              try:
+                  with open(f"/tmp/lb-{label}.json", encoding="utf-8") as f:
+                      return json.load(f)
+              except (OSError, ValueError):
+                  return {}
+
+          print("lb=" + json.dumps({"head": load("head"), "base": load("base")}, separators=(",", ":")))
+          PY
+
           cat /tmp/bench-outputs >> "$GITHUB_OUTPUT"
+
+          # The report as the comment will show it, on this run's summary page: the comment is formatted by
+          # the default branch's script (the write token never runs pull-request code), so a change to the
+          # report is visible here first.
+          while IFS='=' read -r key value; do
+            [ -n "$key" ] && export "$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')=$value"
+          done < /tmp/bench-outputs
+          python3 scripts/ci/performance_report.py /tmp/summary.md && cat /tmp/summary.md >> "$GITHUB_STEP_SUMMARY" || true
 
   performance-comment:
     name: Performance report comment
@@ -531,6 +582,7 @@ jobs:
           BASE_P99: ${{ needs.performance.outputs.base_p99 }}
           BASE_OK: ${{ needs.performance.outputs.base_ok }}
           HW: ${{ needs.performance.outputs.hw }}
+          LB: ${{ needs.performance.outputs.lb }}
         run: |
           set -euo pipefail
           python3 scripts/ci/performance_report.py /tmp/comment-body.md

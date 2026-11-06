@@ -33,7 +33,7 @@ workflow and this section ever disagree, the workflow is right.
 | Runner | GitHub-hosted `ubuntu-latest`: 4 vCPU, 16 GB RAM. GitHub assigns the host CPU generation; the report prints it (for example `4 vCPU, 16 GB RAM allocated to this job (host CPU model: …), ubuntu24 (X64)`). |
 | Build | `cargo build --release` on the stable toolchain: `default` features, `lto = true`, `codegen-units = 1`, `strip = true` |
 | Conduit workers | `global.workers` unset, which is **one worker thread** |
-| Upstream | the Go server below, port 4000, fixed 22-byte JSON body, keep-alive |
+| Upstream | the Go server below, port 4000, fixed 22-byte JSON body, keep-alive (it also counts its requests, for the load-balancing scenarios) |
 | Load generator | [oha](https://github.com/hatoo/oha) 1.16.0 (pinned and checked against a SHA-256), 50 connections, 10 seconds |
 | Reported | requests per second, p50 and p99 latency, success rate, for base and head and their difference |
 
@@ -54,20 +54,61 @@ proxy: http://127.0.0.1:4000
 package main
 
 import (
+    "fmt"
     "net/http"
+    "os"
+    "strconv"
+    "sync/atomic"
     "time"
 )
 
+// PORT (default 4000) and DELAY_MS (default 0) come from the environment; the load-balancing
+// scenarios start four of these and read each one's request count from /__count.
 func main() {
+    port := os.Getenv("PORT")
+    if port == "" {
+        port = "4000"
+    }
+    delay, _ := strconv.Atoi(os.Getenv("DELAY_MS"))
+    var count atomic.Int64
     body := []byte(`{"status":"ok","ts":0}`)
+    http.HandleFunc("/__count", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprint(w, count.Load())
+    })
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        if delay > 0 {
+            time.Sleep(time.Duration(delay) * time.Millisecond)
+        }
+        count.Add(1)
         w.Header().Set("Content-Type", "application/json")
         w.Write(body)
     })
-    srv := &http.Server{Addr: ":4000", ReadTimeout: 5 * time.Second}
+    srv := &http.Server{Addr: ":" + port, ReadTimeout: 5 * time.Second}
     srv.ListenAndServe()
 }
 ```
+
+### Load-balancing scenarios
+
+Below the passthrough table the report has a section **Load balancing across four upstreams**, for the
+same pair of builds. `scripts/ci/bench_lb.sh` starts four copies of the upstream above (ports 4001-4004),
+puts Conduit in front of them with one strategy at a time (`round-robin`, `least-conn`, `p2c`,
+`least-bandwidth`), and drives it with `oha -z 5s -c 50`. Two scenarios:
+
+- **even**: all four upstreams answer at once. It shows what a strategy costs when there is nothing to be
+  clever about: the selection work, and the in-flight bookkeeping the load-aware ones do per request.
+- **slow**: upstream 0 sleeps 8 ms per request. It shows what a strategy does about a slow upstream: the
+  share of requests it still gets (the last column), and what that does to throughput and p99.
+
+Each row gives requests per second and p99 for base and head with the difference, and the head build's
+share of the requests per upstream, read from the upstreams' own counters. A strategy the base commit does
+not have (a new one) shows `n/a` on the base side. The runs are short and the runner is shared, so a
+difference of a few per cent is noise; a strategy whose share moves, or a regression flagged with ⚠️ in
+both scenarios, is worth a look. The section is also written to the job summary of the run, which is where
+a change to the report shows first: the PR comment is formatted by the script on the default branch.
+
+For a longer, local comparison with failures and weights see
+[Comparing the load-balancing strategies](#comparing-the-load-balancing-strategies).
 
 ## Reproduce it on your machine
 
@@ -81,17 +122,36 @@ cat > "$WORK/main.go" <<'GOEOF'
 package main
 
 import (
+    "fmt"
     "net/http"
+    "os"
+    "strconv"
+    "sync/atomic"
     "time"
 )
 
+// PORT (default 4000) and DELAY_MS (default 0) come from the environment; the load-balancing
+// scenarios start four of these and read each one's request count from /__count.
 func main() {
+    port := os.Getenv("PORT")
+    if port == "" {
+        port = "4000"
+    }
+    delay, _ := strconv.Atoi(os.Getenv("DELAY_MS"))
+    var count atomic.Int64
     body := []byte(`{"status":"ok","ts":0}`)
+    http.HandleFunc("/__count", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Fprint(w, count.Load())
+    })
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        if delay > 0 {
+            time.Sleep(time.Duration(delay) * time.Millisecond)
+        }
+        count.Add(1)
         w.Header().Set("Content-Type", "application/json")
         w.Write(body)
     })
-    srv := &http.Server{Addr: ":4000", ReadTimeout: 5 * time.Second}
+    srv := &http.Server{Addr: ":" + port, ReadTimeout: 5 * time.Second}
     srv.ListenAndServe()
 }
 GOEOF
