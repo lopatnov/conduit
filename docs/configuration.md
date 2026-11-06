@@ -773,8 +773,8 @@ traffic off a broken backend). Pick based on your actual traffic shape:
 | [`least-response-time`](#least-response-time) | Load-aware | Lowest probed latency | ✗ | none | Upstreams with different hardware/geography | Needs `healthCheck` configured, or it's just round-robin |
 | [`p2c`](#p2c-power-of-two-choices) | Load- and latency-aware | 2 random samples, lower EWMA latency × (in-flight + 1) ÷ `weight` wins | ✗ | none | Large pools (10+) where `least-conn`'s full scan is too slow | Marginally less precise than true least-conn |
 | [`least-bandwidth`](#least-bandwidth) | Load-aware | √((bytes per second + 1) × (in-flight + 1)) ÷ `weight`, two random samples | ✗ | none | Mixed large and small responses, where equal connection counts hide very unequal network load | Counts bytes, not CPU or memory; a route's meters start at zero and update every 250 ms |
-| [`ip-hash`](#ip-hash) | Affinity | rendezvous hash of the client IP | by IP | only the clients on a peer that leaves (or joins) move; the rest stay put | Soft per-IP affinity without a cookie | Clients on an ejected peer move to their next-best peer |
-| [`consistent-hash`](#consistent-hash) | Affinity | rendezvous hash of the configured key | by key | same as ip-hash — only the keys on a peer that leaves (or joins) move | Per-tenant/per-user routing, cache locality by URL | Keys on an ejected peer move to their next-best peer |
+| [`ip-hash`](#ip-hash) | Affinity | rendezvous hash of the client IP | by IP | only the clients on a peer that leaves (or joins) move; the rest stay put | Soft per-IP affinity without a cookie | Behind a proxy or CDN every request has the proxy's address and goes to one upstream; clients behind one NAT share an upstream |
+| [`consistent-hash`](#consistent-hash) | Affinity | rendezvous hash of the configured key | by key | same as ip-hash — only the keys on a peer that leaves (or joins) move | Per-tenant/per-user routing, cache locality by URL path | Spreads keys, not requests: one very busy key loads one upstream; the header comes from the client |
 
 Rule of thumb: start with `round-robin`. Move to `least-conn` or `p2c` once
 request cost varies noticeably. Reach for `ip-hash`/`consistent-hash` only for
@@ -953,19 +953,53 @@ proxy:
 
 ### `ip-hash`
 
-Hashes the **client IP address** (FNV-1a) and maps it to an upstream by
-rendezvous (highest-random-weight) hashing: every upstream is scored against the
-hash and the highest score wins. The same IP always hits the same upstream while
-the set of healthy upstreams is unchanged.
+Sends every request from the same client address to the same upstream, without
+any cookie. Conduit hashes the **address of the TCP peer that connected to it**
+(FNV-1a) and maps the hash to an upstream by rendezvous (highest-random-weight)
+hashing: every healthy upstream is scored against the hash and the highest score
+wins. The same address lands on the same upstream for as long as the set of
+healthy upstreams is unchanged.
 
-**Use when:** you need soft session affinity without a session cookie, e.g.
-legacy apps that store state per-IP, or to concentrate logs from one user on
-one backend.
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `strategy: ip-hash` | Turns the behaviour on. | `round-robin` |
+| `hashKey` | What is hashed. The default `ip` is what this strategy is for; `url` and `header:<Name>` make `ip-hash` behave exactly like [`consistent-hash`](#consistent-hash), which is the clearer name for them. | `ip` |
 
-> **Note:** when an upstream is removed (or ejected as unhealthy) only the
-> clients that were on it move, each to its next-best upstream; everyone else stays.
-> Adding an upstream takes over about `1/N` of the clients. Use `sticky.cookie` for
-> cookie-based affinity that also survives the client's own IP changing.
+**Use when:**
+
+- an application keeps state in memory per client and has no shared session store
+  (a legacy admin panel, a chat or game server where a reconnecting client should
+  find its room), and you cannot add a cookie;
+- you want one client's requests, and so its log lines and its cache, on one
+  backend (support work: "show me everything this address did");
+- you want soft affinity that needs no change in the client or the application.
+
+**Do not use it when:**
+
+- Conduit sits **behind another proxy, a CDN or a cloud load balancer.** The peer
+  address is then the address of that proxy, not of the user, so every request
+  hashes to the same value and goes to **one** upstream. `X-Forwarded-For` is not
+  read for this. Hash a header that the proxy in front sets instead:
+  `strategy: consistent-hash` with `hashKey: "header:X-Real-IP"` (or
+  `CF-Connecting-IP` behind Cloudflare), and make sure clients cannot reach Conduit
+  without passing through that proxy, otherwise they can set the header
+  themselves and choose their upstream;
+- many users share one address (an office or mobile carrier behind NAT): they all
+  land on one upstream, so the pool is used unevenly;
+- the client's address changes during a session (a phone moving between Wi-Fi and
+  mobile data): its next request goes to another upstream. Use
+  [`sticky.cookie`](#sticky-sessions) when the session must survive that.
+
+**When the pool changes.** Removing an upstream, or ejecting it as unhealthy, moves
+only the clients that were on it, each to its next-best upstream; everyone else
+stays where they are. When it comes back, those clients return. Adding an upstream
+takes over about `1/N` of the clients. A plain "hash modulo the number of upstreams"
+scheme would instead reshuffle nearly everyone on every change.
+
+**Spread.** With few clients the split is uneven by chance (two clients can hash to
+the same upstream); it evens out as the number of distinct addresses grows. If you
+need an exact split, use `weighted-round-robin`; affinity and exact shares do not go
+together.
 
 ```yaml
 proxy:
@@ -991,20 +1025,49 @@ proxy:
 
 ### `consistent-hash`
 
-Hashes a configurable **`hashKey`** (IP, URL, or any request header) and maps
-it to an upstream by rendezvous hashing. Identical to `ip-hash` in
-implementation — the distinction is purely which value is hashed.
+Hashes a configurable **`hashKey`** (the client address, the URL path, or the value
+of any request header) and maps it to an upstream by rendezvous hashing. Identical
+to [`ip-hash`](#ip-hash) in implementation, so it behaves the same when the pool
+changes: only the keys that were on a removed or ejected upstream move. The
+distinction is which value is hashed, and the default here is the same `ip`.
 
-**Use when:** you want to route requests by tenant, user, or any other
-request attribute to a dedicated upstream.
+**Use when:** requests with the same key must meet the same upstream, and the key
+is not (only) the client address:
+
+- **Multi-tenant shards.** `hashKey: "header:X-Tenant-ID"`: each tenant's data lives
+  on one shard, or its working set stays warm in one upstream's memory.
+- **Cache locality.** `hashKey: "url"`: every upstream keeps its own in-memory or
+  disk cache, and the same page always asks the same one, so a page is held in one
+  upstream's cache instead of in all of them.
+- **Per-user affinity.** `hashKey: "header:X-User-ID"` (set by an authenticating
+  proxy or by an earlier stage of your own).
+- **The real client address behind a proxy or CDN.** `hashKey: "header:X-Real-IP"`
+  (see the warning under [`ip-hash`](#ip-hash)).
 
 The `hashKey` field controls what is hashed:
 
-| `hashKey` value | Hashes                   | Example use case                                   |
-| --------------- | ------------------------ | -------------------------------------------------- |
-| `ip`            | Client IP                | Per-IP affinity                                    |
-| `url`           | Full request URL         | Cache-locality — same URL always hits same backend |
-| `header:X-Name` | Value of header `X-Name` | Per-tenant or per-user routing                     |
+| `hashKey` value | Hashes | Example use case |
+| --------------- | ------ | ---------------- |
+| `ip` (default) | The address of the TCP peer that connected to Conduit (not `X-Forwarded-For`) | Per-client affinity |
+| `url` | The request **path**, without the query string (`/a?x=1` and `/a?x=2` hash alike) | Cache locality: the same page always hits the same backend |
+| `header:X-Name` | The value of header `X-Name` | Per-tenant or per-user routing |
+
+Details that decide whether the result is what you expect:
+
+- **A missing header is not an error.** When the request has no `X-Name` header (or
+  its value is not valid text), Conduit hashes the client address instead, so those
+  requests are still spread rather than all landing on one upstream.
+- **The whole value is hashed**, exactly as sent: `acme` and `Acme` are different
+  keys, and so are `203.0.113.7` and `203.0.113.7, 10.0.0.2` (what an
+  `X-Forwarded-For` list looks like after one more proxy). Hash a header that holds
+  one stable value.
+- **The header comes from the client.** Unless a trusted proxy in front sets or
+  overwrites it, a client can send any value and pick its upstream. Routing by it
+  is fine; deciding anything about access by it is not.
+- **Uneven keys mean uneven load.** One huge tenant puts all of its traffic on one
+  upstream however many you add. Hashing spreads *keys*, not *requests*.
+- A [sticky cookie](#sticky-sessions), when present and honoured, takes precedence
+  over `hashKey`.
 
 ```yaml
 proxy:
@@ -1030,6 +1093,20 @@ proxy:
     }
   }
 }
+```
+
+Cache locality, and the real client address behind a proxy:
+
+```yaml
+proxy:
+  /static-pages:
+    targets: ["http://render-1:4000", "http://render-2:4000"]
+    strategy: consistent-hash
+    hashKey: url
+  /app:
+    targets: ["http://app-1:4000", "http://app-2:4000"]
+    strategy: consistent-hash
+    hashKey: "header:X-Real-IP" # set by the proxy in front; clients must not reach Conduit directly
 ```
 
 > **Same behaviour as ip-hash:** removing an upstream moves only the keys that were on it.
@@ -1158,6 +1235,32 @@ to small API calls, so equal connection counts hide very unequal network load
 and the upstream's network is the bottleneck. When the limit is CPU or memory,
 `least-conn` or `p2c` is the better signal.
 
+Typical cases:
+
+- a file or media route where one request may be a 2 KB thumbnail and the next a
+  2 GB video: `least-conn` sees "one connection" on each upstream, `least-bandwidth`
+  sees which one is moving the gigabytes;
+- upstreams on links of different speed, or on shared hosts where one neighbour
+  is busy: give the faster one a higher `weight` and let the measured rate correct
+  the rest;
+- streaming (server-sent events, long downloads), where requests last long and a
+  byte rate is a better picture of the load than a request count.
+
+Not a good fit: very short, equal-sized requests (the rate is noise and the
+in-flight term does the work, so `least-conn` or `p2c` is simpler), and routes where
+the upstream's limit is CPU, memory or a database, which bytes do not show.
+
+**Parameters.** There are none of its own: `strategy: least-bandwidth` is the whole
+setting. The only input you control is each target's `weight` (default 1, as
+`{ url, weight }`). The 10-second time constant and the 250 ms refresh are fixed.
+
+**What it does in practice.** In the load-balancing report that CI posts on pull
+requests (four local upstreams, upstream 0 taking 8 ms per request and the other
+three answering at once, one worker thread), `round-robin` gave each upstream 25 %
+of the requests while `least-bandwidth` gave the slow one 12 % and the others 29 %
+each. The report's "even" scenario (four equal upstreams) shows the same strategy
+splitting 25 / 25 / 25 / 25, so it costs nothing when there is nothing to correct.
+
 ```yaml
 proxy:
   /files:
@@ -1179,12 +1282,47 @@ proxy:
 - Prior art: Citrix ADC `leastbandwidth` (bytes sent plus received over the
   previous 14 seconds, weighted), which has neither the in-flight factor nor the
   sampling.
+
 ---
 
 ### Sticky sessions
 
-Route a client to the same upstream for the duration of a session cookie,
-using consistent hashing on the cookie value.
+Keep a browser session on one upstream by looking at a cookie. There are two
+modes, chosen by whether you set `sticky.secret`:
+
+| | Without `secret` | With `secret` (recommended) |
+| --- | --- | --- |
+| Who sets the cookie | **Your application** (a session id it already sets) | **Conduit**, on every response |
+| What the cookie holds | whatever the application put there | a signature that names the upstream that served the request |
+| How routing uses it | the value is a hash key: the same value always maps to the same upstream | Conduit verifies the signature and sends the request **straight to that upstream** |
+| Forged or invalid cookie | still used as a key: a client can steer itself to the upstream a chosen value hashes to | ignored: the request is balanced normally |
+| `strict` | has no effect | `true`: answer `503` if the pinned upstream is down; `false`: move to another |
+
+All the options of `sticky`:
+
+| Option | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `cookie` | string | required | Cookie name to read (and, with `secret`, to set). |
+| `secret` | string | none | Key for signing and verifying. Use an environment variable (`"$STICKY_SECRET"`). |
+| `strict` | boolean | `false` | With `secret`: refuse with `503` instead of relocating when the pinned upstream is unhealthy. |
+
+**Use when:** the application keeps session state in the memory of one process
+(a shopping cart, a login held in the worker, an upload that must finish on the
+node that started it) and a shared session store is not an option. If you can add
+a shared store (Redis, a database), do so: sessions then survive an upstream
+restart and no stickiness is needed.
+
+**Before the first cookie.** A request with no cookie is balanced by the route's
+`strategy` as usual. In `secret` mode Conduit then sets the cookie on the response,
+and the following requests follow it. In the mode without `secret` Conduit sets
+nothing: the first request is balanced normally, and affinity starts only once your
+application has set the cookie and the client sends it back. While a cookie is
+present and honoured, it replaces the route's `strategy` for that request.
+
+**It is affinity, not a guarantee.** If the pinned upstream is unhealthy (or at its
+`maxConnectionsPerUpstream`) and `strict` is off, the session moves to another
+upstream and loses whatever state the first one held. Sticky routing cannot keep a
+session on an upstream that is down; it only prefers the same one while it is up.
 
 ```yaml
 proxy:
@@ -1208,9 +1346,8 @@ proxy:
 }
 ```
 
-If the client presents no cookie (first request), the request is routed by the
-configured strategy and the upstream is recorded — no cookie is set by Conduit.
-The application is responsible for setting the session cookie.
+Without a `secret`, your application must set the cookie (see "Before the first
+cookie" above); Conduit never sets it.
 
 #### HMAC-signed sticky cookies
 
@@ -1265,8 +1402,39 @@ a hash key, and routing goes through `consistent-hash` as usual.
 
 ### Upstream groups (two-level balancing)
 
-An outer strategy picks the group; an inner strategy balances within it.
-`groups` is an array — each entry has `name`, `targets`, and optional `strategy`.
+Instead of one flat pool, a route can have several named **groups** of
+upstreams. Balancing then takes two steps: the outer strategy (`groupStrategy`)
+picks a group for the request, and the group's own `strategy` picks an upstream
+inside it. Use it when the upstreams are not interchangeable and you want to say
+which ones a request may use, for example one pool per region, per customer tier,
+or per hardware generation.
+
+| Field | Where | Type | Default | Meaning |
+| --- | --- | --- | --- | --- |
+| `groups` | route | array | none | The groups. Use it instead of `targets` (a route needs one of the two). |
+| `groups[].name` | group | string | required | Name of the group; the outer strategy chooses among these names. |
+| `groups[].targets` | group | array | required | The group's upstreams, as on a flat route (URLs or `{ url, weight }`). |
+| `groups[].strategy` | group | strategy | `round-robin` | How an upstream is picked inside this group. Any of the strategies, each group can differ. |
+| `groupStrategy` | route | strategy | `round-robin` | How a group is picked. See the table below for which values make sense. |
+| `hashKey` | route | string | `ip` | What `ip-hash` / `consistent-hash` hash, for the outer pick **and** for a hash strategy inside a group (see [`consistent-hash`](#consistent-hash)). |
+
+Typical shapes:
+
+- **Regions with affinity.** `groupStrategy: ip-hash` (or `consistent-hash` with a
+  header such as `X-Region`), a `least-conn` pool per region: a client keeps using
+  its region, and inside the region the load is balanced.
+- **Tiers.** `groupStrategy: consistent-hash` with `hashKey: "header:X-Plan"`: paying
+  customers go to the group on bigger machines, free ones to the other.
+- **Rolling a new hardware generation.** Two groups, `round-robin` outside: half
+  of the requests to each, whatever the number of machines in each group.
+
+Which outer strategy to use:
+
+| `groupStrategy` | Result |
+| --- | --- |
+| `round-robin`, `random` | The groups take turns / are chosen at random, regardless of how many upstreams each has. |
+| `ip-hash`, `consistent-hash` | A client (or key) keeps its group. |
+| `least-conn`, `p2c`, `least-bandwidth`, `least-response-time` | Not meaningful: see below. |
 
 The outer strategy chooses among the group *names*, and a name has no load of
 its own: nothing is in flight on it, no latency is measured for it and no bytes
@@ -1313,6 +1481,39 @@ proxy:
 ```
 
 See [`examples/upstream-groups.yaml`](../examples/upstream-groups.yaml)
+
+#### What happens when a group fails
+
+A group is a unit of *affinity*, not (yet) of *failover*. Measured with the real
+server (two groups of one upstream each, `eu-west` down, 40 requests from one client):
+
+| Setup | Result |
+| --- | --- |
+| `groupStrategy: round-robin` | Every second request goes to `eu-west` and fails (20 of 40). |
+| `groupStrategy: ip-hash` | A client that hashes to `eu-west` fails on every request (40 of 40); a client that hashes to `us-east` is never affected. |
+| Route `backup:` set to a live upstream | No difference: `backup` is not used on a route with `groups`. |
+
+Why: the outer pick chooses among group *names* and does not look at the health of
+their upstreams. Inside a group, unhealthy upstreams are skipped, but when *none* is
+healthy the group does not refuse: it hands the request to one of them anyway (so a
+group whose health checks are all failing still gets traffic). Nothing moves a
+failed group's traffic to another group, so with a hash outer strategy the problem
+stays **local to the clients of that group**, and with a rotating one it hits a
+fixed share of everyone. Tracked in #643.
+
+Also true of a route with `groups` today:
+
+- A group whose upstreams are all at `healthCheck.maxConnectionsPerUpstream` answers
+  `503`; Conduit does not spill into another group that has room.
+- `retry`, `mirror` and `sticky` are not applied (and `sticky` gives no warning,
+  #644). Put sticky sessions on flat routes.
+- `slowStartSecs` applies to the pick inside a group, not to the choice of group.
+
+**If you need regional failover today:** keep the regions out of `groups`: use two
+routes or sites behind a DNS or external load balancer that health-checks the
+regions, or one flat pool with `weighted-round-robin` (a small weight for the far
+region): a flat pool skips its unhealthy upstreams, so a failed region's share moves
+to the others.
 
 ---
 
