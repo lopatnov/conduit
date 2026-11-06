@@ -3672,8 +3672,8 @@ sites:
     proxy: http://127.0.0.1:4000
 ```
 
-The Admin API provides 12 endpoints: hot-reload, status, upstream management,
-cache purge, rate-limit stats, and runtime IP deny-list.
+The Admin API covers hot reload, status, upstream management, cache purge, certificate reload,
+rate-limit stats and the runtime IP deny list.
 
 **→ Full reference with request/response examples: [docs/admin.md](admin.md)**
 

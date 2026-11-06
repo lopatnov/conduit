@@ -48,7 +48,8 @@ conduit [OPTIONS] [COMMAND]
 
 ## Global options
 
-These flags are accepted by every command.
+`-c` and `-h` are accepted by every command. `-V` and `--kubernetes-namespace` belong to the server itself, so
+use them without a subcommand (`conduit -V`): a subcommand rejects them as an unexpected argument.
 
 | Flag                        | Short | Default                        | Description                                                                                                                                                                        |
 | --------------------------- | ----- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -87,7 +88,8 @@ conduit -c /etc/conduit.yaml  # explicit config path
 
 On startup, Conduit:
 
-1. Loads and validates the config — exits 1 with a field-level error message on failure
+1. Loads and validates the config — on failure it exits 1 with a message that names the field for a validation
+   error; a value of the wrong *type* is reported less precisely (see [validate](#validate))
 2. Binds all configured ports
 3. Starts the Admin API on `global.admin.bind` (only if `global.admin` is configured)
 4. Begins serving traffic
@@ -289,6 +291,10 @@ conduit status     # token sent automatically
 conduit reload     # token sent automatically
 ```
 
+The CLI talks to the Admin API over plain HTTP, so keep the address on loopback or behind a tunnel. A reply that is
+not `2xx` (a wrong token gives `401`, a rejected reload gives `400`) makes the command print the server's message
+and exit 1.
+
 For direct `curl` calls, pass the token as a Bearer header:
 
 ```bash
@@ -307,14 +313,17 @@ conduit reload --admin 127.0.0.1:2019
 ```
 
 The server re-reads the config file from disk and applies all hot-reloadable
-changes immediately. Fields that require a cold restart (port, TLS cert/key,
-workers) are ignored — the server logs a warning for each one.
+changes immediately. If the new config changes a field that needs a restart, **the whole reload is
+rejected and nothing is applied**: the Admin API answers `400` with
+`cold fields changed — restart required: <fields>`, and `conduit reload` prints that and exits 1. Restart the
+server, or put those fields back. A config that does not validate is rejected the same way.
 
 **Hot-reloadable:** proxy routes, static paths, auth config, rate limits,
 middleware, logging, cache, CORS, security headers, transforms, fault injection.
 
-**Not hot-reloadable (restart required):** `port`, `tls.cert/key`,
-`tls.versions/ciphers`, `workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`.
+**Not hot-reloadable (restart required):** the set of listening ports, each port's `tls.cert` / `tls.key`,
+`global.workers`, `global.shutdownTimeoutSecs` and `global.admin.bind`. (`tls.versions` and `tls.ciphers` are not
+restart fields: `conduit validate` rejects them, because the TLS backend cannot enforce them.)
 
 ---
 
@@ -552,7 +561,7 @@ are expanded at startup; hot-reload re-expands them from the current environment
 | Code | Meaning                                                                                                             |
 | ---- | ------------------------------------------------------------------------------------------------------------------- |
 | `0`  | Success                                                                                                             |
-| `1`  | Error — config parse failure, validation error, upstream probe failure, Admin API unreachable, or other fatal error |
+| `1`  | Error — config parse failure, validation error, upstream probe failure, Admin API unreachable or answering with a status that is not `2xx` (rejected reload, wrong token), or other fatal error |
 
 The server process itself only exits with `1` on startup errors. Once running,
 it exits cleanly (`0`) after a graceful shutdown triggered by `conduit shutdown`

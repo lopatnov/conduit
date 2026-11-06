@@ -461,17 +461,19 @@ Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 | macOS Apple Silicon  | `conduit-aarch64-apple-darwin.tar.gz`       | `conduit-aarch64-apple-darwin-full.tar.gz`       |
 | Windows x86-64       | `conduit-x86_64-pc-windows-msvc.exe.zip`    | `conduit-x86_64-pc-windows-msvc-full.exe.zip`    |
 
-```bash
-# Linux x86-64, standard
-curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu.tar.gz \
-  | tar xz && ./conduit-x86_64-unknown-linux-gnu --version
-```
-
 Every release also carries `SHA256SUMS.txt` (it lists every file attached to the release,
 archives included) and GitHub build-provenance attestations for the bare binaries, which are
 attached next to the archives (`gh attestation verify <binary> --repo lopatnov/conduit`; the
 archives themselves are covered by the checksums only). The musl builds are statically linked;
-the glibc builds link the system C library dynamically.
+the glibc builds link the system C library dynamically. Verify the download before you run it:
+
+```bash
+# Linux x86-64, standard: download, verify, then run
+BASE=https://github.com/lopatnov/conduit/releases/latest/download
+curl -LO $BASE/conduit-x86_64-unknown-linux-gnu.tar.gz -O $BASE/SHA256SUMS.txt
+sha256sum --ignore-missing -c SHA256SUMS.txt
+tar xzf conduit-x86_64-unknown-linux-gnu.tar.gz && ./conduit-x86_64-unknown-linux-gnu --version
+```
 
 ### cargo install
 

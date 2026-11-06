@@ -85,6 +85,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`conduit reload`, `status`, `shutdown` and `upstreams` now authenticate and now fail when the server says no** (issues
+  #568, #567). The docs promised that the CLI sends `CONDUIT_ADMIN_TOKEN`, but the CLI never read it, so with
+  `global.admin.token` set every admin command (including the `systemctl reload` of the shipped unit) got a `401`; and the CLI
+  ignored the reply's status, printed the error body and **exited 0**, also for a reload the server rejected (a
+  restart-only field changed). It now sends `Authorization: Bearer $CONDUIT_ADMIN_TOKEN` when the variable is set (a token
+  with a line break is refused) and exits 1, printing the server's message, for any reply that is not `2xx`. The help
+  texts of `upstreams add` and `upstreams weight` no longer say that only weighted-round-robin reads weights.
+- **Documentation examples are now checked** (issue #567): `scripts/check_doc_configs.py` runs `conduit validate` on every
+  config block of the README and `docs/` and on every file of `examples/` in CI (job `docs-configs`). First run: eight
+  `global:`-only examples did not validate (`global` is read only next to `sites:`), and `examples/spa-with-api.json` asked for
+  ACME without a `host`; both fixed. `docs/cli.md` is checked against `--help` (flags that only the server accepts, what a
+  rejected reload does, exit codes), and counts that rot are replaced by names (issue #568, partly: the split of
+  `docs/configuration.md`, the glossary and the FAQ remain).
 - **A route with `groups` and a load-aware `groupStrategy` no longer leaves a counter on every group name** (found by
   the review of PR #631). The outer pick runs the strategy over the group names and threw away the in-flight slot
   that `least-conn` takes (and, since this release, `p2c` and `least-bandwidth`), so the counter of each group name
