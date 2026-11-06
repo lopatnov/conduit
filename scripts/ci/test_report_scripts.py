@@ -178,6 +178,32 @@ class WorkerSettings(unittest.TestCase):
         self.assertLess(out.index(perf.FOUR_WORKERS_TITLE), out.index("**Runner:**"))
         self.assertLess(out.index("**Runner:**"), out.index("### Load balancing"))
 
+    def test_the_report_has_no_p50_row_because_it_only_restates_the_throughput(self):
+        out = perf.render(dict(self.ENV, **LoadBalancingSection().lb()))
+        self.assertNotIn("p50", out)
+        self.assertIn("p99 latency", out)
+
+    def test_the_success_rate_row_appears_only_when_a_request_failed(self):
+        self.assertNotIn("Success rate", perf.render(self.ENV))  # every request succeeded on both sides
+        self.assertIn("Success rate | 100.0% | 99.5%", perf.render(dict(self.ENV, HEAD_OK="99.5")))
+        self.assertIn("Success rate | 98.0% | 100.0%", perf.render(dict(self.ENV, BASE_OK="98")))
+        head_only = {k: v for k, v in self.ENV.items() if not k.startswith("BASE_")}
+        self.assertNotIn("Success rate", perf.render(head_only))
+        self.assertIn("Success rate | 99.0%", perf.render(dict(head_only, HEAD_OK="99")))
+
+    def test_the_load_balancing_tables_share_one_collapsed_block_with_one_intro(self):
+        lb = LoadBalancingSection()
+        out = perf.render(dict(self.ENV, **lb.lb(), **lb.lb_w4()))
+        self.assertEqual(out.count("<details>"), 1)
+        self.assertEqual(out.count("</details>"), 1)
+        self.assertEqual(out.count(perf.LB_INTRO), 1)
+        self.assertEqual(out.count("### Load balancing across four upstreams"), 2)  # one and four worker threads
+        self.assertLess(out.index("<details>"), out.index("### Load balancing"))
+        self.assertLess(out.rindex("**even**"), out.index("</details>"))
+
+    def test_no_load_balancing_data_means_no_collapsed_block(self):
+        self.assertNotIn("<details>", perf.render(self.ENV))
+
 
 class LoadBalancingSection(unittest.TestCase):
     """The load-balancing tables of issue #629: parsed defensively, because they come from a job output."""

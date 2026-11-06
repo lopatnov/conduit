@@ -25,21 +25,15 @@ import sys
 MARKER = "<!-- performance-report -->"
 
 INTRO = (
-    "_Reverse-proxy passthrough, `default` feature profile, `oha -z 10s -c 50` — informational only, not a merge "
-    "gate; single shared CI runner, treat as a trend signal, not a lab measurement (see #475 and "
-    "`docs/benchmarks.md`). Each number is the mean of four runs per build, taken alternately (head, base, base, "
-    "head, head, base, base, head) so that a slow start or a drifting runner hits both builds alike. One 10-second "
-    "run on a shared runner scatters by several percent, so the Δ column says whether a difference is larger than "
-    "the noise (2.5 times the standard error of the difference of the two means, from the scatter of the runs); "
-    "only a difference beyond the noise is a finding._"
+    "_Reverse-proxy passthrough, `oha -z 10s -c 50`; informational, not a merge gate. Each number is the mean of four "
+    "runs per build, taken alternately (head, base, base, head, ...). The Δ column is judged against the run-to-run "
+    "noise (2.5 standard errors of the difference; see `docs/benchmarks.md`): only a difference beyond the noise is a "
+    "finding._"
 )
 
 ONE_WORKER_TITLE = "### One worker thread (the default: `global.workers` unset)"
 FOUR_WORKERS_TITLE = "### Four worker threads (`global.workers: 4`)"
-FOUR_WORKERS_NOTE = (
-    "_The runner has four vCPUs and the load generator and the upstream run on them too, so this is how the build "
-    "behaves when its workers compete for the machine, not what four free cores would give._"
-)
+FOUR_WORKERS_NOTE = "_The load generator and the upstream share the runner's four vCPUs with the workers._"
 
 
 LB_STRATEGIES = ("round-robin", "least-conn", "p2c", "least-bandwidth")
@@ -48,11 +42,9 @@ LB_SCENARIOS = (
     ("slow", "upstream 0 takes 8 ms per request, the other three answer at once: what a strategy does about a slow upstream"),
 )
 LB_INTRO = (
-    "_The same load through **four local upstreams** with each load-balancing strategy, `oha -z 5s -c 50`, "
-    "{workers}, base and head measured back to back. Each cell is a single run that is not repeated, so "
-    "a base-to-head difference is flagged only above 25%; the strategies compared with each other are the point "
-    "of these tables. A strategy the base commit does not have shows `n/a` on the base side. The last column is "
-    "each upstream's share of the requests on the head build._"
+    "_Four local upstreams, each strategy, `oha -z 5s -c 50`; one run per cell, so a base-to-head difference is flagged "
+    "only above 25%. The last column is each upstream's share of the requests on the head build; `n/a` is a strategy "
+    "the base commit does not have._"
 )
 # The load-balancing report is produced for each worker setting, one after the other: (env variable, heading
 # suffix, how the intro describes the setting). The four-worker one is in addition to the one-worker one.
@@ -155,12 +147,7 @@ def render_lb(lb, heading_suffix="one worker thread", workers_text="one worker t
     if not any(c for cells in head.values() for c in cells.values()):
         return []
     base = lb.get("base", {})
-    lines = [
-        "",
-        f"### Load balancing across four upstreams, {heading_suffix}",
-        "",
-        LB_INTRO.replace("{workers}", workers_text),
-    ]
+    lines = ["", f"### Load balancing across four upstreams, {heading_suffix}", "", f"_{workers_text}._"]
     for name, what in LB_SCENARIOS:
         if name not in head:
             continue
@@ -214,21 +201,23 @@ def passthrough_lines(head, base, note_if_no_base):
             "Metric | PR head",
             "---|---",
             f"Requests/sec | {fmt(head, 'rps', '.0f')}",
-            f"p50 latency | {fmt(head, 'p50', '.2f', ' ms')}",
             f"p99 latency | {fmt(head, 'p99', '.2f', ' ms')}",
-            f"Success rate | {fmt(head, 'ok', '.1f', '%')}",
         ]
+        if head["ok"] is not None and head["ok"] < 100:
+            lines.append(f"Success rate | {fmt(head, 'ok', '.1f', '%')}")
         if note_if_no_base:
             lines += ["", "_No base commit measured (couldn't resolve this PR's base SHA) — nothing to diff against._"]
         return lines
-    return [
+    lines = [
         "Metric | Base | PR head | Δ",
         "---|---|---|---",
         f"Requests/sec | {fmt(base, 'rps', '.0f')} | {fmt(head, 'rps', '.0f')} | {delta(head, base, 'rps', True)}",
-        f"p50 latency | {fmt(base, 'p50', '.2f', ' ms')} | {fmt(head, 'p50', '.2f', ' ms')} | {delta(head, base, 'p50', False)}",
         f"p99 latency | {fmt(base, 'p99', '.2f', ' ms')} | {fmt(head, 'p99', '.2f', ' ms')} | {delta(head, base, 'p99', False)}",
-        f"Success rate | {fmt(base, 'ok', '.1f', '%')} | {fmt(head, 'ok', '.1f', '%')} | {delta(head, base, 'ok', True)}",
     ]
+    # Every request succeeds in a healthy run; a row for it is shown only when one side did not.
+    if (head["ok"] is not None and head["ok"] < 100) or (base["ok"] is not None and base["ok"] < 100):
+        lines.append(f"Success rate | {fmt(base, 'ok', '.1f', '%')} | {fmt(head, 'ok', '.1f', '%')} | {delta(head, base, 'ok', True)}")
+    return lines
 
 
 def render(env):
@@ -247,15 +236,17 @@ def render(env):
 
     if hw:
         if base["rps"] is not None:
-            note = (
-                "GitHub-hosted runner hardware varies between runs, so read the Δ column (base and head are "
-                "measured back-to-back on this same machine) rather than comparing absolute numbers across PRs."
-            )
+            note = "Hardware varies between runs: read the Δ column (base and head ran back to back here), not absolute numbers."
         else:
-            note = "GitHub-hosted runner hardware varies between runs, so absolute numbers are not comparable across PRs."
+            note = "Hardware varies between runs: absolute numbers are not comparable across PRs."
         lines += ["", f"**Runner:** {hw}. " + note]
+    sections = []
     for variable, heading_suffix, workers_text in LB_SETTINGS:
-        lines += render_lb(parse_lb(env.get(variable, "")), heading_suffix, workers_text)
+        sections += render_lb(parse_lb(env.get(variable, "")), heading_suffix, workers_text)
+    if sections:
+        # Collapsed: the tables are long and answer a different question than the passthrough numbers above.
+        lines += ["", "<details><summary>Load balancing across four upstreams (one and four worker threads)</summary>",
+                  "", LB_INTRO] + sections + ["", "</details>"]
     return "\n".join(lines) + "\n"
 
 
