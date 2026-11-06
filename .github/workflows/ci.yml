@@ -1,8 +1,13 @@
 name: CI
 
+# A branch with a pull request runs CI once, through `pull_request` (the merge result with main). `push` is for
+# `main` itself (after a merge). It used to be `["**"]`, which ran every PR commit twice (the two runs sit in
+# different `concurrency` groups and do not cancel each other); that was only needed for the #114 migration, whose
+# PRs targeted a branch other than main. A branch without a PR gets no CI until its pull request (a draft is
+# enough) is opened.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -167,9 +172,8 @@ jobs:
   # than a third-party Action, keeping this workflow's supply-chain surface to the
   # pins already vetted elsewhere in this file.
   #
-  # Branches with a PR whose CI runs through the `push` trigger (no
-  # `github.event.pull_request`) are handled by scripts/ci/resolve_pr.sh, which
-  # looks up the open PR for the branch. No open PR (a bare push) means no comment
+  # A `push` run (on main, after a merge) has no `github.event.pull_request`: scripts/ci/resolve_pr.sh
+  # looks up the open PR for the branch, and there is none, so there is no comment
   # target -- the measurement still runs so a break here is caught in CI logs.
   footprint:
     name: Footprint report
@@ -217,6 +221,10 @@ jobs:
           measure "--no-default-features" "\`--no-default-features\`"
           measure "--no-default-features --features static" "\`--no-default-features --features static\`"
           measure "" "default"
+          # The two bundles that exist for `--no-default-features` builds (see docs/configuration.md, "Bundles"):
+          # a file server without the proxy, and a gateway without static files.
+          measure "--no-default-features --features static-server" "\`--no-default-features --features static-server\`"
+          measure "--no-default-features --features gateway" "\`--no-default-features --features gateway\`"
           measure "--features standard" "\`standard\`"
           measure "--features full" "\`full\`"
 
@@ -450,9 +458,9 @@ jobs:
           GOEOF
           cd /tmp/bench-upstream && go mod init bench-upstream && go build -o /tmp/bench-upstream-bin .
 
-      # #114 sub-issue PRs run through the `push` trigger, not `pull_request`;
-      # resolve_pr.sh gives the PR's base SHA either way, so the measurement
-      # step below has something to diff the head build against.
+      # resolve_pr.sh gives the PR's base SHA from the `pull_request` event (and
+      # nothing on a `push` to main), so the measurement step below has something
+      # to diff the head build against on a pull request.
       - name: Find associated PR + base SHA
         id: pr
         env:
