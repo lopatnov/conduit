@@ -1860,9 +1860,10 @@ gets none is never examined). To lose fewer requests during that window add
 usually wants active probes (they find a dead upstream before a user does and also bring it
 back), plus `outlierDetection` for upstreams that answer probes but fail real requests.
 
-`maxEjectionPercent` limits how many upstreams passive ejection may remove at once (default
-10% of the upstreams Conduit tracks, and at least one), so in a small pool only one upstream
-can be ejected at a time however low the percentage is.
+`maxEjectionPercent` limits how many upstreams passive ejection may remove at once: that
+percentage (default 10%) of all the upstreams Conduit tracks, not only this route's, rounded
+down but never below one. So one upstream can always be ejected however low the percentage
+is; with the default 10%, more than one needs at least 20 tracked upstreams.
 
 Also: `least-response-time` takes its latencies from the active probes, so it needs
 `healthCheck` or it behaves like `round-robin`; and a route with `groups` skips unhealthy
