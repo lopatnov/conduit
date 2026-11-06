@@ -68,14 +68,14 @@ fn http_post_json(path: &str, addr: &str, json_body: &str) -> anyhow::Result<Str
     http_request("POST", path, addr, Some(json_body))
 }
 
+/// The environment variable the CLI reads the Admin API bearer token from (`global.admin.token` on the server).
+const TOKEN_ENV: &str = "CONDUIT_ADMIN_TOKEN";
+
 /// Send a blocking HTTP/1.1 request to the Admin API over a plain TCP
 /// stream and return the response body. `json_body` of `None` sends no
 /// body (`Content-Length: 0` for `POST`, no body headers at all for `GET`,
 /// matching prior per-method behavior); `Some` sends it as
-/// `application/json`.
-/// The environment variable the CLI reads the Admin API bearer token from (`global.admin.token` on the server).
-const TOKEN_ENV: &str = "CONDUIT_ADMIN_TOKEN";
-
+/// `application/json`. The token of `CONDUIT_ADMIN_TOKEN` is sent when set.
 fn http_request(
     method: &str,
     path: &str,
@@ -92,6 +92,27 @@ fn check_token(token: &str) -> anyhow::Result<()> {
         anyhow::bail!("{TOKEN_ENV} must not contain a line break");
     }
     Ok(())
+}
+
+/// The warning for a token that is about to travel in clear text to an address that is not loopback.
+fn token_warning(ip: std::net::IpAddr, addr: &str) -> Option<String> {
+    (!ip.is_loopback()).then(|| {
+        format!("warning: sending {TOKEN_ENV} over plain HTTP to {addr}, which is not a loopback address")
+    })
+}
+
+/// The text of a server reply made safe to print in a terminal: control characters other than a line
+/// break or a tab (escape sequences among them) become `?`.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '?'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// The status code of an HTTP/1.x response, from its first line.
@@ -119,6 +140,9 @@ fn http_request_with(
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| anyhow::anyhow!("cannot resolve {addr}"))?;
+    if let Some(warning) = token.and_then(|_| token_warning(sock.ip(), addr)) {
+        eprintln!("{warning}");
+    }
     let mut stream = TcpStream::connect_timeout(&sock, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
 
@@ -146,7 +170,7 @@ fn http_request_with(
     let body = extract_body(&response);
     match status_code(&response) {
         Some(code) if (200..300).contains(&code) => Ok(body),
-        Some(code) => anyhow::bail!("Admin API answered HTTP {code}: {}", body.trim()),
+        Some(code) => anyhow::bail!("Admin API answered HTTP {code}: {}", printable(body.trim())),
         None => anyhow::bail!("Admin API sent a reply that is not HTTP"),
     }
 }
@@ -264,6 +288,34 @@ Location: /elsewhere
             .to_string();
         server.join().unwrap();
         assert!(err.contains("not HTTP"), "{err}");
+    }
+
+    #[test]
+    fn the_token_warning_appears_only_for_an_address_that_is_not_loopback() {
+        use std::net::IpAddr;
+        assert!(token_warning("127.0.0.1".parse::<IpAddr>().unwrap(), "127.0.0.1:2019").is_none());
+        assert!(token_warning("::1".parse::<IpAddr>().unwrap(), "[::1]:2019").is_none());
+        let w = token_warning("10.0.0.5".parse::<IpAddr>().unwrap(), "10.0.0.5:2019").unwrap();
+        assert!(
+            w.contains("10.0.0.5:2019") && w.contains("not a loopback"),
+            "{w}"
+        );
+        assert!(!w.contains("s3cret"));
+    }
+
+    #[test]
+    fn the_error_text_of_a_server_carries_no_control_characters() {
+        assert_eq!(printable("ok\tline\nnext"), "ok\tline\nnext");
+        assert_eq!(printable("\u{1b}[31mred\u{1b}[0m\u{7}"), "?[31mred?[0m?");
+        let (addr, server) = serve_once("HTTP/1.1 500 Internal Server Error\r\n\r\n\u{1b}[2Jboom");
+        let err = http_request_with("GET", "status", &addr, None, None)
+            .unwrap_err()
+            .to_string();
+        server.join().unwrap();
+        assert!(
+            !err.contains('\u{1b}') && err.contains("?[2Jboom"),
+            "{err:?}"
+        );
     }
 
     #[test]
