@@ -42,7 +42,7 @@ LB_INTRO = (
 def number(raw):
     try:
         v = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # OverflowError: a 400-digit integer
         return None
     return v if math.isfinite(v) else None
 
@@ -75,7 +75,7 @@ def parse_lb(raw):
     """{"head"|"base": {scenario: {strategy: cell | None}}} from the job output; {} if it is unusable."""
     try:
         data = json.loads(raw) if isinstance(raw, str) and raw.strip() else {}
-    except ValueError:
+    except (ValueError, RecursionError):  # RecursionError: thousands of nested brackets
         return {}
     if not isinstance(data, dict):
         return {}

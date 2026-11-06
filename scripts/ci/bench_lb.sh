@@ -39,7 +39,9 @@ WORK="$(mktemp -d)"
 RESULTS="$WORK/results.tsv"
 : > "$RESULTS"
 PIDS=()
+CPID=""
 cleanup() {
+  [ -n "$CPID" ] && kill -KILL "$CPID" 2>/dev/null
   for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
   rm -rf "$WORK"
@@ -89,13 +91,16 @@ run_one() { # SCENARIO STRATEGY
 
   "$CONDUIT_BIN" -c "$WORK/conduit.json" > "$WORK/conduit.log" 2>&1 &
   local cpid=$! ready=0
+  CPID="$cpid"
   for _ in $(seq 1 20); do
     kill -0 "$cpid" 2>/dev/null || break # exited: the build does not know this strategy
     if curl -sf "http://127.0.0.1:$PROXY_PORT/__health__" > /dev/null 2>&1; then ready=1; break; fi
     sleep 0.5
   done
+  # Conduit is stopped with SIGKILL, here and below: on SIGTERM Pingora sleeps the whole shutdown grace period
+  # (30 s by default), which over sixteen runs would add minutes to the job. Nothing here needs a graceful stop.
   if [ "$ready" -ne 1 ]; then
-    kill "$cpid" 2>/dev/null || true
+    kill -KILL "$cpid" 2>/dev/null || true
     wait "$cpid" 2>/dev/null || true
     printf '%s\t%s\tnull\n' "$scenario" "$strategy" >> "$RESULTS"
     echo "  $LABEL $scenario/$strategy: not started (unknown strategy for this build?)" >&2
@@ -106,8 +111,9 @@ run_one() { # SCENARIO STRATEGY
   before="$(counts)"
   "$OHA" -z "${SECS}s" -c "$CONNS" --no-tui --output-format json "http://127.0.0.1:$PROXY_PORT/" > "$WORK/oha.json" 2> "$WORK/oha.err" || true
   after="$(counts)"
-  kill "$cpid" 2>/dev/null || true
+  kill -KILL "$cpid" 2>/dev/null || true
   wait "$cpid" 2>/dev/null || true
+  CPID=""
 
   python3 - "$scenario" "$strategy" "$WORK/oha.json" "$before" "$after" >> "$RESULTS" <<'PY'
 import json, sys

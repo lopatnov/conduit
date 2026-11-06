@@ -122,6 +122,18 @@ class LoadBalancingSection(unittest.TestCase):
             self.assertNotIn("Load balancing", out, raw)
             self.assertIn("Requests/sec", out)
 
+    def test_a_huge_integer_and_deep_nesting_are_ignored_not_fatal(self):
+        # Review finding on PR #631: these used to end in OverflowError / RecursionError in the job that
+        # holds the write token.
+        huge = '{"head": {"even": {"p2c": {"rps": %s, "p99": 1, "share": [%s]}}}}' % ("1" + "0" * 400, "1" + "0" * 400)
+        out = self.render({"LB": huge})
+        self.assertIn("Requests/sec", out)
+        self.assertNotIn("Load balancing", out)
+        for raw in ("[" * 200000 + "]" * 200000, '{"head":' * 100000 + "1" + "}" * 100000):
+            out = self.render({"LB": raw})
+            self.assertIn("Requests/sec", out)
+            self.assertNotIn("Load balancing", out)
+
     def test_only_known_scenarios_and_strategies_are_read(self):
         data = {"head": {"even": {"round-robin": self.cell(1, 1), "<img src=x>": self.cell(2, 2)},
                          "evil": {"round-robin": self.cell(3, 3)}}, "base": {}}
