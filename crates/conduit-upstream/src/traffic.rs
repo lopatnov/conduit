@@ -38,8 +38,29 @@ pub struct TrafficMeter {
 
 impl TrafficMeter {
     /// Record `bytes` moved for this upstream (either direction).
+    ///
+    /// The first byte also opens the measurement window (one extra atomic load per call afterwards), so
+    /// that the first selection after a window has elapsed already sees what an upstream served, instead
+    /// of that window only starting at the first read (review of PR #631).
     pub fn add(&self, bytes: u64) {
         self.total.fetch_add(bytes, Ordering::Relaxed);
+        if self.last_ms.load(Ordering::Relaxed) == 0 {
+            self.open_window(monotonic_ms());
+        }
+    }
+
+    /// Start the first window at `now_ms`, unless some reader or writer already did.
+    fn open_window(&self, now_ms: u64) {
+        let _ =
+            self.last_ms
+                .compare_exchange(0, now_ms.max(1), Ordering::Relaxed, Ordering::Relaxed);
+    }
+
+    /// [`add`](Self::add) with the clock reading given (tests only).
+    #[cfg(test)]
+    fn add_at(&self, bytes: u64, now_ms: u64) {
+        self.total.fetch_add(bytes, Ordering::Relaxed);
+        self.open_window(now_ms);
     }
 
     /// Bytes ever recorded.
@@ -66,11 +87,11 @@ impl TrafficMeter {
         };
         let last = self.last_ms.load(Ordering::Relaxed);
         if last == 0 {
-            // First reader: open the first window now. `last_total` stays 0, so the bytes recorded
-            // before this first read (the meter is created by the first byte, the first read comes
-            // with a later pick) are part of the first window instead of being thrown away: an upstream
-            // that has just served a large response must not look idle.
-            self.last_ms.store(now_ms.max(1), Ordering::Relaxed);
+            // Nothing was recorded before this first read: open the first window now. (When bytes came
+            // first, `add` opened the window at the first byte and `last_total` is still 0, so those bytes
+            // are part of the first window instead of being thrown away: an upstream that has just served
+            // a large response must not look idle.)
+            self.open_window(now_ms);
             return;
         }
         let elapsed_ms = now_ms.saturating_sub(last);
@@ -115,16 +136,52 @@ mod tests {
         assert_eq!(m.rate(5_000), 0.0);
     }
 
-    /// Review finding on PR #631: the first read used to open its window at the bytes recorded so far,
-    /// so what an upstream had already served was forgotten and it looked idle.
+    /// Review findings on PR #631: the first read used to open its window at the bytes recorded so far
+    /// (they were forgotten), and then the window opened only at the first read (the first selection
+    /// after a large response still saw nothing). The window opens at the first byte now.
+    #[test]
+    fn the_first_selection_after_one_window_sees_the_first_response() {
+        let m = TrafficMeter::default();
+        m.add_at(5_000_000, 1_000); // a large response served at t = 1000 ms, nobody has read the rate yet
+        assert_eq!(
+            m.rate(1_100),
+            0.0,
+            "inside the first window nothing is due yet"
+        );
+        assert!(
+            m.rate(1_000 + WINDOW_MS) > 0.0,
+            "one window after the first byte the rate must show it"
+        );
+    }
+
+    #[test]
+    fn a_meter_read_before_any_byte_opens_its_window_at_the_read() {
+        let m = TrafficMeter::default();
+        assert_eq!(m.rate(1_000), 0.0);
+        m.add_at(5_000_000, 1_100); // does not move the window: it is open since t = 1000
+        assert!(m.rate(1_000 + WINDOW_MS) > 0.0);
+    }
+
+    /// The production `add` (the other tests give the clock by hand) opens the window at the first byte.
+    #[test]
+    fn the_first_byte_opens_the_window_and_later_bytes_do_not_move_it() {
+        let m = TrafficMeter::default();
+        assert_eq!(m.last_ms.load(Ordering::Relaxed), 0);
+        m.add(1);
+        let opened = m.last_ms.load(Ordering::Relaxed);
+        assert_ne!(opened, 0);
+        m.add(1);
+        assert_eq!(m.last_ms.load(Ordering::Relaxed), opened);
+    }
+
     #[test]
     fn bytes_recorded_before_the_first_read_count() {
         let m = TrafficMeter::default();
-        m.add(5_000_000); // a large response served before anyone looked at the rate
-        assert_eq!(m.rate(1_000), 0.0, "the first read only opens the window");
+        m.add_at(5_000_000, 1_000);
+        let first = m.rate(2_000);
         assert!(
-            m.rate(1_000 + WINDOW_MS) > 0.0,
-            "the early bytes must show up"
+            first > 0.0,
+            "the early bytes must show up at the first read after a window: {first}"
         );
     }
 

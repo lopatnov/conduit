@@ -38,11 +38,11 @@ STRATEGIES=(${BENCH_LB_STRATEGIES:-round-robin least-conn p2c least-bandwidth})
 WORK="$(mktemp -d)"
 RESULTS="$WORK/results.tsv"
 : > "$RESULTS"
-PIDS=()
-CPID=""
+UP_PIDS=()  # the upstreams that are running now; emptied when they are stopped
+CPID=""     # the Conduit that is running now; emptied when it is reaped
 cleanup() {
   [ -n "$CPID" ] && kill -KILL "$CPID" 2>/dev/null
-  for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
+  for p in "${UP_PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
   wait 2>/dev/null || true
   rm -rf "$WORK"
 }
@@ -67,7 +67,6 @@ start_upstreams() { # DELAY_MS of upstream 0
     UP_PIDS+=("$!")
     i=$((i + 1))
   done
-  PIDS+=("${UP_PIDS[@]}")
   for port in "${UP_PORTS[@]}"; do
     wait_for "http://127.0.0.1:$port/" 30 || { echo "upstream on $port never became ready" >&2; return 1; }
   done
@@ -102,6 +101,7 @@ run_one() { # SCENARIO STRATEGY
   if [ "$ready" -ne 1 ]; then
     kill -KILL "$cpid" 2>/dev/null || true
     wait "$cpid" 2>/dev/null || true
+    CPID=""
     printf '%s\t%s\tnull\n' "$scenario" "$strategy" >> "$RESULTS"
     echo "  $LABEL $scenario/$strategy: not started (unknown strategy for this build?)" >&2
     return 0
