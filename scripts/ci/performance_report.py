@@ -9,14 +9,8 @@ Env:   HEAD_RPS HEAD_P50 HEAD_P99 HEAD_OK  BASE_RPS BASE_P50 BASE_P99 BASE_OK  (
        HEAD_RPS_SEM HEAD_P50_SEM HEAD_P99_SEM  BASE_RPS_SEM BASE_P50_SEM BASE_P99_SEM  (standard error of those
        means, in percent of the mean; without them a difference is judged by its size alone)
        HEAD_W4_* and BASE_W4_* with the same suffixes  (four worker threads; the section is left out without them)
-       HW  LB  LB_W4
-
-`LB` (one worker thread) and `LB_W4` (four, in addition to it) are the JSON of scripts/ci/bench_lb.sh for both builds, {"head": {...}, "base": {...}}, each with the
-scenarios `even` and `slow` and per strategy {"rps", "p50", "p99", "ok", "share": [..]} or null (issue #629).
-It is parsed defensively: only known scenario and strategy names are read, every number goes through
-float() and is dropped if it is not finite, and anything malformed leaves the section out.
+       HW
 """
-import json
 import math
 import os
 import re
@@ -36,30 +30,6 @@ FOUR_WORKERS_TITLE = "### Four worker threads (`global.workers: 4`)"
 FOUR_WORKERS_NOTE = "_The load generator and the upstream share the runner's four vCPUs with the workers._"
 
 
-LB_STRATEGIES = ("round-robin", "least-conn", "p2c", "least-bandwidth")
-LB_SCENARIOS = (
-    ("even", "four equal upstreams: what a strategy costs when there is nothing to be clever about"),
-    ("slow", "upstream 0 takes 8 ms per request, the other three answer at once: what a strategy does about a slow upstream"),
-)
-LB_INTRO = (
-    "_Four local upstreams, each strategy, `oha -z 5s -c 50`; one run per cell, so a base-to-head difference is flagged "
-    "only above 25%. The last column is each upstream's share of the requests on the head build; `n/a` is a strategy "
-    "the base commit does not have._"
-)
-# The load-balancing report is produced for each worker setting, one after the other: (env variable, heading
-# suffix, how the intro describes the setting). The four-worker one is in addition to the one-worker one.
-LB_SETTINGS = (
-    ("LB", "one worker thread", "one worker thread (the default)"),
-    (
-        "LB_W4",
-        "four worker threads",
-        "four worker threads (`global.workers: 4`; the balancer's workers, the four upstreams and the load "
-        "generator share the runner's four vCPUs)",
-    ),
-)
-
-# A single 5-second run scatters by ten percent or more between base and head: flag only a large drop.
-LB_FLAG_AT = 25.0
 # The passthrough tables repeat each measurement, so they can tell noise from a change: an adverse difference
 # beyond the noise is flagged from this size on.
 FLAG_BEYOND_NOISE_AT = 3.0
@@ -100,80 +70,12 @@ def noise(head, base, key):
     return math.hypot(h, b)
 
 
-def lb_cell(raw):
-    """One {"rps", "p99", "share"} cell, or None for anything that is not a usable measurement."""
-    if not isinstance(raw, dict):
-        return None
-    cell = {k: number(raw.get(k)) for k in ("rps", "p50", "p99")}
-    if cell["rps"] is None or cell["p99"] is None:
-        return None
-    share = raw.get("share")
-    shares = []
-    if isinstance(share, list):
-        for x in share[:8]:
-            v = number(x)
-            if v is None or not 0 <= v <= 100:
-                shares = []
-                break
-            shares.append(v)
-    cell["share"] = shares
-    return cell
-
-
-def parse_lb(raw):
-    """{"head"|"base": {scenario: {strategy: cell | None}}} from the job output; {} if it is unusable."""
-    try:
-        data = json.loads(raw) if isinstance(raw, str) and raw.strip() else {}
-    except (ValueError, RecursionError):  # RecursionError: thousands of nested brackets
-        return {}
-    if not isinstance(data, dict):
-        return {}
-    out = {}
-    for side in ("head", "base"):
-        scenarios = data.get(side)
-        out[side] = {}
-        if not isinstance(scenarios, dict):
-            continue
-        for name, _ in LB_SCENARIOS:
-            cells = scenarios.get(name)
-            if isinstance(cells, dict):
-                out[side][name] = {s: lb_cell(cells.get(s)) for s in LB_STRATEGIES}
-    return out
-
-
-def render_lb(lb, heading_suffix="one worker thread", workers_text="one worker thread (the default)"):
-    """The load-balancing tables of one worker setting, or [] when the head build has no usable cell."""
-    head = lb.get("head", {})
-    if not any(c for cells in head.values() for c in cells.values()):
-        return []
-    base = lb.get("base", {})
-    lines = ["", f"### Load balancing across four upstreams, {heading_suffix}", "", f"_{workers_text}._"]
-    for name, what in LB_SCENARIOS:
-        if name not in head:
-            continue
-        lines += ["", f"**{name}** — {what}", "", "Strategy | Requests/sec (base → head, Δ) | p99 ms (base → head, Δ) | Share per upstream %", "---|---|---|---"]
-        for strategy in LB_STRATEGIES:
-            h = head[name].get(strategy)
-            b = base.get(name, {}).get(strategy)
-            if h is None:
-                lines.append(f"{strategy} | — | — | —")
-                continue
-            if b is None:
-                rps, p99 = f"n/a → {h['rps']:.0f}", f"n/a → {h['p99']:.2f}"
-            else:
-                rps = f"{b['rps']:.0f} → {h['rps']:.0f}, {delta(h, b, 'rps', True, LB_FLAG_AT)}"
-                p99 = f"{b['p99']:.2f} → {h['p99']:.2f}, {delta(h, b, 'p99', False, LB_FLAG_AT)}"
-            shares = " / ".join(f"{x:.0f}" for x in h["share"]) or "—"
-            lines.append(f"{strategy} | {rps} | {p99} | {shares}")
-    return lines
-
-
-def delta(head, base, key, higher_is_better, flag_at=FLAG_UNKNOWN_NOISE_AT):
+def delta(head, base, key, higher_is_better):
     """The head-against-base difference of `key`, as text.
 
     With a scatter estimate for both sides (the repeated passthrough runs) the text says whether the difference is
     beyond the noise, and only an adverse difference beyond the noise is flagged. Without one (a single run), an
-    adverse difference of `flag_at` percent or more is flagged."""
+    adverse difference of FLAG_UNKNOWN_NOISE_AT percent or more is flagged."""
     if base[key] is None or base[key] == 0 or head[key] is None:
         return "—"
     pct = (head[key] - base[key]) / base[key] * 100
@@ -182,7 +84,7 @@ def delta(head, base, key, higher_is_better, flag_at=FLAG_UNKNOWN_NOISE_AT):
     sign = "+" if pct > 0 else ""
     n = noise(head, base, key)
     if n is None:
-        flag = " ⚠️" if abs(pct) >= flag_at and not good else ""
+        flag = " ⚠️" if abs(pct) >= FLAG_UNKNOWN_NOISE_AT and not good else ""
         return f"{arrow} {sign}{pct:.1f}%{flag}"
     if abs(pct) <= NOISE_FACTOR * n:  # `<=`: with no measured scatter at all, an exact tie is still noise
         return f"{arrow} {sign}{pct:.1f}% (within noise, ±{n:.1f}%)"
@@ -240,17 +142,6 @@ def render(env):
         else:
             note = "Hardware varies between runs: absolute numbers are not comparable across PRs."
         lines += ["", f"**Runner:** {hw}. " + note]
-    sections, shown = [], []
-    for variable, heading_suffix, workers_text in LB_SETTINGS:
-        part = render_lb(parse_lb(env.get(variable, "")), heading_suffix, workers_text)
-        if part:
-            sections += part
-            shown.append(heading_suffix)
-    if sections:
-        # Collapsed: the tables are long and answer a different question than the passthrough numbers above. The
-        # summary names only the worker settings that produced a table (the four-worker run can be missing).
-        lines += ["", f"<details><summary>Load balancing across four upstreams ({', '.join(shown)})</summary>",
-                  "", LB_INTRO] + sections + ["", "</details>"]
     return "\n".join(lines) + "\n"
 
 
