@@ -10,7 +10,7 @@ page, together with the hardware, the build and `global.workers` it was measured
 ## Table of Contents
 
 - [CI performance report (exact setup)](#ci-performance-report-exact-setup)
-- [Why the CI report uses one worker thread](#why-the-ci-report-uses-one-worker-thread)
+- [Why the CI report measures one worker thread and four](#why-the-ci-report-measures-one-worker-thread-and-four)
 - [Reproduce it on your machine](#reproduce-it-on-your-machine)
 - [Measuring more than passthrough](#measuring-more-than-passthrough)
 - [Comparing the load-balancing strategies](#comparing-the-load-balancing-strategies)
@@ -22,20 +22,35 @@ page, together with the hardware, the build and `global.workers` it was measured
 ## CI performance report (exact setup)
 
 Every pull request runs the **Performance report** job (`.github/workflows/ci.yml`). It builds the
-PR head and the PR's base commit one after the other **on the same runner**, measures
-reverse-proxy passthrough for each, and posts the difference as a PR comment. It is informational:
-nothing is gated on it, and a shared runner is too noisy for absolute numbers, so read the
-difference between base and head rather than comparing figures across pull requests. If the
-workflow and this section ever disagree, the workflow is right.
+PR head and the PR's base commit **on the same runner**, measures reverse-proxy passthrough for
+each, and posts the difference as a PR comment. It is informational: nothing is gated on it, and a
+shared runner is too noisy for absolute numbers, so read the difference between base and head
+rather than comparing figures across pull requests. If the workflow and this section ever
+disagree, the workflow is right.
+
+Each number is the **mean of four 10-second runs** per build, taken alternately (head, base, base,
+head, head, base, base, head), so that a slow start or a drifting runner hits both builds alike.
+This is done once with **one worker thread** (the default) and once with **four**
+(`global.workers: 4`).
+
+One 10-second run on a shared runner scatters by several percent: on a pinned 8-vCPU WSL2 machine,
+24 runs of two copies of the *same* binary had a standard deviation of 6–9% of the requests per
+second (from 13.7k to 17.5k), and the two copies differed by 0.0% on average. So the
+Δ column says whether a difference is larger than the noise: the job computes the standard error
+of each mean from the scatter of its runs, and the report calls a difference *within noise* when
+it is smaller than 2.5 times the standard error of the difference. Only an adverse difference beyond
+the noise (and at least 3%) is flagged ⚠️. A drop of 6% that is within noise is not a finding;
+re-run the job or measure with `scripts/bench/ab.sh` before acting on it. The load-balancing
+tables below hold single 5-second runs, so they are flagged only for drops above 25%.
 
 | | |
 | --- | --- |
 | Runner | GitHub-hosted `ubuntu-latest`: 4 vCPU, 16 GB RAM. GitHub assigns the host CPU generation; the report prints it (for example `4 vCPU, 16 GB RAM allocated to this job (host CPU model: …), ubuntu24 (X64)`). |
 | Build | `cargo build --release` on the stable toolchain: `default` features, `lto = true`, `codegen-units = 1`, `strip = true` |
-| Conduit workers | `global.workers` unset, which is **one worker thread** |
+| Conduit workers | two settings: `global.workers` unset, which is **one worker thread**, and `global.workers: 4` |
 | Upstream | the Go server below, port 4000, fixed 22-byte JSON body, keep-alive (it also counts its requests, for the load-balancing scenarios) |
 | Load generator | [oha](https://github.com/hatoo/oha) 1.16.0 (pinned and checked against a SHA-256), 50 connections, 10 seconds |
-| Reported | requests per second, p50 and p99 latency, success rate, for base and head and their difference |
+| Reported | requests per second, p50 and p99 latency and success rate, for base and head and their difference with a verdict against the run-to-run noise, for each worker setting |
 
 **Server configuration** — CI writes it as JSON; the YAML is the same configuration:
 
@@ -46,6 +61,12 @@ workflow and this section ever disagree, the workflow is right.
 ```yaml
 port: 8080
 proxy: http://127.0.0.1:4000
+```
+
+The four-worker run uses the same site with `global.workers` set:
+
+```json
+{ "global": { "workers": 4 }, "sites": [ { "port": 8080, "proxy": "http://127.0.0.1:4000" } ] }
 ```
 
 **Upstream** (`main.go`):
@@ -173,14 +194,18 @@ Record `nproc`, the CPU model (`grep -m1 'model name' /proc/cpuinfo`), the RAM, 
 commit and `global.workers` next to any number you publish. Stop the background processes and
 remove the scratch directory afterwards: `kill %1 %2; rm -r "$WORK"`.
 
-## Why the CI report uses one worker thread
+## Why the CI report measures one worker thread and four
 
 Conduit starts one worker thread unless `global.workers` says otherwise (Pingora's default). The
-Performance report measures the configuration most people run, so that a pull request which makes
-the default path slower shows up as a lower number next to its base. It says nothing about how
-Conduit scales with cores. To see scaling, set `global.workers` (for example to the number of
-cores you can spare) and measure again; `scripts/bench/matrix.sh` runs several worker counts in
-one go.
+first table of the Performance report measures that configuration, which is what most people run,
+so that a pull request which makes the default path slower shows up as a lower number next to its
+base. The second table sets `global.workers: 4`, the number of vCPUs of the runner, to catch a
+change that costs nothing on one thread but hurts when the workers share state or compete for the
+machine. The load generator and the upstream run on the same four vCPUs, so the second table says
+how a build behaves when its workers compete for the machine, not what four free cores would give;
+it cannot show how Conduit scales on a big host. For that, set `global.workers` to the number of
+cores you can spare and measure on your own machine; `scripts/bench/matrix.sh` runs several worker
+counts in one go.
 
 ## Measuring more than passthrough
 

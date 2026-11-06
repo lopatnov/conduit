@@ -316,10 +316,30 @@ jobs:
       head_p50: ${{ steps.bench.outputs.head_p50 }}
       head_p99: ${{ steps.bench.outputs.head_p99 }}
       head_ok: ${{ steps.bench.outputs.head_ok }}
+      head_rps_sem: ${{ steps.bench.outputs.head_rps_sem }}
+      head_p50_sem: ${{ steps.bench.outputs.head_p50_sem }}
+      head_p99_sem: ${{ steps.bench.outputs.head_p99_sem }}
       base_rps: ${{ steps.bench.outputs.base_rps }}
       base_p50: ${{ steps.bench.outputs.base_p50 }}
       base_p99: ${{ steps.bench.outputs.base_p99 }}
       base_ok: ${{ steps.bench.outputs.base_ok }}
+      base_rps_sem: ${{ steps.bench.outputs.base_rps_sem }}
+      base_p50_sem: ${{ steps.bench.outputs.base_p50_sem }}
+      base_p99_sem: ${{ steps.bench.outputs.base_p99_sem }}
+      head_w4_rps: ${{ steps.bench.outputs.head_w4_rps }}
+      head_w4_p50: ${{ steps.bench.outputs.head_w4_p50 }}
+      head_w4_p99: ${{ steps.bench.outputs.head_w4_p99 }}
+      head_w4_ok: ${{ steps.bench.outputs.head_w4_ok }}
+      head_w4_rps_sem: ${{ steps.bench.outputs.head_w4_rps_sem }}
+      head_w4_p50_sem: ${{ steps.bench.outputs.head_w4_p50_sem }}
+      head_w4_p99_sem: ${{ steps.bench.outputs.head_w4_p99_sem }}
+      base_w4_rps: ${{ steps.bench.outputs.base_w4_rps }}
+      base_w4_p50: ${{ steps.bench.outputs.base_w4_p50 }}
+      base_w4_p99: ${{ steps.bench.outputs.base_w4_p99 }}
+      base_w4_ok: ${{ steps.bench.outputs.base_w4_ok }}
+      base_w4_rps_sem: ${{ steps.bench.outputs.base_w4_rps_sem }}
+      base_w4_p50_sem: ${{ steps.bench.outputs.base_w4_p50_sem }}
+      base_w4_p99_sem: ${{ steps.bench.outputs.base_w4_p99_sem }}
       hw: ${{ steps.hw.outputs.summary }}
       lb: ${{ steps.bench.outputs.lb }}
 
@@ -462,9 +482,15 @@ jobs:
             echo "upstream never became ready" >&2; exit 1
           }
 
+          # BINARY WORKERS. One worker thread is Conduit's default (`global.workers` unset); more are set
+          # explicitly.
           start_conduit() {
-            printf '{ "port": 8080, "proxy": "http://127.0.0.1:4000" }' > /tmp/bench-conduit.json
-            ./target/release/conduit -c /tmp/bench-conduit.json &
+            if [ "$2" = 1 ]; then
+              printf '{ "port": 8080, "proxy": "http://127.0.0.1:4000" }' > /tmp/bench-conduit.json
+            else
+              printf '{ "global": { "workers": %s }, "sites": [ { "port": 8080, "proxy": "http://127.0.0.1:4000" } ] }' "$2" > /tmp/bench-conduit.json
+            fi
+            "$1" -c /tmp/bench-conduit.json &
             CONDUIT_PID=$!
             for _ in $(seq 1 30); do
               curl -sf http://127.0.0.1:8080/__health__ > /dev/null 2>&1 && return 0
@@ -473,45 +499,89 @@ jobs:
             echo "conduit never became ready" >&2; exit 1
           }
 
+          # One 10 s passthrough run: LABEL WORKERS RUN -> /tmp/oha-LABEL-wWORKERS-RUN.json. Conduit is stopped
+          # with SIGKILL: on SIGTERM Pingora sleeps its whole 30 s shutdown grace period, which over eight runs
+          # would add four minutes to the job and change nothing that is measured.
+          passthrough_run() {
+            start_upstream
+            start_conduit "/tmp/conduit-$1" "$2"
+            oha -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ > "/tmp/oha-$1-w$2-$3.json"
+            kill -KILL "$CONDUIT_PID" 2>/dev/null || true
+            kill "$UPSTREAM_PID" 2>/dev/null || true
+            wait "$CONDUIT_PID" "$UPSTREAM_PID" 2>/dev/null || true
+          }
+
           # The numbers are collected into /tmp/bench-outputs and written to
           # $GITHUB_OUTPUT once, at the very end, after the last binary built
           # from repository code has stopped.
           : > /tmp/bench-outputs
-          measure() {
-            local label="$1"
-            cargo build --release -q
-            start_upstream
-            start_conduit
-            oha -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ > "/tmp/oha-${label}.json"
-            kill "$CONDUIT_PID" "$UPSTREAM_PID" 2>/dev/null || true
-            wait "$CONDUIT_PID" "$UPSTREAM_PID" 2>/dev/null || true
-
-            python3 -c "
-          import json
-          m = json.load(open('/tmp/oha-${label}.json'))['metrics']
-          print(f'${label}_rps={round(m[\"requests_per_sec\"])}')
-          print(f'${label}_p50={round(m[\"latency_ms\"][\"p50\"], 2)}')
-          print(f'${label}_p99={round(m[\"latency_ms\"][\"p99\"], 2)}')
-          print(f'${label}_ok={round(m[\"success_rate\"] * 100, 1)}')
-          " >> /tmp/bench-outputs
-
-            # The same build through four upstreams with each load-balancing strategy (issue #629).
-            # Informational: a failure here leaves the section out and must not fail the job.
-            bash /tmp/bench_lb.sh "$label" "/tmp/lb-${label}.json" || echo '{}' > "/tmp/lb-${label}.json"
-          }
 
           # Copied out of the checkout: the base commit is checked out below and has no such script.
           cp scripts/ci/bench_lb.sh /tmp/bench_lb.sh
 
-          measure head
-
+          # Both builds first, so that the runs below can alternate between them.
+          cargo build --release -q
+          cp target/release/conduit /tmp/conduit-head
+          labels="head head head head"
           if [ -n "$BASE_SHA" ]; then
             head_sha=$(git rev-parse HEAD)
             git fetch --depth 1 origin "$BASE_SHA" 2>/dev/null || true
             git checkout --quiet "$BASE_SHA"
-            measure base
+            cargo build --release -q
+            cp target/release/conduit /tmp/conduit-base
             git checkout --quiet "$head_sha"
+            # Four runs of each build, alternating: a slow start or a drifting runner hits both builds alike.
+            labels="head base base head head base base head"
           fi
+
+          # One worker thread (the default), then four (the runner has four vCPUs, shared with the load generator
+          # and the upstream): the runs of each build in the order above.
+          for workers in 1 4; do
+            run=0
+            for label in $labels; do
+              run=$((run + 1))
+              passthrough_run "$label" "$workers" "$run"
+            done
+          done
+
+          python3 - >> /tmp/bench-outputs <<'PY'
+          import glob
+          import json
+
+          for label in ("head", "base"):
+              for workers, tag in ((1, ""), (4, "_w4")):
+                  runs = []
+                  for path in sorted(glob.glob(f"/tmp/oha-{label}-w{workers}-*.json")):
+                      try:
+                          with open(path, encoding="utf-8") as f:
+                              runs.append(json.load(f)["metrics"])
+                      except (OSError, ValueError, KeyError):
+                          pass
+                  if not runs:
+                      continue
+                  p = f"{label}{tag}"
+                  # The mean of the runs, and how far that mean can be trusted: the standard error of the mean
+                  # (sample standard deviation over the square root of the number of runs), in percent of the
+                  # mean. The report judges a base-to-head difference against it.
+                  for name, digits, get in (
+                      ("rps", 0, lambda m: m["requests_per_sec"]),
+                      ("p50", 2, lambda m: m["latency_ms"]["p50"]),
+                      ("p99", 2, lambda m: m["latency_ms"]["p99"]),
+                  ):
+                      values = [get(m) for m in runs]
+                      mu = sum(values) / len(values)
+                      print(f"{p}_{name}={round(mu) if digits == 0 else round(mu, digits)}")
+                      if len(values) > 1 and mu > 0:
+                          sd = (sum((v - mu) ** 2 for v in values) / (len(values) - 1)) ** 0.5
+                          print(f"{p}_{name}_sem={round(sd / len(values) ** 0.5 / mu * 100, 1)}")
+                  print(f"{p}_ok={round(min(m['success_rate'] for m in runs) * 100, 1)}")
+          PY
+
+          # The same builds through four upstreams with each load-balancing strategy (issue #629).
+          # Informational: a failure here leaves the section out and must not fail the job.
+          for label in $(echo "$labels" | tr ' ' '\n' | awk '!seen[$0]++'); do
+            CONDUIT_BIN="/tmp/conduit-$label" bash /tmp/bench_lb.sh "$label" "/tmp/lb-${label}.json" || echo '{}' > "/tmp/lb-${label}.json"
+          done
 
           # Both builds' load-balancing numbers as one single-line JSON output (parsed defensively by the
           # comment job).
@@ -577,10 +647,30 @@ jobs:
           HEAD_P50: ${{ needs.performance.outputs.head_p50 }}
           HEAD_P99: ${{ needs.performance.outputs.head_p99 }}
           HEAD_OK: ${{ needs.performance.outputs.head_ok }}
+          HEAD_RPS_SEM: ${{ needs.performance.outputs.head_rps_sem }}
+          HEAD_P50_SEM: ${{ needs.performance.outputs.head_p50_sem }}
+          HEAD_P99_SEM: ${{ needs.performance.outputs.head_p99_sem }}
           BASE_RPS: ${{ needs.performance.outputs.base_rps }}
           BASE_P50: ${{ needs.performance.outputs.base_p50 }}
           BASE_P99: ${{ needs.performance.outputs.base_p99 }}
           BASE_OK: ${{ needs.performance.outputs.base_ok }}
+          BASE_RPS_SEM: ${{ needs.performance.outputs.base_rps_sem }}
+          BASE_P50_SEM: ${{ needs.performance.outputs.base_p50_sem }}
+          BASE_P99_SEM: ${{ needs.performance.outputs.base_p99_sem }}
+          HEAD_W4_RPS: ${{ needs.performance.outputs.head_w4_rps }}
+          HEAD_W4_P50: ${{ needs.performance.outputs.head_w4_p50 }}
+          HEAD_W4_P99: ${{ needs.performance.outputs.head_w4_p99 }}
+          HEAD_W4_OK: ${{ needs.performance.outputs.head_w4_ok }}
+          HEAD_W4_RPS_SEM: ${{ needs.performance.outputs.head_w4_rps_sem }}
+          HEAD_W4_P50_SEM: ${{ needs.performance.outputs.head_w4_p50_sem }}
+          HEAD_W4_P99_SEM: ${{ needs.performance.outputs.head_w4_p99_sem }}
+          BASE_W4_RPS: ${{ needs.performance.outputs.base_w4_rps }}
+          BASE_W4_P50: ${{ needs.performance.outputs.base_w4_p50 }}
+          BASE_W4_P99: ${{ needs.performance.outputs.base_w4_p99 }}
+          BASE_W4_OK: ${{ needs.performance.outputs.base_w4_ok }}
+          BASE_W4_RPS_SEM: ${{ needs.performance.outputs.base_w4_rps_sem }}
+          BASE_W4_P50_SEM: ${{ needs.performance.outputs.base_w4_p50_sem }}
+          BASE_W4_P99_SEM: ${{ needs.performance.outputs.base_w4_p99_sem }}
           HW: ${{ needs.performance.outputs.hw }}
           LB: ${{ needs.performance.outputs.lb }}
         run: |

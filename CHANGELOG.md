@@ -75,6 +75,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A behaviour change for every `p2c` route. The request is now counted in flight (`active_connections`
   in `GET /upstreams`) and released when it is logged, like `least-conn`.
 
+- **The CI performance report tells noise from a change** (issues #475, #629). One 10-second run on a
+  shared runner scatters by 6–9% (24 runs of one binary, measured), so the old single-run "−6%" was not a
+  finding. Each build is now run four times, alternating head and base, at one worker thread (the
+  default) and at four; the Δ column says *within noise* or *beyond noise* (2.5 times the standard error
+  of the difference) and only an adverse difference beyond the noise is flagged. The report also
+  measures four-upstream load balancing for `round-robin`, `least-conn`, `p2c` and `least-bandwidth`
+  (single runs, flagged only above 25%). See `docs/benchmarks.md`.
+
 ### Fixed
 
 - **A route with `groups` and a load-aware `groupStrategy` no longer leaves a counter on every group name** (found by

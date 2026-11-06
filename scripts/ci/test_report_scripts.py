@@ -78,6 +78,92 @@ class Performance(unittest.TestCase):
         self.assertIn("⚠️", out)
 
 
+class WorkerSettings(unittest.TestCase):
+    """The report shows the default single worker thread and a four-worker run, and judges each difference against
+    the scatter of the runs (the standard error of the mean, `*_SEM`, in percent of the mean)."""
+
+    # One worker: 800 -> 1000 with noise sqrt(1.5^2 + 2.0^2) = 2.5%. Four workers: 3300 -> 3000 (-9.1%) with
+    # noise sqrt(3.0^2 + 4.0^2) = 5.0%, so 2.5 times the noise (12.5%) is more than the drop.
+    ENV = dict(
+        Performance.ENV,
+        HEAD_RPS_SEM="1.5", BASE_RPS_SEM="2.0",
+        HEAD_W4_RPS="3000", HEAD_W4_P50="1.0", HEAD_W4_P99="2.0", HEAD_W4_OK="100", HEAD_W4_RPS_SEM="3.0",
+        BASE_W4_RPS="3300", BASE_W4_P50="1.0", BASE_W4_P99="2.0", BASE_W4_OK="100", BASE_W4_RPS_SEM="4.0",
+    )
+
+    def test_both_worker_settings_are_shown_each_with_its_own_delta(self):
+        out = perf.render(self.ENV)
+        self.assertIn(perf.ONE_WORKER_TITLE, out)
+        self.assertIn(perf.FOUR_WORKERS_TITLE, out)
+        one, four = out.split(perf.FOUR_WORKERS_TITLE)
+        self.assertIn("Requests/sec | 800 | 1000 | ▲ +25.0% (beyond noise, ±2.5%)", one)  # one worker
+        self.assertIn("Requests/sec | 3300 | 3000 | ▼ -9.1% (within noise, ±5.0%)", four)  # four workers
+        self.assertNotIn("3300", one)
+
+    def test_a_drop_within_the_noise_is_not_flagged_however_large(self):
+        out = perf.render(self.ENV)  # -9.1% at four workers, noise +-5.0%
+        self.assertNotIn("⚠️", out)
+
+    def test_an_adverse_difference_beyond_the_noise_is_flagged(self):
+        out = perf.render(dict(self.ENV, HEAD_RPS="700"))  # 800 -> 700 = -12.5%, noise +-2.5%
+        self.assertIn("▼ -12.5% ⚠️ (beyond noise, ±2.5%)", out)
+
+    def test_a_small_difference_beyond_a_tiny_noise_is_reported_but_not_flagged(self):
+        out = perf.render(dict(self.ENV, HEAD_RPS="790", HEAD_RPS_SEM="0.1", BASE_RPS_SEM="0.1"))  # -1.25%
+        self.assertIn("▼ -1.2% (beyond noise, ±0.1%)", out)
+        self.assertNotIn("⚠️", out)
+
+    def test_a_gain_beyond_the_noise_is_not_flagged(self):
+        out = perf.render(self.ENV)
+        self.assertIn("▲ +25.0% (beyond noise", out)
+        self.assertNotIn("⚠️", out)
+
+    def test_without_scatter_numbers_a_difference_is_judged_by_its_size_alone(self):
+        env = {k: v for k, v in self.ENV.items() if not k.endswith("_SEM")}
+        out = perf.render(dict(env, HEAD_RPS="730"))  # -8.75%: under the 10% line
+        self.assertNotIn("noise", out.split("### Four")[0].split("Metric")[1])
+        self.assertNotIn("⚠️", out)
+        self.assertIn("⚠️", perf.render(dict(env, HEAD_RPS="700")))  # -12.5%
+
+    def test_hostile_scatter_numbers_fall_back_to_the_size_alone(self):
+        for bad in ("nan", "inf", "-1", "<b>x</b>", ""):
+            out = perf.render(dict(self.ENV, HEAD_RPS_SEM=bad, HEAD_RPS="700"))
+            row = next(line for line in out.splitlines() if line.startswith("Requests/sec"))  # the one-worker table
+            self.assertIn("▼ -12.5% ⚠️", row)
+            self.assertNotIn("noise", row, f"scatter {bad!r} must not be used")
+            self.assertNotIn("<b>", out)
+
+    def test_without_four_worker_numbers_the_section_is_left_out(self):
+        out = perf.render(Performance.ENV)
+        self.assertNotIn(perf.FOUR_WORKERS_TITLE, out)
+        self.assertIn(perf.ONE_WORKER_TITLE, out)
+
+    def test_hostile_four_worker_values_leave_the_section_out_and_are_not_echoed(self):
+        out = perf.render(dict(self.ENV, HEAD_W4_RPS="<script>alert(1)</script>"))
+        self.assertNotIn("<script>", out)
+        self.assertNotIn(perf.FOUR_WORKERS_TITLE, out)
+        out = perf.render(dict(self.ENV, BASE_W4_P99="[x](http://evil.example)", HEAD_W4_RPS_SEM="inf"))
+        self.assertNotIn("evil.example", out)
+        self.assertIn("Requests/sec | 3300 | 3000", out)  # the rest of the table survives; the bad cells read n/a
+
+    def test_a_regression_at_four_workers_is_flagged_on_its_own(self):
+        out = perf.render(dict(self.ENV, HEAD_W4_RPS="2000"))  # 3300 -> 2000 = -39%, beyond the noise
+        self.assertIn("⚠️", out.split(perf.FOUR_WORKERS_TITLE)[1])
+        self.assertNotIn("⚠️", out.split(perf.FOUR_WORKERS_TITLE)[0])
+
+    def test_without_a_base_each_table_is_head_only_and_the_missing_base_is_said_once(self):
+        env = {k: v for k, v in self.ENV.items() if not k.startswith("BASE_")}
+        out = perf.render(env)
+        self.assertEqual(out.count("Metric | PR head"), 2)
+        self.assertEqual(out.count("nothing to diff against"), 1)
+
+    def test_the_sections_come_before_the_runner_note_and_the_load_balancing_tables(self):
+        env = dict(self.ENV, **LoadBalancingSection().lb())
+        out = perf.render(env)
+        self.assertLess(out.index(perf.FOUR_WORKERS_TITLE), out.index("**Runner:**"))
+        self.assertLess(out.index("**Runner:**"), out.index("### Load balancing"))
+
+
 class LoadBalancingSection(unittest.TestCase):
     """The load-balancing tables of issue #629: parsed defensively, because they come from a job output."""
 
@@ -163,6 +249,12 @@ class LoadBalancingSection(unittest.TestCase):
     def test_a_head_without_a_usable_cell_omits_the_section(self):
         data = {"head": {"even": {s: None for s in perf.LB_STRATEGIES}}, "base": {}}
         self.assertNotIn("Load balancing", self.render({"LB": json.dumps(data)}))
+
+    def test_a_single_run_difference_under_the_load_balancing_line_is_not_flagged(self):
+        data = json.loads(self.lb()["LB"])
+        data["head"]["even"]["p2c"] = self.cell(1900 * 0.85, 11.0 * 1.15)  # -15% and +15%: noise for one 5 s run
+        out = self.render({"LB": json.dumps(data)})
+        self.assertNotIn("⚠️", out)
 
     def test_a_regression_in_a_strategy_is_flagged(self):
         env = self.lb()
