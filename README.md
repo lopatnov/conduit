@@ -163,7 +163,8 @@ proxy:
 ```
 
 The mirror receives a copy of the request headers, `Authorization` and cookies included, so mirror
-only to a service you trust. Upstream certificates are always checked against the host in the target
+only to a service you trust. While verification is on (the default; `upstreamTls.verify: false` turns it
+off, and then nothing is checked), upstream certificates are checked against the host in the target
 URL, so write the name the certificate carries; `upstreamTls.serverName` does not change that yet
 ([#583](https://github.com/lopatnov/conduit/issues/583)).
 **→ Details:** [Backup targets](docs/configuration.md#proxy-route-field-reference) ·
@@ -418,7 +419,7 @@ Uploads are open to anyone who can reach the port unless the site also has an au
 
 **→ More scenarios:** [docs/recipes.md](docs/recipes.md) covers HTTPS, load balancing, failover,
 circuit breaker, caching, security hardening, observability and Kubernetes, and
-[`examples/`](examples/) has a validated config for each.
+[`examples/`](examples/) has a validated config for each. Every other topic is in [`docs/`](docs/).
 
 ## Installation
 
