@@ -1889,6 +1889,23 @@ upstreams only *inside* the chosen group, it does not move traffic to another gr
 
 ### Active upstream probes
 
+Probing is **optional and off by default**: nothing is sent to an upstream for health unless the
+route has a `healthCheck`. When it has, Conduit sends each of the route's upstreams one `HEAD`
+request (a new TCP connection, `Connection: close`) to `path` every `intervalSecs` (default 10
+seconds), one upstream after the other. A probe **passes when the upstream answers with any HTTP
+status below 500** (waiting at most 5 seconds for each step: connect, send, answer); a refused or timed-out connection, a missing answer or a
+`5xx` is a failure. So the service does not need a health endpoint: any path that answers (the
+default is `/`) is enough, a `404` counts as alive, and a service that cannot or must not be
+asked simply gets no `healthCheck` (and, if wanted, `outlierDetection` instead, which sends
+nothing and judges the real requests).
+
+What can be set today: the path, the interval, and how many failures or passes change the state.
+What cannot: the probe timeout (fixed, #652), the method, what counts as a pass (the status
+below 500 rule is fixed), probing after a number of requests instead of after a time, or
+switching probes off for one upstream of a route. Two timings of the passive side are fixed as
+well: how long a probe offer to an ejected upstream waits for its answer (10 seconds) and the
+backoff after a failed offer (30 seconds, doubling up to 300). All of this is tracked in #653.
+
 ```yaml
 # YAML
 proxy:
@@ -1900,8 +1917,8 @@ proxy:
       unhealthyThreshold: 3
       healthyThreshold: 1
       slowStartSecs: 30
-      unhealthyStatus: [429, 500, 502, 503, 504] # treat these status codes as failures
-      unhealthyLatencyMs: 2000 # treat responses slower than 2s as failures
+      unhealthyStatus: [429, 500, 502, 503, 504] # real responses with these status codes count as failures
+      unhealthyLatencyMs: 2000 # real responses slower than 2 s count as failures
 ```
 
 ```json
@@ -1945,12 +1962,12 @@ healthCheck:
 
 | Field                       | Type     | Default       | Description                                                                                                                                          |
 | --------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `path`                      | string   | `/__health__` | Probe URL path                                                                                                                                       |
-| `intervalSecs`              | number   | `10`          | Probe interval                                                                                                                                       |
-| `unhealthyThreshold`        | number   | `3`           | Consecutive failures before removal                                                                                                                  |
-| `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding                                                                                                                  |
-| `unhealthyStatus`           | number[] | any non-2xx   | HTTP status codes from the health-check probe that count as failures. Default: any non-2xx response. Example: `[429, 500, 502, 503, 504]` |
-| `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx                                                 |
+| `path`                      | string   | `/`           | Path of the probe's `HEAD` request (a path without a leading `/` gets one). The default is `/`, not `/__health__` (that is the path of Conduit's own site health endpoint) |
+| `intervalSecs`              | number   | `10`          | Seconds between probes of each upstream (minimum 1)                                                                                                  |
+| `unhealthyThreshold`        | number   | `3`           | Consecutive failed probes before the upstream is left out                                                                                            |
+| `healthyThreshold`          | number   | `1`           | Consecutive passed probes before it is brought back                                                                                                  |
+| `unhealthyStatus`           | number[] | none          | **Real responses, not probes** (passive): a response from the upstream with one of these status codes counts as a failure of that upstream. Example: `[429, 500, 502, 503, 504]` |
+| `unhealthyLatencyMs`        | number   | —             | **Real responses, not probes** (passive): a response slower than this (ms) counts as a failure of that upstream, even if its status is 2xx             |
 | `slowStartSecs`             | number   | `0`           | [Traffic ramp-up period](#slow-start) after recovery. Ignored for `ipHash`/`consistentHash` and sticky routes.                     |
 | `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold                                                                                                        |
 | `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). 🚫 Blocked — warms a throwaway client, not Conduit's real upstream pool (Pingora 0.9 has no public API for it) — see note below.  |
