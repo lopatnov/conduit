@@ -376,6 +376,7 @@ mod tests {
         }
     }
 
+    /// Strategies that need no load of what they pick, and a flat route with a leftover `groupStrategy`, give no warning.
     #[test]
     fn a_group_strategy_that_needs_no_load_is_not_warned_about() {
         for strategy in [

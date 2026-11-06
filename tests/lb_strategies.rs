@@ -31,6 +31,7 @@ impl MockUpstream {
         Self::start_with(label, std::time::Duration::ZERO, body_len)
     }
 
+    /// The general constructor: answer with the label or with a body of `body_len` bytes, after holding for `hold`.
     fn start_with(label: &'static str, hold: std::time::Duration, body_len: usize) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock upstream");
         let port = listener.local_addr().unwrap().port();
@@ -131,6 +132,7 @@ fn wrr_distributes_by_weight() {
 
 // ── Weighted least-conn (#506) ────────────────────────────────────────────────
 
+/// Sixteen requests held open for 2 s are all in flight when routed: weights 3:1 give the heavy upstream about 12.
 #[test]
 #[serial]
 fn least_conn_shares_concurrent_requests_by_weight() {
@@ -172,6 +174,7 @@ fn least_conn_shares_concurrent_requests_by_weight() {
 
 // ── Least-bandwidth (#627) ────────────────────────────────────────────────────
 
+/// One upstream answers 256 KiB, the other a few bytes: after the first windows nearly every request goes to the small one.
 #[test]
 #[serial]
 fn least_bandwidth_steers_requests_away_from_the_upstream_moving_more_bytes() {
@@ -235,6 +238,7 @@ fn least_bandwidth_holds_a_slot_while_a_request_is_in_flight_and_releases_it_aft
     slot_is_held_while_in_flight_and_released_after("least-bandwidth");
 }
 
+/// Warm up, hold eight requests and read `active_connections` from the admin API (8 while held), then wait for it to return to 0.
 fn slot_is_held_while_in_flight_and_released_after(strategy: &str) {
     let a = MockUpstream::start("a");
     let b = MockUpstream::start("b");

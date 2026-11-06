@@ -2287,6 +2287,7 @@ fn weighted_round_robin_with_weighted_target_passes() {
     );
 }
 
+/// `least-conn` and `p2c` read `weight` but do not require it: weighted, plain and mixed targets all validate.
 #[test]
 fn least_conn_and_p2c_accept_weighted_and_plain_targets() {
     // Issue #506: both strategies read the weights, and unlike weighted-round-robin they do not

@@ -273,6 +273,8 @@ impl LoadBalancingStrategy for P2cChoice {
 pub struct LeastBandwidth;
 
 impl LoadBalancingStrategy for LeastBandwidth {
+    /// Compare two sampled upstreams (all of them for two or fewer) and send the request to the cheaper one,
+    /// taking an in-flight slot on it that the caller releases.
     fn pick(
         &self,
         urls: &[String],
@@ -564,6 +566,7 @@ mod tests {
 
     // ── p2c counts requests in flight (#628) ──────────────────────────────────
 
+    /// Idle, the faster peer wins every comparison; with three requests in flight on it, the slower idle peer wins.
     #[test]
     fn p2c_moves_to_the_slower_peer_when_the_faster_one_is_busy() {
         let (u, w) = two(1, 1);
@@ -629,6 +632,7 @@ mod tests {
         assert_eq!((first, picks.len() - first), (30, 10));
     }
 
+    /// Held open with random ties: each round of three picks hits three different peers.
     #[test]
     fn least_conn_without_weights_spreads_idle_peers_evenly() {
         let u = urls(3);
@@ -765,6 +769,7 @@ mod tests {
         assert_eq!(bandwidth_picks(&u, &w, &reg, 50), vec![0, 50]);
     }
 
+    /// At equal rates the peer with requests in flight is dearer, and a quiet peer with eight in flight loses to one with none.
     #[test]
     fn least_bandwidth_counts_requests_in_flight() {
         let (u, w) = two(1, 1);
@@ -799,6 +804,7 @@ mod tests {
         assert_eq!(reg.conn_load(&url), 1);
     }
 
+    /// Nothing recorded and nothing in flight: every cost is 1, a tie, spread at random (about 200 each of 600).
     #[test]
     fn least_bandwidth_spreads_an_idle_pool_of_equal_weights_at_random() {
         let u = urls(3);
@@ -812,6 +818,7 @@ mod tests {
         }
     }
 
+    /// The cost is divided by the weight, so the weight-3 peer is the cheaper one every time until traffic flows.
     #[test]
     fn least_bandwidth_prefers_the_heavier_peer_while_nothing_is_in_flight() {
         // The cost is divided by the weight, so with no traffic and no request in flight the weight-3
@@ -821,6 +828,7 @@ mod tests {
         assert_eq!(bandwidth_picks(&u, &w, &registry(), 100), vec![100, 0]);
     }
 
+    /// Requests that never finish: the weight-3 peer takes more than three times the weight-1 peer's share.
     #[test]
     fn least_bandwidth_gives_the_heavier_peer_more_in_flight_requests() {
         // Requests that never finish: the weight-3 peer takes more of them, up to the point where

@@ -76,6 +76,8 @@ impl TrafficMeter {
         f64::from_bits(self.rate_bits.load(Ordering::Relaxed))
     }
 
+    /// Recompute the smoothed rate if a window has elapsed. Nothing due costs one atomic load; otherwise one refresh
+    /// runs at a time under a try-lock, and a reader that does not get it keeps the rate that is there.
     fn refresh(&self, now_ms: u64) {
         // Nothing due: no lock, one atomic load. This is the path nearly every pick takes.
         let last = self.last_ms.load(Ordering::Relaxed);
@@ -187,6 +189,7 @@ mod tests {
         );
     }
 
+    /// 1000 times the bytes give 1000 times the rate, and the average climbs towards the real rate with the 10 s constant.
     #[test]
     fn the_rate_follows_the_bytes_and_is_the_same_for_the_same_traffic() {
         let (a, b) = (TrafficMeter::default(), TrafficMeter::default());
@@ -209,6 +212,7 @@ mod tests {
         assert!((1_400_000.0..1_700_000.0).contains(&ra), "rate {ra}");
     }
 
+    /// A minute of silence is folded into one window of zero traffic: the rate falls below 1% of the busy value.
     #[test]
     fn an_idle_meter_forgets() {
         let m = TrafficMeter::default();
@@ -277,6 +281,7 @@ mod tests {
         assert_eq!(meter.total(), 4 * 20_000 * 10);
     }
 
+    /// Four threads adding at once lose no byte.
     #[test]
     fn totals_add_up_from_many_threads() {
         let m = std::sync::Arc::new(TrafficMeter::default());
@@ -290,6 +295,7 @@ mod tests {
         assert_eq!(m.total(), 4 * 10_000 * 3);
     }
 
+    /// The clock never returns 0 and does not go back.
     #[test]
     fn monotonic_ms_never_returns_zero_and_does_not_go_back() {
         let a = monotonic_ms();

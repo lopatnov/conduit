@@ -540,6 +540,8 @@ mod tests {
         );
     }
 
+    /// The cheapest wins, a NaN cost is the worst wherever it sits, only the given indices are looked at,
+    /// and nothing is picked from nothing.
     #[test]
     fn pick_lowest_cost_takes_the_cheapest_and_survives_a_nan_cost() {
         let urls: Vec<String> = ["http://a:1", "http://b:1", "http://c:1"]
@@ -584,6 +586,7 @@ mod tests {
         );
     }
 
+    /// Successive values differ, threads have their own streams, and the top bit is used.
     #[test]
     fn fast_random_never_repeats_back_to_back_and_differs_between_threads() {
         // The old clock-seeded generator returned the same value for every call inside one clock

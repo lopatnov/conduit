@@ -60,6 +60,7 @@ fn build_engine(config: &wasmtime::Config) -> Result<Engine, String> {
     engine_from(Engine::new(config))
 }
 
+/// The process-wide engine, or the reason there is none, built on first use.
 fn shared_engine() -> &'static Result<Engine, String> {
     WASM_ENGINE.get_or_init(|| build_engine(&engine_config()))
 }

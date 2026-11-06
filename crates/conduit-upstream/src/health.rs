@@ -1316,6 +1316,7 @@ mod tests {
         assert_eq!(spread(&reg, &urls, &weighted, 40), vec![30, 10]);
     }
 
+    /// Ties are random, so compare what is guaranteed: weights absent, 1 or all 7 split 41 held-open requests 21/20.
     #[test]
     fn weighted_least_conn_with_equal_weights_matches_the_unweighted_pick() {
         // Ties are broken at random, so compare what is guaranteed: 41 held-open requests over two
@@ -1332,6 +1333,7 @@ mod tests {
         }
     }
 
+    /// With the weight-1 peer already carrying one request, the weight-3 peer takes the next two.
     #[test]
     fn weighted_least_conn_prefers_the_heavy_peer_when_loads_are_equal() {
         let (urls, weighted) = pair(1, 3);
@@ -1384,6 +1386,7 @@ mod tests {
         counts
     }
 
+    /// Sequential requests tie every time: 600 picks over three peers land about 200 each (standard deviation 11.5).
     #[test]
     fn least_conn_spreads_ties_when_nothing_stays_in_flight() {
         let urls: Vec<String> = (0..3).map(|i| format!("http://b{i}:4000")).collect();
