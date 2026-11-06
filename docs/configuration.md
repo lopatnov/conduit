@@ -1076,7 +1076,12 @@ fast settles at about twice the in-flight requests of the slower one, and a busy
 upstream hands requests back to its sibling.
 
 **Weights.** The cost is divided by `weight`, so at equal latency a weight-3
-upstream carries about three times the in-flight requests of a weight-1 upstream.
+upstream carries about three times the in-flight requests of a weight-1 upstream
+when the pool has two upstreams. With more, only two random samples are compared
+and the in-flight counts are small whole numbers, so the split is coarser: weights
+3:1:1 with 32 concurrent clients measured 47/26/27 of the requests (60/20/20 would
+be proportional). Use `least-conn`, `least-bandwidth` or `weighted-round-robin`
+when proportional shares matter.
 Plain string targets have weight 1. An upstream with weight 0 loses every
 comparison. With nothing in flight the weight-3 upstream is simply the cheaper
 one every time, so serial requests all go to it; the in-flight shares become

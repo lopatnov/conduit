@@ -68,7 +68,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   upstreams of different speed the faster one got every request however busy it was (100 held-open
   requests, one upstream twice as slow: 100 to 0). The cost is now `latency × (in-flight + 1) ÷ weight`,
   Tower's `PeakEwma` load, as linkerd's P2C balancer uses; the same case ends at 67 to 33, and at
-  equal latency a weight-3 upstream carries about three times the in-flight requests of a weight-1 one.
+  equal latency, with two upstreams, a weight-3 upstream carries about three times the in-flight requests of
+  a weight-1 one (with three upstreams and weights 3:1:1 the harness measured 47/26/27 of the requests).
   A behaviour change for every `p2c` route. The request is now counted in flight (`active_connections`
   in `GET /upstreams`) and released when it is logged, like `least-conn`.
 

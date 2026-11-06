@@ -13,6 +13,7 @@ page, together with the hardware, the build and `global.workers` it was measured
 - [Why the CI report uses one worker thread](#why-the-ci-report-uses-one-worker-thread)
 - [Reproduce it on your machine](#reproduce-it-on-your-machine)
 - [Measuring more than passthrough](#measuring-more-than-passthrough)
+- [Comparing the load-balancing strategies](#comparing-the-load-balancing-strategies)
 - [Comparing Conduit with another proxy](#comparing-conduit-with-another-proxy)
 - [Binary size and dependencies](#binary-size-and-dependencies)
 
@@ -132,6 +133,22 @@ operating system and Pingora rather than Conduit.
 
 To find what one feature costs, run the passthrough scenario twice, once without it and once with
 it configured, on the same build and the same worker count.
+
+## Comparing the load-balancing strategies
+
+`scripts/lb_compare.py` runs every strategy through four scenarios (mixed light and heavy requests, one
+slow upstream, weights 3:1:1, an upstream that dies and comes back) and prints Markdown tables of
+throughput, latency percentiles, each upstream's share and how much that share swings from second to
+second. It starts its own mock upstreams and the Conduit binary, and needs only Python 3.11+:
+
+```bash
+python scripts/lb_compare.py --duration 10                   # all of it, about 8 minutes
+python scripts/lb_compare.py --strategies least-conn,p2c --scenarios slow-one
+```
+
+It uses a debug build when there is no release one, and each cell is a single run: throughput varies by
+by 10–20% from run to run on a desktop (round-robin on the mixed scenario gave 1504 to 1867 requests per second over five runs), so only compare differences well beyond that, and repeat a
+run before drawing a conclusion from a small one. The docstring of the script describes the scenarios.
 
 ## Comparing Conduit with another proxy
 
