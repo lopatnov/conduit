@@ -15,36 +15,104 @@ startup. This keeps secrets out of config files.
 
 ### Optional build features
 
-The binaries and Docker images published as "standard" already include the
-`standard` feature bundle (`jwt`, `consumers`, `forward-auth`, `cache`, `acme`
-— see the `standard` row below). Some config sections still require an
-additional feature flag (or `--features full`):
+Conduit is compiled from Cargo **features**: a feature that is not compiled in is not in the
+binary, so it cannot be attacked, and the binary is smaller. There are three kinds, and
+every name below is described in the tables that follow:
 
-| Feature           | Flag                               | Config section                                              |
-| ----------------- | ---------------------------------- | ----------------------------------------------------------- |
-| `jwt`             | `--features jwt`                   | [`jwtAuth`](#jwt-auth) + [`{{ jwt.* }}`](#jwt-claim-templates) templates |
-| `consumers`       | `--features consumers`             | [`consumers`](#consumers)                                   |
-| `forward-auth`    | `--features forward-auth`          | [`forwardAuth`](#forward-auth)                              |
-| `rhai`            | `--features rhai`                  | [`middleware[].type: "script"`](#rhai-script-middleware)    |
-| `wasm`            | `--features wasm`                  | [`middleware[].type: "wasm"`](#wasm-middleware)             |
-| `tcp`             | `--features tcp`                   | [`type: "tcp"` site](#tcp-proxy)                           |
-| `upload`          | `--features upload`                | [`upload`](#upload)                                         |
-| `redis`           | `--features redis`                 | `rateLimit.store: "redis://..."`, `cache.store: "redis://..."` |
-| `cache`           | `--features cache`                 | [`proxy.*.cache`](#proxy-cache) (implies `proxy`)           |
-| `disk-cache`      | `--features disk-cache`            | `cache.store: "disk:/path"`                                 |
-| `acme`            | `--features acme`                  | [`tls.acme`](#auto-tls-via-lets-encrypt)                    |
-| `fault-injection` | `--features fault-injection`       | [`faultInjection`](#fault-injection)                        |
-| `otlp`            | `--features otlp`                  | [`global.otlp`](#opentelemetry-tracing)                     |
-| `tokio-metrics`   | `--features tokio-metrics`         | `conduit_eventloop_lag_ms` Prometheus gauge (no config key) |
-| `kubernetes`      | `--features kubernetes`            | `--kubernetes-namespace` CLI flag (not a config field)      |
-| `standard`        | `--features standard`              | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` |
-| `static-server`   | `--no-default-features --features static-server` | Bundle: `static` + `compression` + `hotreload` (the default set minus `proxy`) |
-| `gateway`         | `--no-default-features --features gateway`       | Bundle: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` |
-| `full`            | `--features full`                  | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |
+1. **Baseline features**, on by default: `proxy`, `compression`, `static`, `hotreload`.
+2. **Optional features**, off unless you ask for them: `jwt`, `consumers`, `forward-auth`,
+   `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`,
+   `otlp`, `tokio-metrics`, `kubernetes`.
+3. **Bundles**, which are only a short name for a set of the above: `standard`, `gateway`,
+   `static-server`, `full`. A bundle adds no code of its own.
+
+The published downloads and images are `standard` (or `full`, files and tags ending in
+`-full`); `npx` installs `full`; `cargo install lopatnov-conduit` is the default build. See
+[docs/cli.md: Build features](cli.md#build-features) and
+[Building](building.md) for sizes and build commands.
+
+**If your config uses something your binary lacks**, Conduit does not fail: the section is
+parsed, **ignored**, and a warning is printed at start-up and by `conduit validate`. That
+matters most for the security features, where "ignored" means the check is not applied
+(`jwtAuth` without `jwt` lets every request through unchecked). To see what a config needs, and whether the
+binary you run has it:
+
+```bash
+conduit features -c conduit.yaml   # lists the features the config needs; exit 1 if this binary lacks one
+conduit validate -c conduit.yaml   # prints a warning for every ignored section
+```
+
+#### Baseline features (on by default)
+
+| Feature | What it gives you | Config | If it is compiled out |
+| --- | --- | --- | --- |
+| `proxy` | Reverse proxying: upstream targets, [load balancing](#load-balancing), upstream groups, health checks, retry, circuit breaker, traffic mirroring. | `proxy`, `routes[].proxy`, `groups` | Those sections are ignored; a request that would have gone to an upstream gets the site's fallback response. See [Building without `proxy`](building.md#building-without-proxy). |
+| `compression` | Response compression (brotli, gzip, deflate, zstd), negotiated with `Accept-Encoding`, for proxied responses, static files and the metrics page. | [`compression`](#compression) | Responses are sent uncompressed. |
+| `static` | Static file serving and the fallback responses (404 page, single-page-app shell). | [`static`](#static-files), `fallback` | `static` and `fallback` are ignored: every unmatched request gets a plain `404 Not Found`. |
+| `hotreload` | Browser live reload: a Server-Sent Events stream and a file watcher that tells open pages to refresh when a served file changes. | `hotReload` | `hotReload` is ignored and `/__hot-reload__` is an ordinary unmatched path. |
+
+Without these four (`--no-default-features`) little is left: TLS, the always-on guards (IP
+filter, rate limits, CORS, security headers), redirects, the health endpoint, metrics and the
+Admin API.
+
+#### Optional features
+
+| Feature | What it gives you | Config | If it is compiled out |
+| --- | --- | --- | --- |
+| `jwt` | Validates JWT bearer tokens: HS256 with a shared secret, RS256/ES256 through a JWKS URL (fetched and refreshed in the background). Claims are available as `{{ jwt.<claim> }}` in header templates. | [`jwtAuth`](#jwt-auth), [claim templates](#jwt-claim-templates) | `jwtAuth` is ignored: **requests are not authenticated by JWT**. JWT credentials of `consumers` are not recognised either. |
+| `consumers` | Named API clients: each with its own API keys, Basic or JWT credentials, its own rate limit and headers added to the proxied request. | [`consumers`](#consumers) | `consumers` is ignored. |
+| `forward-auth` | Asks an external HTTP service whether each request may pass (like nginx `auth_request` or Traefik ForwardAuth) and copies chosen headers from its answer. | [`forwardAuth`](#forward-auth) | `forwardAuth` is ignored: **the external check does not run**. |
+| `rhai` | Small scripts as middleware: read or change headers, reject a request, answer it directly. | [`middleware[].type: "script"`](#rhai-script-middleware) | The entry is ignored. |
+| `wasm` | WebAssembly plugins (any language that compiles to WASM) run in a Wasmtime sandbox as middleware; a plugin that fails lets the request through (fail-open). Adds the Wasmtime runtime to the binary. | [`middleware[].type: "wasm"`](#wasm-middleware) | The entry is ignored. |
+| `tcp` | A raw TCP proxy site, for protocols that are not HTTP (databases, message brokers, anything else on a TCP port). | [`type: "tcp"` site](#tcp-proxy) | The site is ignored. |
+| `upload` | An endpoint that accepts multipart file uploads and writes them to a directory. | [`upload`](#upload) | `upload` is ignored. |
+| `redis` | Keeps rate-limit counters and cached responses in Redis, so several Conduit instances share them. | `rateLimit.store: "redis://..."`, `cache.store: "redis://..."` | Falls back to the in-memory store, **per instance**: with three instances each limit effectively triples. |
+| `cache` | HTTP response cache for proxied responses (memory store). Implies `proxy`. | [`proxy.*.cache`](#proxy-cache) | Responses are not cached. |
+| `disk-cache` | Names the on-disk cache store, `cache.store: "disk:/path"`. Implies `cache`. Today it adds no code of its own: the disk store is part of every `cache` build. | `cache.store: "disk:/path"` | Same as `cache`. |
+| `acme` | Obtains and renews certificates from Let's Encrypt on its own. | [`tls.acme`](#auto-tls-via-lets-encrypt) | `tls.acme` is ignored: no certificate is requested. |
+| `fault-injection` | Adds delays or errors to a share of the requests, to test how clients and upstreams behave under failure. | [`faultInjection`](#fault-injection) | `faultInjection` is ignored (nothing is broken on purpose). |
+| `otlp` | Exports traces to an OpenTelemetry collector over OTLP. | [`global.otlp`](#opentelemetry-tracing) | `global.otlp` is ignored: no traces are exported. |
+| `tokio-metrics` | One more Prometheus gauge: `conduit_eventloop_lag_ms`, the scheduling delay of the admin runtime. | no config key | The gauge is absent. |
+| `kubernetes` | Reads the sites from `ConduitSite` resources in a cluster instead of a file. | `--kubernetes-namespace` (a command-line flag, not a config field) | The flag does not exist. |
+
+#### Bundles
+
+A bundle is a name for several features. `✓` means the bundle includes the feature.
+
+| Feature | `standard` | `gateway` | `static-server` | `full` |
+| --- | :-: | :-: | :-: | :-: |
+| `proxy` | ✓ | ✓ | | ✓ |
+| `compression` | ✓ | ✓ | ✓ | ✓ |
+| `static` | ✓ | | ✓ | ✓ |
+| `hotreload` | ✓ | | ✓ | ✓ |
+| `jwt`, `consumers`, `forward-auth`, `cache`, `acme` | ✓ | ✓ | | ✓ |
+| `rhai`, `wasm`, `tcp`, `upload`, `redis`, `disk-cache`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` | | | | ✓ |
+
+- **`standard`**: the default set plus the authentication, cache and automatic-TLS stack most
+  self-hosted reverse proxies and API gateways need. This is what the published "standard"
+  binaries and the `:latest` image contain.
+- **`gateway`**: for `--no-default-features` builds of a pure API gateway: the proxy and the same
+  stack, compression, but no static files and no live reload
+  (`cargo build --release --no-default-features --features gateway`).
+- **`static-server`**: for `--no-default-features` builds of a file server that does not proxy:
+  static files, compression, live reload
+  (`cargo build --release --no-default-features --features static-server`).
+- **`full`**: everything above. The `-full` downloads, `:latest-full` and the npm package are
+  this build.
+
+Which one to pick:
+
+| You want | Build |
+| --- | --- |
+| A reverse proxy with auth, caching and automatic HTTPS | `standard` (the published binary) |
+| Everything, including scripting, WASM, TCP, uploads, Redis | `full` |
+| The smallest proxy | the default build, or `--no-default-features --features proxy` |
+| A static site server with no upstream at all | `--no-default-features --features static-server` |
+| A gateway without static files | `--no-default-features --features gateway` |
+| A few extra features on top of the default build | `--features "jwt,rhai"` |
 
 Download a `-full` binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases)
 or build from source: `cargo build --release --features full`.
-See [docs/cli.md — Build features](cli.md#build-features) for binary sizes and details.
 
 ---
 

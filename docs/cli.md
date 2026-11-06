@@ -636,8 +636,18 @@ cargo build --release --features "jwt,rhai,redis"
 
 ### Feature overview
 
+What each feature does, which config it unlocks and what happens when a config uses a feature
+the binary lacks is in
+[configuration.md: Optional build features](configuration.md#optional-build-features), together
+with the bundle membership table and a guide to picking a build. This table lists the main
+extra crates each feature compiles in. `conduit features -c FILE` prints what a config needs.
+
 | Feature           | What it enables                                     | Dependencies added      |
 | ----------------- | --------------------------------------------------- | ----------------------- |
+| `proxy` (default) | Reverse proxying, load balancing, health checks, mirroring, sticky sessions | `reqwest`, `url`, `hmac`, `sha2` |
+| `compression` (default) | Response compression (br, gzip, deflate, zstd) | `async-compression`     |
+| `static` (default) | Static files and fallback responses                | `mime_guess`            |
+| `hotreload` (default) | Browser live reload (SSE + file watcher)        | `notify`                |
 | `jwt`             | JWT Bearer-token auth + JWKS URL                    | `jsonwebtoken`          |
 | `consumers`       | Per-consumer credentials + rate limits              | —                       |
 | `forward-auth`    | ForwardAuth subrequest middleware                   | —                       |
