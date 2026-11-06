@@ -1834,12 +1834,21 @@ request goes:
 
 ### What the balancer does with the health state
 
-An upstream that is unhealthy (a failed probe series or an ejection) is **left out of every
-pick**: round-robin, least-conn, the hash strategies, sticky pins, the inside of an upstream
-group and the retry list all choose among the healthy ones only. When it recovers it comes
-back (with `slowStartSecs` it is brought back gradually). If *every* upstream of a route is
-unhealthy the balancer does not give up: it tries them all anyway, so a wrongly failing probe
-cannot take a route down by itself.
+An upstream that is unhealthy (a failed probe series or an ejection) is **left out of the
+candidates of every pick**: round-robin, least-conn, the hash strategies, sticky pins, the
+inside of an upstream group and the retry list all choose among the healthy ones only. When
+it recovers it is a candidate again; `slowStartSecs` brings it back gradually, except with the
+hash strategies and sticky pins, which send it its clients at once. If *every* upstream of a
+route (or of a group) is unhealthy, all of them stay candidates and the strategy picks one as
+usual: it does not try them in turn, and a route with `groups` has no `retry`. So a wrongly
+failing probe cannot take a route down by itself, but nothing protects the requests then.
+
+A passive ejection ends only through a real request: when it expires, one request is offered to
+the upstream as a probe (a success restores it, a failure ejects it again for twice as long, up
+to `maxEjectionTimeSecs`). If the strategy sends that request to another upstream, the offer
+lapses after 10 seconds and is repeated; measured with two upstreams, the upstream was back
+after about 10 seconds (before #650 it stayed out for good). Active probes do not lift a
+passive ejection.
 
 **Without active probes and without `outlierDetection` the balancer knows nothing**: a dead
 upstream keeps receiving its share of the requests until you fix it. Both are off by default.
@@ -1852,18 +1861,23 @@ right after and 20 six seconds later):
 | `healthCheck` every 1 s, `unhealthyThreshold: 2` | 10 ok, 10 `502` | 20 ok |
 | `outlierDetection`, `consecutive5xx: 2`, `maxEjectionPercent: 50` | 18 ok, 2 `502` | 20 ok |
 
-So there is always a window, up to `intervalSecs` × `unhealthyThreshold` for probes, in which
-some requests still go to the dead upstream; passive ejection closes it after
-`consecutive5xx` failed requests, but it reacts only to real requests (an upstream that
-gets none is never examined). To lose fewer requests during that window add
-[`retry`](#retry), which repeats a failed request on another upstream. A real deployment
-usually wants active probes (they find a dead upstream before a user does and also bring it
-back), plus `outlierDetection` for upstreams that answer probes but fail real requests.
+So there is always a window in which some requests still go to the dead upstream. For probes
+it is at least `intervalSecs` × `unhealthyThreshold`, plus the time the probes take (the
+measurement above used an upstream that refuses connections, which fails at once; one that
+hangs takes up to `timeoutMs`, 2000 ms by default, per probe). Passive ejection closes it after
+`consecutive5xx` failed requests, as long as the ejection cap below allows another ejection,
+and it reacts only to real requests (an upstream that gets none is never examined). To lose
+fewer requests during that window add [`retry`](#retry), which repeats a failed request on
+another upstream (on a flat route: a route with `groups` ignores it). A real deployment usually
+wants active probes (they find a dead upstream before a user does and also bring it back),
+plus `outlierDetection` for upstreams that answer probes but fail real requests.
 
 `maxEjectionPercent` limits how many upstreams passive ejection may remove at once: that
 percentage (default 10%) of all the upstreams Conduit tracks, not only this route's, rounded
 down but never below one. So one upstream can always be ejected however low the percentage
-is; with the default 10%, more than one needs at least 20 tracked upstreams.
+is; with the default 10%, more than one needs at least 20 tracked upstreams. The cap is
+checked and applied without a lock, so when several upstreams reach the threshold at the same
+moment the limit can briefly be exceeded.
 
 Also: `least-response-time` takes its latencies from the active probes, so it needs
 `healthCheck` or it behaves like `round-robin`; and a route with `groups` skips unhealthy

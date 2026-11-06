@@ -155,6 +155,11 @@ const EWMA_DECAY_SECS: f64 = 10.0;
 /// EWMA mixing factor for new samples (α = 0.1 → ~10-sample effective window).
 const EWMA_ALPHA: f64 = 0.1;
 
+/// How long a half-open promotion holds the upstream closed while it waits for the probe request's
+/// result. If no result arrives in this time (the strategy picked another upstream, or the request
+/// never completed), the upstream is offered again (issue #650).
+pub const HALF_OPEN_PROBE_TIMEOUT_SECS: u64 = 10;
+
 /// Update the Peak EWMA latency for `url` after completing a proxy request.
 ///
 /// Uses **time-based exponential decay** before mixing in the new sample:
@@ -405,7 +410,11 @@ impl UpstreamRegistry {
     /// Implements half-open circuit breaker: when an ejection period expires,
     /// the *first* call transitions the upstream to half-open and returns `true`
     /// (the "probe" request).  Subsequent calls return `false` until the probe
-    /// resolves via [`record_request_latency`].
+    /// resolves via [`record_request_latency`], or for [`HALF_OPEN_PROBE_TIMEOUT_SECS`]
+    /// at most: this call only *offers* the upstream to the strategy, which may pick
+    /// another one, and then no request is sent and nothing resolves the probe, so the
+    /// promotion expires and the next call offers the upstream again (issue #650: it
+    /// used to stay out for good).
     pub fn is_healthy(&self, url: &str) -> bool {
         // Fast path: entry not yet in registry → optimistic.
         let Some(entry) = self.statuses.get(url) else {
@@ -423,28 +432,24 @@ impl UpstreamRegistry {
             return false; // still within ejection period
         }
 
-        // Ejection period expired.
-        if entry.half_open {
-            // A probe is already in flight — block this request.
-            return false;
-        }
-
-        // First request after ejection expires: promote to half-open probe.
+        // Ejection period expired (or a half-open promotion timed out: `half_open` with `until`
+        // in the past means the probe request was never sent or never answered).
+        // Offer the upstream as the probe: promote to half-open. The promotion holds the
+        // upstream closed to everyone else until `until` is moved forward below.
         // Drop the shared ref and acquire exclusive access.
         drop(entry);
         let mut e = self.statuses.entry(url.to_owned()).or_default();
-        // Re-check after acquiring write lock (another thread may have raced us).
+        // Re-check after acquiring write lock (another thread may have raced us, and
+        // its promotion has moved `ejected_until_secs` into the future).
         let now2 = now_secs();
         if let Some(until2) = e.ejected_until_secs {
             if now2 < until2 {
-                return false; // re-ejected by racing call
+                return false; // re-ejected, or promoted, by a racing call
             }
         }
-        if e.half_open {
-            return false; // another thread beat us to the probe
-        }
-        // We are the probe request.
+        // We are the probe request: closed to others for the probe timeout.
         e.half_open = true;
+        e.ejected_until_secs = Some(now2 + HALF_OPEN_PROBE_TIMEOUT_SECS);
         tracing::info!(
             url,
             "ejection period expired — half-open probe request dispatched"
@@ -1025,6 +1030,58 @@ mod tests {
             !reg.is_healthy(url),
             "second call while half_open must be blocked"
         );
+    }
+
+    /// Issue #650: the promotion is made by a query (`filter_healthy` asks about every upstream of
+    /// the route before the strategy picks one). When the strategy picks another upstream no probe
+    /// request is sent and nothing clears `half_open`; it used to stay `true`, and the upstream out,
+    /// for good.
+    #[test]
+    fn a_half_open_promotion_without_a_probe_request_expires_and_the_upstream_is_offered_again() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        reg.statuses
+            .entry(url.to_owned())
+            .or_default()
+            .ejected_until_secs = Some(now_secs().saturating_sub(1));
+        // The query that promotes it; no request follows.
+        assert!(reg.is_healthy(url), "offered as the probe");
+        assert!(!reg.is_healthy(url), "closed while the probe is awaited");
+        let until = reg.statuses.get(url).unwrap().ejected_until_secs.unwrap();
+        assert!(
+            until >= now_secs() + HALF_OPEN_PROBE_TIMEOUT_SECS - 1
+                && until <= now_secs() + HALF_OPEN_PROBE_TIMEOUT_SECS,
+            "the promotion holds the upstream for the probe timeout"
+        );
+        // The timeout passes with no result.
+        reg.statuses.get_mut(url).unwrap().ejected_until_secs = Some(now_secs().saturating_sub(1));
+        assert!(
+            reg.is_healthy(url),
+            "after the timeout the upstream is offered again (it used to stay out for good)"
+        );
+        assert!(
+            !reg.is_healthy(url),
+            "and is closed to others again while that probe is awaited"
+        );
+    }
+
+    /// The probe that is answered still resolves the state as before (the timeout is only the fallback).
+    #[test]
+    fn an_answered_probe_after_a_re_offer_recovers_the_upstream() {
+        let reg = UpstreamRegistry::new();
+        let url = "http://u:4000";
+        reg.statuses
+            .entry(url.to_owned())
+            .or_default()
+            .ejected_until_secs = Some(now_secs().saturating_sub(1));
+        assert!(reg.is_healthy(url));
+        reg.statuses.get_mut(url).unwrap().ejected_until_secs = Some(now_secs().saturating_sub(1));
+        assert!(reg.is_healthy(url), "re-offered");
+        record_request_latency(&reg, url, 10_000, 200);
+        let e = reg.statuses.get(url).unwrap();
+        assert!(!e.half_open && e.ejected_until_secs.is_none());
+        drop(e);
+        assert!(reg.is_healthy(url), "fully recovered");
     }
 
     #[test]
