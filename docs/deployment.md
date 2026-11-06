@@ -82,6 +82,7 @@ docker run -p 443:443 -p 80:80 \
 
 ### docker-compose
 
+<!-- docs-check: skip (a Docker Compose file) -->
 ```yaml
 services:
   conduit:
@@ -298,6 +299,7 @@ Run Conduit alongside your application container. Conduit handles TLS
 termination, auth, rate limiting, and static file serving; your app handles
 business logic only.
 
+<!-- docs-check: skip (a Kubernetes manifest, not a Conduit config file) -->
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -381,6 +383,7 @@ forwarder.
 > ports < 1024 on a node without `CAP_NET_BIND_SERVICE`). Prefer a standard
 > Deployment + Service + NodePort for most use cases.
 
+<!-- docs-check: skip (a Kubernetes manifest, not a Conduit config file) -->
 ```yaml
 apiVersion: apps/v1
 kind: DaemonSet
@@ -474,6 +477,7 @@ kubectl apply -f contrib/k8s/conduitsite-crd.yaml
 
 **Step 2 — Create RBAC resources:**
 
+<!-- docs-check: skip (a Kubernetes manifest, not a Conduit config file) -->
 ```yaml
 # contrib/k8s/rbac.yaml
 apiVersion: v1
@@ -515,6 +519,7 @@ kubectl apply -f contrib/k8s/rbac.yaml
 
 **Step 3 — Deploy Conduit with the CRD flag:**
 
+<!-- docs-check: skip (a Kubernetes manifest, not a Conduit config file) -->
 ```yaml
 # conduit-deployment.yaml
 apiVersion: apps/v1
@@ -547,6 +552,7 @@ conduit --kubernetes-namespace '*'   # all namespaces (requires ClusterRole)
 
 **Step 4 — Create ConduitSite resources:**
 
+<!-- docs-check: skip (a Kubernetes manifest, not a Conduit config file) -->
 ```yaml
 # my-app-site.yaml
 apiVersion: conduit.io/v1
@@ -563,6 +569,7 @@ spec:
     limit: 500
 ```
 
+<!-- docs-check: skip (a Kubernetes manifest, not a Conduit config file) -->
 ```yaml
 # my-api-site.yaml — TLS + JWT auth
 apiVersion: conduit.io/v1

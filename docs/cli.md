@@ -332,6 +332,7 @@ conduit status --upstream
 
 **Default output (JSON):**
 
+<!-- docs-check: skip (command output (JSON), not a config) -->
 ```json
 {
   "version": "2.1.0",
@@ -387,6 +388,7 @@ conduit upstreams --admin 127.0.0.1:2019
 
 Prints all upstreams with health status, latency, and weight:
 
+<!-- docs-check: skip (command output (JSON), not a config) -->
 ```json
 [
   {
@@ -897,6 +899,9 @@ global:
     serviceName: "my-api"
     sampleRate: 0.1 # sample 10 % in production
     timeoutMs: 5000
+sites:
+  - port: 8080
+    proxy: http://127.0.0.1:4000
 ```
 
 Each span includes: `method`, `path`, `status`, `duration_ms`, `upstream_url`,

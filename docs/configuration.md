@@ -432,6 +432,7 @@ or file) — each negotiated independently against the same `minBytes`/`types`
 thresholds, so a small metrics scrape or error body may stay uncompressed
 even with compression enabled.
 
+<!-- docs-check: skip (the shorthand form and the full form of the same key, one after the other) -->
 ```yaml
 # YAML — shorthand (enable with defaults)
 compression: true
@@ -483,6 +484,7 @@ compression:
 
 Inject `X-Response-Time: <ms>` into every response.
 
+<!-- docs-check: skip (the shorthand form and the full form of the same key, one after the other) -->
 ```yaml
 # YAML
 responseTime: true
@@ -1589,6 +1591,7 @@ proxy:
 
 ### Site health endpoint (for load balancer probes)
 
+<!-- docs-check: skip (the shorthand form and the full form of the same key, one after the other) -->
 ```yaml
 # YAML
 healthCheck: true
@@ -2157,6 +2160,7 @@ Use `earlyRefreshSecs` when zero-stale is important (news feeds, pricing data,
 session-sensitive API). Use `staleWhileRevalidateSecs` when occasional stale
 is acceptable and you want a simpler setup.
 
+<!-- docs-check: skip (a route option shown on its own) -->
 ```yaml
 # Never-stale cache: refresh 10 s before the 60-second TTL expires.
 cache:
@@ -2863,6 +2867,7 @@ headers:
 
 ## Logging
 
+<!-- docs-check: skip (the shorthand form and the full form of the same key, one after the other) -->
 ```yaml
 # YAML — shorthand
 logging: dev         # colorized, short — for development
@@ -2917,6 +2922,7 @@ logging:
 
 ### JSON log fields
 
+<!-- docs-check: skip (an access-log line, not a config) -->
 ```json
 // JSON
 {
@@ -2958,6 +2964,7 @@ metrics:
 
 Prometheus scrape config:
 
+<!-- docs-check: skip (a Prometheus scrape config, not a Conduit config) -->
 ```yaml
 scrape_configs:
   - job_name: conduit
@@ -2993,6 +3000,9 @@ global:
     serviceName: "my-api"
     sampleRate: 0.1
     timeoutMs: 5000
+sites:
+  - port: 8080
+    proxy: http://127.0.0.1:4000
 ```
 
 ```json
@@ -3005,7 +3015,8 @@ global:
       "sampleRate": 0.1,
       "timeoutMs": 5000
     }
-  }
+  },
+  "sites": [ { "port": 8080, "proxy": "http://127.0.0.1:4000" } ]
 }
 ```
 
@@ -3030,6 +3041,7 @@ browsers are told to reload. `hotReload` watches the `static` directories (limit
 `extensions` if you set them); it does **not** watch the config file. To apply a config change
 without a restart, run `conduit reload` (or `POST /reload`, see [admin.md](admin.md)).
 
+<!-- docs-check: skip (the shorthand form and the full form of the same key, one after the other) -->
 ```yaml
 # YAML
 hotReload: true
@@ -3150,6 +3162,7 @@ securityHeaders:
 
 ## CORS
 
+<!-- docs-check: skip (the shorthand form and the full form of the same key, one after the other) -->
 ```yaml
 # YAML — open CORS (development only)
 cors: true
@@ -3199,6 +3212,7 @@ defeats the purpose of the credentials gate.
 Allow or deny requests by client IP or CIDR range. Evaluated **before**
 authentication — blocked IPs get `403` immediately.
 
+<!-- docs-check: skip (the shorthand form and the full form of the same key, one after the other) -->
 ```yaml
 # YAML — allowlist (deny all others)
 ipFilter:
@@ -3653,6 +3667,9 @@ global:
   admin:
     bind: "127.0.0.1:2019" # loopback only
     token: "$ADMIN_TOKEN" # optional Bearer token
+sites:
+  - port: 8080
+    proxy: http://127.0.0.1:4000
 ```
 
 The Admin API provides 12 endpoints: hot-reload, status, upstream management,

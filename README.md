@@ -364,6 +364,7 @@ sites:
 Instead of a config file, Conduit can read its sites from Kubernetes custom resources. Each
 `ConduitSite` is one virtual site, and its `spec` takes the same fields as a site in `conduit.yaml`.
 
+<!-- docs-check: skip (a Kubernetes ConduitSite resource, not a Conduit config file) -->
 ```yaml
 # site.yaml
 apiVersion: conduit.io/v1
@@ -743,6 +744,7 @@ validation in JSON and YAML configs.
 
 **VS Code — JSON: workspace-wide (all `conduit*.json` files):**
 
+<!-- docs-check: skip (an editor settings file) -->
 ```json
 // .vscode/settings.json
 {
@@ -756,6 +758,7 @@ validation in JSON and YAML configs.
 **VS Code — YAML: add to `.vscode/settings.json`** (requires the
 [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)):
 
+<!-- docs-check: skip (an editor settings file) -->
 ```json
 // .vscode/settings.json
 {

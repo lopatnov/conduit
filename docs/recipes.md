@@ -827,6 +827,7 @@ sites:
 
 **Prometheus scrape config:**
 
+<!-- docs-check: skip (a Prometheus scrape config, not a Conduit config) -->
 ```yaml
 scrape_configs:
   - job_name: conduit
