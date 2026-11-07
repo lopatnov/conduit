@@ -26,11 +26,21 @@ export const SUPPORTED = Object.keys(ASSETS);
  * run on glibc systems too, so a wrong "musl" answer is harmless and a wrong "glibc" answer is not: the loader file
  * is taken as proof of musl, and otherwise glibc must show itself in the runtime report.
  */
-export function isMusl(platform = process.platform) {
+const MUSL_MARKERS = ["/lib/ld-musl-x86_64.so.1", "/lib/ld-musl-aarch64.so.1", "/etc/alpine-release"];
+
+function runtimeReport() {
+  return process.report?.getReport?.().header;
+}
+
+/**
+ * The two probes are parameters so that a test can fake a host: `exists(path)` and `report()` (the Node runtime
+ * report, whose header names the glibc version when there is one; it may throw or return nothing).
+ */
+export function isMusl(platform = process.platform, { exists = existsSync, report = runtimeReport } = {}) {
   if (platform !== "linux") return false;
-  if (existsSync("/lib/ld-musl-x86_64.so.1") || existsSync("/lib/ld-musl-aarch64.so.1")) return true;
+  if (MUSL_MARKERS.some((path) => exists(path))) return true;
   try {
-    const header = process.report?.getReport?.().header;
+    const header = report();
     return Boolean(header) && !header.glibcVersionRuntime;
   } catch {
     return false;

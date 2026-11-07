@@ -9,6 +9,7 @@ import { cpSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync,
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assetFor, isMusl } from "../bin/platform.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ASSETS = [
@@ -132,12 +133,36 @@ for (const [key, asset] of Object.entries(PLATFORM_ASSETS)) {
 }
 
 // A musl libc gets the static musl build, a glibc one the glibc build; other systems have no musl row.
-import { assetFor } from "../bin/platform.js";
-
 test("the table picks the musl build only on Linux with musl", () => {
   assert.equal(assetFor("linux", "x64", true).name, "conduit-x86_64-unknown-linux-musl");
   assert.equal(assetFor("linux", "arm64", true).name, "conduit-aarch64-unknown-linux-musl");
   assert.equal(assetFor("linux", "x64", false).name, "conduit-x86_64-unknown-linux-gnu");
   assert.equal(assetFor("darwin", "arm64", true).name, "conduit-aarch64-apple-darwin");
   assert.equal(assetFor("linux", "riscv64", true).name, undefined);
+});
+
+// Detection: any musl signal wins; without one, glibc must show itself in the runtime report. A musl host whose
+// runtime report fails (no report, an exception) is still recognised by its loader or Alpine's release file.
+const throwing = () => { throw new Error("no report"); };
+const glibcReport = () => ({ glibcVersionRuntime: "2.36" });
+const noFiles = () => false;
+const only = (...present) => (path) => present.includes(path);
+
+test("isMusl recognises a musl host by any of its files, even when the runtime report fails", () => {
+  for (const marker of ["/lib/ld-musl-x86_64.so.1", "/lib/ld-musl-aarch64.so.1", "/etc/alpine-release"]) {
+    assert.equal(isMusl("linux", { exists: only(marker), report: throwing }), true, marker);
+    assert.equal(isMusl("linux", { exists: only(marker), report: glibcReport }), true, `${marker} beats a glibc report`);
+  }
+});
+
+test("isMusl falls back to the runtime report: no glibc version means musl, a version means glibc", () => {
+  assert.equal(isMusl("linux", { exists: noFiles, report: () => ({}) }), true);
+  assert.equal(isMusl("linux", { exists: noFiles, report: glibcReport }), false);
+});
+
+test("isMusl answers glibc when nothing can be learned, and never on another OS", () => {
+  assert.equal(isMusl("linux", { exists: noFiles, report: throwing }), false);
+  assert.equal(isMusl("linux", { exists: noFiles, report: () => undefined }), false);
+  assert.equal(isMusl("darwin", { exists: only("/etc/alpine-release"), report: () => ({}) }), false);
+  assert.equal(isMusl("win32", { exists: only("/etc/alpine-release"), report: () => ({}) }), false);
 });

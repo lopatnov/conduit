@@ -168,13 +168,20 @@ It sets up the service for you.
 
 ```bash
 # pick the file for your machine: amd64 (x86-64) or arm64 (Raspberry Pi 4/5, AWS Graviton, ...)
-curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/SHA256SUMS.txt
 curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/conduit-proxy_2.2.0_amd64.deb
-# install only if the checksum of this very file matches (the && stops at a failure)
+# install only if the file was built by this repository's workflow (the && stops at a failure);
+# needs the GitHub CLI, signed in once with `gh auth login`
+gh attestation verify conduit-proxy_2.2.0_amd64.deb --repo lopatnov/conduit \
+  && sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+```
+
+Without the GitHub CLI, compare the checksum instead. It comes from the same release as the package, so it detects a
+damaged download but not a tampered release; the attestation above is the stronger check.
+
+```bash
+curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/SHA256SUMS.txt
 grep ' conduit-proxy_2.2.0_amd64.deb$' SHA256SUMS.txt | sha256sum -c - \
   && sudo apt install ./conduit-proxy_2.2.0_amd64.deb
-# optional, with the GitHub CLI: the file was built by this repository's workflow
-gh attestation verify conduit-proxy_2.2.0_amd64.deb --repo lopatnov/conduit
 ```
 
 **The service is installed, but it is not enabled and not started**: the sample configuration forwards port 8080 to an
@@ -182,7 +189,9 @@ application on port 3000 of the same machine, which is not there yet. To start i
 
 ```bash
 sudoedit /etc/conduit/conduit.yaml                    # your sites; the file explains how to start the service
-sudo conduit validate -c /etc/conduit/conduit.yaml    # check it before starting (the file is readable by root and the service only)
+# check it before starting, with the variables the service will get from /etc/conduit/conduit.env (if you made one);
+# the files are readable by root and the service only, hence sudo
+sudo sh -c 'set -a; [ -r /etc/conduit/conduit.env ] && . /etc/conduit/conduit.env; set +a; conduit validate -c /etc/conduit/conduit.yaml'
 sudo systemctl enable --now conduit                   # start now and at every boot
 systemctl status conduit
 journalctl -u conduit -f                              # the log
