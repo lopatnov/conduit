@@ -68,7 +68,12 @@ fn guide() -> Option<String> {
         Ok(toml) if text.is_err() && toml.contains("[workspace]") => {
             panic!("docs/wasm.md cannot be read")
         }
-        _ => text.ok(),
+        _ => {
+            if text.is_err() {
+                eprintln!("docs/wasm.md is not next to this crate: nothing to check");
+            }
+            text.ok()
+        }
     }
 }
 
