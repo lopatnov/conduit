@@ -16,6 +16,21 @@ WORK=$(mktemp -d)
 PIDS=""
 trap 'kill $PIDS 2>/dev/null; rm -rf "$WORK"' EXIT
 
+# Every port the script uses must be free: otherwise a health wait could succeed against someone else's server and a
+# reload would be sent to it.
+for port in 4711 4712 4713 8716 8717 8718 2019; do
+  python3 -c 'import socket, sys
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))' "$port" 2>/dev/null || { echo "port $port is in use: stop what holds it and run again" >&2; exit 2; }
+done
+
+# The processes this script started, so that the trap stops them even on Ctrl-C.
+track() { PIDS="$PIDS $1"; }
+untrack() { PIDS=$(printf '%s
+' $PIDS | grep -vx "$1" | tr '
+' ' '); }
+
 # A backend that answers after DELAY seconds: python3 slow.py NAME PORT DELAY
 cat > "$WORK/slow.py" <<'PY'
 import http.server, sys, time
@@ -49,6 +64,7 @@ $extra
 EOF
   "$CONDUIT" -c "$WORK/sigterm.yaml" > "$WORK/sigterm.log" 2>&1 &
   conduit_pid=$!
+  track "$conduit_pid"
   for _ in $(seq 1 40); do curl -sk $flags -o /dev/null -m 1 "$scheme://127.0.0.1:$port/__health__" && break; sleep 0.25; done
   ( curl -sk $flags -m 30 -w "client: status %{http_code} after %{time_total}s" -o /dev/null "$scheme://127.0.0.1:$port/" > "$WORK/client.out" 2>&1 ) &
   client_pid=$!
@@ -56,6 +72,7 @@ EOF
   start=$(now)
   kill -TERM "$conduit_pid"
   wait "$conduit_pid" 2>/dev/null
+  untrack "$conduit_pid"
   end=$(now)
   wait "$client_pid" 2>/dev/null
   awk -v a="$start" -v b="$end" -v l="$label" -v c="$(cat "$WORK/client.out")" \
@@ -86,6 +103,7 @@ sites:
 EOF
 "$CONDUIT" -c "$WORK/reload.yaml" > "$WORK/reload.log" 2>&1 &
 conduit_pid=$!
+track "$conduit_pid"
 for _ in $(seq 1 40); do curl -s -o /dev/null -m 1 http://127.0.0.1:2019/health && break; sleep 0.25; done
 ( curl -s -m 30 -w ' [client: status %{http_code} after %{time_total}s]' http://127.0.0.1:8716/ > "$WORK/open.out" 2>&1 ) &
 open_pid=$!
