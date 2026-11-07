@@ -9,6 +9,8 @@ Env:   HEAD_RPS HEAD_P50 HEAD_P99 HEAD_OK  BASE_RPS BASE_P50 BASE_P99 BASE_OK  (
        HEAD_RPS_SEM HEAD_P50_SEM HEAD_P99_SEM  BASE_RPS_SEM BASE_P50_SEM BASE_P99_SEM  (standard error of those
        means, in percent of the mean; without them a difference is judged by its size alone)
        HEAD_W4_* and BASE_W4_* with the same suffixes  (four worker threads; the section is left out without them)
+       HEAD_LB_* and BASE_LB_* with the same suffixes  (round-robin over four upstreams, four worker threads; the
+       section is left out without them)
        HW
 """
 import math
@@ -28,6 +30,11 @@ INTRO = (
 ONE_WORKER_TITLE = "### One worker thread (the default: `global.workers` unset)"
 FOUR_WORKERS_TITLE = "### Four worker threads (`global.workers: 4`)"
 FOUR_WORKERS_NOTE = "_The load generator and the upstream share the runner's four vCPUs with the workers._"
+LB_TITLE = "### Load balancing: `round-robin` over four upstreams, four worker threads"
+LB_NOTE = (
+    "_The same load through four upstreams instead of one, so the choice among them is on the path. Everything shares "
+    "the runner's four vCPUs: read base against head, not these numbers against the tables above._"
+)
 
 
 # The passthrough tables repeat each measurement, so they can tell noise from a change: an adverse difference
@@ -103,6 +110,7 @@ def passthrough_lines(head, base, note_if_no_base):
             "Metric | PR head",
             "---|---",
             f"Requests/sec | {fmt(head, 'rps', '.0f')}",
+            f"p50 latency | {fmt(head, 'p50', '.2f', ' ms')}",
             f"p99 latency | {fmt(head, 'p99', '.2f', ' ms')}",
         ]
         if head["ok"] is not None and head["ok"] < 100:
@@ -114,6 +122,7 @@ def passthrough_lines(head, base, note_if_no_base):
         "Metric | Base | PR head | Δ",
         "---|---|---|---",
         f"Requests/sec | {fmt(base, 'rps', '.0f')} | {fmt(head, 'rps', '.0f')} | {delta(head, base, 'rps', True)}",
+        f"p50 latency | {fmt(base, 'p50', '.2f', ' ms')} | {fmt(head, 'p50', '.2f', ' ms')} | {delta(head, base, 'p50', False)}",
         f"p99 latency | {fmt(base, 'p99', '.2f', ' ms')} | {fmt(head, 'p99', '.2f', ' ms')} | {delta(head, base, 'p99', False)}",
     ]
     # Every request succeeds in a healthy run; a row for it is shown only when one side did not.
@@ -135,6 +144,9 @@ def render(env):
     head4, base4 = metrics(env, "HEAD_W4"), metrics(env, "BASE_W4")
     if head4["rps"] is not None:  # absent when the four-worker run failed or the job is older than this section
         lines += ["", FOUR_WORKERS_TITLE, "", FOUR_WORKERS_NOTE, ""] + passthrough_lines(head4, base4, False)
+    head_lb, base_lb = metrics(env, "HEAD_LB"), metrics(env, "BASE_LB")
+    if head_lb["rps"] is not None:  # absent when the balancer run failed or the job is older than this section
+        lines += ["", LB_TITLE, "", LB_NOTE, ""] + passthrough_lines(head_lb, base_lb, False)
 
     if hw:
         if base["rps"] is not None:
