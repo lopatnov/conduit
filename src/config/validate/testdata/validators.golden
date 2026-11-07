@@ -55,7 +55,11 @@
 [] error|sites[81].ipFilter.deny[0]|Invalid IP address or CIDR block: '10.0.0.0/abc'
 [] error|sites[82].proxy["/api"]|Invalid upstream URL 'ftp://bad' — must start with http:// or https://
 [] error|sites[83].proxy["/api"].targets[0]|Invalid upstream URL 'ftp://bad:4000' — must start with http:// or https://
+[wasm] warning|sites[85].middleware[0].path|plugin "p.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[wasm] warning|sites[86].middleware[0].path|plugin "plugin.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[wasm] warning|sites[90].middleware[0].path|plugin "a.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
 [rhai] warning|sites[90].middleware[1].path|script "b.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[wasm] warning|sites[90].middleware[2].path|plugin "c.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
 [] error|sites[97].metrics.token|metrics.token must not be an empty string — an empty token matches a request with no Authorization header at all, authenticating every request. Omit the field entirely to leave the endpoint unauthenticated, or set a real token.
 [forward-auth] error|sites[98].forwardAuth.url|forwardAuth.url points to 127.0.0.1:2019 — this is the Conduit Admin API. Routing external auth requests through the admin API is a security risk. Use a dedicated auth service instead.
 [] error|sites[100].apiKey.keys[0]|API key must not be empty — an empty key allows unauthenticated access

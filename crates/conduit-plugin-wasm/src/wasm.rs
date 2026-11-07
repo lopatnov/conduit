@@ -10,6 +10,8 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use wasmtime::{Caller, Engine, Linker, Module, Store};
 
+use crate::phases::{define_unavailable, REQUEST_ONLY, RESPONSE_ONLY};
+
 // ── Singletons ────────────────────────────────────────────────────────────────
 
 /// The engine every plugin runs on, or why it could not be built (issue #626).
@@ -67,7 +69,7 @@ fn shared_engine() -> &'static Result<Engine, String> {
 
 /// The shared engine. An error here is never papered over with a default engine: a default engine has
 /// no fuel, so `set_fuel` would fail on every call and every plugin would silently fail open (issue #626).
-fn engine() -> anyhow::Result<&'static Engine> {
+pub(crate) fn engine() -> anyhow::Result<&'static Engine> {
     shared_engine().as_ref().map_err(|e| anyhow::anyhow!("{e}"))
 }
 
@@ -156,7 +158,7 @@ pub struct WasmRequest {
 }
 
 /// Mutable state threaded through the Wasmtime `Store`.
-struct WasmState {
+pub(crate) struct WasmState {
     request: WasmRequest,
     response_status: u32,
     response_headers: Vec<(String, String)>,
@@ -173,7 +175,7 @@ struct WasmState {
 }
 
 impl WasmState {
-    fn new(request: WasmRequest) -> Self {
+    pub(crate) fn new(request: WasmRequest) -> Self {
         Self {
             request,
             response_status: 500,
@@ -282,7 +284,7 @@ pub enum WasmOutcome {
 
 // ── Host function registration ────────────────────────────────────────────────
 
-fn register_host_functions(linker: &mut Linker<WasmState>) -> anyhow::Result<()> {
+pub(crate) fn register_host_functions(linker: &mut Linker<WasmState>) -> anyhow::Result<()> {
     // conduit_get_method
     linker.func_wrap(
         "conduit",
@@ -524,6 +526,8 @@ fn run_inner(request: WasmRequest, path: &str) -> anyhow::Result<WasmOutcome> {
     store.set_fuel(WASM_MAX_FUEL)?;
     let mut linker = Linker::new(engine()?);
     register_host_functions(&mut linker)?;
+    // A module that also uses `on_response` may import that phase's functions: they trap if called here.
+    define_unavailable(&mut linker, &module, RESPONSE_ONLY)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
     let on_request = instance
@@ -561,7 +565,7 @@ pub struct WasmResponseContext {
 }
 
 /// State threaded through the Wasmtime Store for the response phase.
-struct WasmResponseState {
+pub(crate) struct WasmResponseState {
     ctx: WasmResponseContext,
     added_headers: Vec<(String, String)>,
     removed_headers: Vec<String>,
@@ -572,7 +576,7 @@ struct WasmResponseState {
 }
 
 impl WasmResponseState {
-    fn new(ctx: WasmResponseContext) -> Self {
+    pub(crate) fn new(ctx: WasmResponseContext) -> Self {
         Self {
             ctx,
             added_headers: Vec::new(),
@@ -596,7 +600,9 @@ pub struct WasmResponseOutcome {
     pub body: Option<bytes::Bytes>,
 }
 
-fn register_response_host_functions(linker: &mut Linker<WasmResponseState>) -> anyhow::Result<()> {
+pub(crate) fn register_response_host_functions(
+    linker: &mut Linker<WasmResponseState>,
+) -> anyhow::Result<()> {
     // conduit_get_response_status — read upstream status code
     linker.func_wrap(
         "conduit",
@@ -746,11 +752,21 @@ pub fn run_wasm_response(ctx: WasmResponseContext, path: &str) -> WasmResponseOu
 
 fn run_response_inner(ctx: WasmResponseContext, path: &str) -> anyhow::Result<WasmResponseOutcome> {
     let module = get_or_compile(path)?;
+    // Most plugins have no `on_response`: say so before a Store and an instance are built for every response.
+    if module.get_export("on_response").is_none() {
+        return Ok(WasmResponseOutcome {
+            added_headers: Vec::new(),
+            removed_headers: Vec::new(),
+            body: None,
+        });
+    }
     let mut store = Store::new(engine()?, WasmResponseState::new(ctx));
     store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
     store.set_fuel(WASM_MAX_FUEL)?;
     let mut linker = Linker::new(engine()?);
     register_response_host_functions(&mut linker)?;
+    // The request phase's functions trap if `on_response` calls them; importing them is not an error.
+    define_unavailable(&mut linker, &module, REQUEST_ONLY)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
 
@@ -1993,5 +2009,86 @@ mod tests {
         }
         // And the fail-open contract still holds at the run_wasm level.
         assert!(matches!(run_wasm(req(), &p), WasmOutcome::Continue { .. }));
+    }
+
+    // ── A plugin that uses both phases (issue #565) ───────────────────────────
+
+    /// Imports one function of each phase, aborts in `on_request` and tags the response in `on_response`.
+    const BOTH_PHASES: &str = r#"(module
+        (import "conduit" "conduit_get_header_count" (func $count (result i32)))
+        (import "conduit" "conduit_get_response_status" (func $upstream (result i32)))
+        (import "conduit" "conduit_set_response_status" (func $set_status (param i32)))
+        (import "conduit" "conduit_set_response_header" (func $set_header (param i32 i32 i32 i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 0) "x-seen")
+        (data (i32.const 8) "yes")
+        (func (export "on_request") (result i32)
+          i32.const 418 call $set_status
+          i32.const 1)
+        (func (export "on_response") (param i32) (result i32)
+          i32.const 0 i32.const 6 i32.const 8 i32.const 3 call $set_header
+          i32.const 0))"#;
+
+    fn response_ctx() -> WasmResponseContext {
+        WasmResponseContext {
+            status: 200,
+            headers: HashMap::new(),
+            plugin_config: Vec::new(),
+        }
+    }
+
+    /// Before #565 both calls failed to instantiate ("unknown import") and failed open, so the plugin
+    /// neither rejected a request nor tagged a response.
+    #[test]
+    fn a_plugin_that_imports_functions_of_both_phases_works_in_both() {
+        let (_f, p) = compile_wat(BOTH_PHASES);
+        match run_inner(req(), &p).expect("the request phase links the module") {
+            WasmOutcome::Abort { status, .. } => assert_eq!(status, 418),
+            other => panic!("expected an abort, got {other:?}"),
+        }
+        let out =
+            run_response_inner(response_ctx(), &p).expect("the response phase links the module");
+        assert_eq!(
+            out.added_headers,
+            vec![("x-seen".to_owned(), "yes".to_owned())]
+        );
+    }
+
+    /// A function of the other phase is defined, not available: calling it traps, and the trap fails open.
+    #[test]
+    fn calling_a_function_of_the_other_phase_traps() {
+        let (_f, p) = compile_wat(
+            r#"(module
+                (import "conduit" "conduit_get_response_status" (func $upstream (result i32)))
+                (func (export "on_request") (result i32) call $upstream drop i32.const 1))"#,
+        );
+        let err = match run_inner(req(), &p) {
+            Ok(_) => panic!("the call must trap"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            err.contains("conduit_get_response_status is not available in this phase"),
+            "{err}"
+        );
+        assert!(
+            matches!(run_wasm(req(), &p), WasmOutcome::Continue { .. }),
+            "a trap fails open"
+        );
+    }
+
+    /// A plugin with only `on_request` that reads headers used to fail to link in the response phase on
+    /// every response and log a warning each time.
+    #[test]
+    fn a_request_only_plugin_is_skipped_quietly_in_the_response_phase() {
+        let (_f, p) = compile_wat(
+            r#"(module
+                (import "conduit" "conduit_get_header_count" (func (result i32)))
+                (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        let out =
+            run_response_inner(response_ctx(), &p).expect("no link error without an on_response");
+        assert!(
+            out.added_headers.is_empty() && out.removed_headers.is_empty() && out.body.is_none()
+        );
     }
 }
