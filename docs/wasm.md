@@ -186,9 +186,11 @@ and the rest do not run for that request. In the response phase every `wasm` ent
 
 > **Changing a plugin.** `conduit reload`, `POST /reload` and a live update from the Kubernetes provider empty the
 > compiled-module cache, so the next request reads the `.wasm` file again. If the new file cannot be read, compiled or run
-> (a build that stopped half-way, a bad copy, a module without `on_request`, an import that does not exist), the
-> **last module that worked stays in use** and a warning is logged
-> once per reload, so a bad file does not switch the plugin off. Copy the new file into place atomically (write a
+> (a build that stopped half-way, a bad copy, a module that exports neither `on_request` nor `on_response`, an import
+> that does not exist), the **last module that worked stays in use** and a warning is logged once per reload, so a bad
+> file does not switch the plugin off. That is a check made when the file is loaded: a module that loads but then traps
+> or runs out of fuel replaces the old one, and so does a module that has an `on_response` but no `on_request` (its
+> request phase logs a warning on every request). Copy the new file into place atomically (write a
 > temporary file, then rename it). **To turn a plugin off, remove its `middleware` entry**: deleting the file keeps the
 > last good module running until a restart. A request that is running during the reload finishes with the module it
 > holds.

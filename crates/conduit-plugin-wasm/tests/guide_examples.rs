@@ -17,28 +17,45 @@ struct Block {
     skipped: bool,
 }
 
-/// The ```wat blocks of `markdown`, one pass: `open` holds the block being read.
+/// A fence line: its character, its length and what follows it (CommonMark: three or more backticks or tildes).
+fn fence(line: &str) -> Option<(char, usize, &str)> {
+    let line = line.trim_start();
+    let ch = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let run = line.chars().take_while(|c| *c == ch).count();
+    (run >= 3).then(|| (ch, run, &line[run..]))
+}
+
+/// The ```wat blocks of `markdown`. `open` is the fence being read (character, length) and, when it is a `wat`
+/// block, the block; a fence of another language is tracked too, so that a line inside it is never taken for a
+/// fence, and a fence closes only on the same character, at least as long, with nothing after it.
 fn blocks(markdown: &str) -> Vec<Block> {
-    let (mut found, mut open, mut skip_next) = (Vec::new(), None::<Block>, false);
+    let (mut found, mut skip_next) = (Vec::new(), false);
+    let mut open: Option<(char, usize, Option<Block>)> = None;
     for (index, line) in markdown.lines().enumerate() {
-        let fence = line.trim_start().starts_with("```");
-        open = match open.take() {
-            Some(block) if fence => {
-                found.push(block);
-                None
+        match (open.take(), fence(line)) {
+            (Some((ch, len, block)), Some((c, run, rest)))
+                if c == ch && run >= len && rest.trim().is_empty() =>
+            {
+                found.extend(block);
             }
-            Some(mut block) => {
-                block.text.push_str(line);
-                block.text.push('\n');
-                Some(block)
+            (Some((ch, len, mut block)), _) => {
+                if let Some(b) = block.as_mut() {
+                    b.text.push_str(line);
+                    b.text.push('\n');
+                }
+                open = Some((ch, len, block));
             }
-            None if line.trim_start().starts_with("```wat") => Some(Block {
-                text: String::new(),
-                line: index + 1,
-                skipped: skip_next,
-            }),
-            None => None,
-        };
+            (None, Some((ch, len, info))) => {
+                let is_wat = info.split_whitespace().next() == Some("wat");
+                let block = is_wat.then(|| Block {
+                    text: String::new(),
+                    line: index + 1,
+                    skipped: skip_next,
+                });
+                open = Some((ch, len, block));
+            }
+            (None, None) => {}
+        }
         skip_next = line.contains("docs-check: skip");
     }
     found
@@ -90,4 +107,34 @@ fn the_block_extractor_finds_blocks_and_honours_the_skip_marker() {
     assert_eq!((found[0].line, found[0].skipped), (2, false));
     assert_eq!(found[0].text, "(module)\n");
     assert_eq!((found[1].line, found[1].skipped), (6, true));
+}
+
+#[test]
+fn fences_follow_commonmark_rules() {
+    // A longer fence is not closed by a shorter run, a tilde fence is found, and a wat fence inside another
+    // language's block is not a block.
+    let md = [
+        "````wat",
+        "(module)",
+        "```",
+        "(still inside)",
+        "````",
+        "~~~wat",
+        "(module)",
+        "~~~",
+        "```rust",
+        "```wat",
+        "not a block",
+        "```",
+    ]
+    .join("\n");
+    let found = blocks(&md);
+    assert_eq!(
+        found.len(),
+        2,
+        "{:?}",
+        found.iter().map(|b| &b.text).collect::<Vec<_>>()
+    );
+    assert_eq!(found[0].text, "(module)\n```\n(still inside)\n");
+    assert_eq!(found[1].text, "(module)\n");
 }
