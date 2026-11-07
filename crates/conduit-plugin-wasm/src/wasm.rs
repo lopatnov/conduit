@@ -121,6 +121,8 @@ fn get_or_compile(path: &str) -> anyhow::Result<Arc<Module>> {
                     plugin = path,
                     "WASM plugin cannot be used after a reload ({e}); the last version that compiled stays in use"
                 );
+                // Cached until the next reload: one warning per reload, and no read and compile per request.
+                cache.insert(path.to_owned(), previous.clone());
                 Ok(previous.clone())
             }
             None => Err(e),
@@ -1006,6 +1008,10 @@ mod tests {
         clear_module_cache();
         let kept = get_or_compile(&p).expect("the last good module stays in use");
         assert!(Arc::ptr_eq(&good, &kept));
+        assert!(
+            module_cache().contains_key(&p),
+            "the fallback is cached until the next reload"
+        );
         std::fs::remove_file(&p).unwrap();
         clear_module_cache();
         assert!(Arc::ptr_eq(&good, &get_or_compile(&p).unwrap()));

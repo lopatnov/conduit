@@ -483,12 +483,12 @@ if upstream.header("Access-Control-Allow-Origin") == "" {
 ## Execution model
 
 - Scripts are **compiled once** (on first use) and the compiled form is cached by `path`. A configuration
-  reload (`conduit reload`, `POST /reload`, or the file watcher) empties the cache, so an edited file at an
+  reload (`conduit reload`, `POST /reload`, or a live update from the Kubernetes provider) empties the cache, so an edited file at an
   unchanged path is read again by the next request (issue #566: before that fix a reload did not
   pick up an edit, and only a restart did). Editing the file without a reload changes nothing.
   If the edited file then does not compile (a typo, or a save that stopped half-way), **the last version
-  that compiled stays in use** and each request logs `Rhai script cannot be used after a reload (...)`:
-  a bad save does not switch a guard off. Save scripts atomically (write a temporary file, then rename
+  that compiled stays in use** and a `Rhai script cannot be used after a reload (...)` warning is logged
+  once per reload: a bad save does not switch a guard off. Save scripts atomically (write a temporary file, then rename
   it) so a reload never sees a half-written one. A script that has never compiled is skipped, as above.
   **To turn a script off, remove its `middleware` entry**: deleting the file keeps the last good version
   running until a restart.
@@ -544,7 +544,7 @@ Set `RUST_LOG=conduit_script_rhai=debug` to see the full error context.
   Remove them when done: they run on every request.
 - **Errors at run time** are warnings from `conduit_script_rhai::script` with the script path
   (see the top of this page). `RUST_LOG=conduit_script_rhai=debug` adds detail.
-- **After an edit:** `conduit reload` (or wait for the file watcher) and the next request runs the new
+- **After an edit:** run `conduit reload` (Conduit does not watch the script files) and the next request runs the new
   version.
 
 ---

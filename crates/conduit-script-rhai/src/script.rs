@@ -436,6 +436,9 @@ fn get_or_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
                     script = path,
                     "Rhai script cannot be used after a reload ({e}); the last version that compiled stays in use"
                 );
+                // Cached until the next reload, which is the only thing that can make the file readable
+                // again for us: one warning per reload, and no read and compile on every request.
+                cache.insert(path.to_owned(), previous.clone());
                 Ok(previous.clone())
             }
             None => Err(e),
@@ -561,6 +564,10 @@ mod tests {
         assert!(
             matches!(call(), ScriptOutcome::Abort { status: 401, .. }),
             "the broken edit must not switch the guard off"
+        );
+        assert!(
+            ast_cache().contains_key(&path),
+            "the fallback is cached until the next reload (no read and compile, no warning, per request)"
         );
         std::fs::write(&p, "response.status = 403; false").unwrap();
         clear_cache();

@@ -1012,13 +1012,13 @@ wasm-opt -Os -o plugin-opt.wasm plugin.wasm
 
 - Modules are **compiled once** (on first request) by Wasmtime's Cranelift JIT
   and cached, keyed by the configured `path`. A configuration reload
-  (`conduit reload`, `POST /reload`, or the file watcher) empties the cache, so
+  (`conduit reload`, `POST /reload`, or a live update from the Kubernetes provider) empties the cache, so
   a `.wasm` file overwritten at the same path is read again by the next request
   (issue #566; before that fix the process kept serving the already-compiled
   module until it was restarted, and the same was true of Rhai scripts). A request
   that is running while the cache is emptied finishes with the module it holds. If the file then cannot
   be read or compiled (a build that stopped half-way, a bad copy), **the last module that compiled stays
-  in use** and a warning is logged on each request, so a bad file does not switch the plugin off; copy
+  in use** and a warning is logged once per reload, so a bad file does not switch the plugin off; copy
   the new `.wasm` into place atomically (write a temporary file, then rename it). **To turn a plugin off,
   remove its `middleware` entry**: deleting the file keeps the last good module running until a restart.
 - Each request runs in its **own Wasmtime Store** — no shared mutable state

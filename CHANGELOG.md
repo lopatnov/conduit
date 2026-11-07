@@ -88,9 +88,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A configuration reload picks up an edited Rhai script or WASM plugin** (issue #566). Compiled scripts and
   modules are cached by path, and nothing ever emptied the cache, so a file edited at an unchanged path took
   effect only after a restart, although the Rhai guide said `conduit reload` was enough (the WASM guide said it
-  was not). A reload (`conduit reload`, `POST /reload`, the file watcher) now empties both caches, and a file
+  was not). A reload (`conduit reload`, `POST /reload`, a live update from the Kubernetes provider) now empties both caches, and a file
   that then cannot be read or compiled (a typo, a save that stopped half-way) does not switch a guard off: the
-  last version that compiled stays in use and each request logs a warning. Measured with the real binary: a
+  last version that compiled stays in use and one warning is logged per reload. Measured with the real binary: a
   script edited from "block with 403" to "allow" and reloaded still answered 403 before, and answers from the
   new file now; edited into a syntax error and reloaded it keeps answering 403 from its last good version.
 - **`conduit validate` reports a Rhai script that cannot be read or compiled** (issue #566). Such an entry is
