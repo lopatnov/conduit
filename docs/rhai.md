@@ -75,7 +75,7 @@ fail-open case above. There is no file, network or system access.
 - [Execution model](#execution-model)
 - [Error handling](#error-handling)
 - [Testing and debugging](#testing-and-debugging)
-- [The Rhai language in a Conduit script](#the-rhai-language-in-a-conduit-script)
+- [Rhai language reference](#rhai-language-reference)
 
 ---
 
@@ -556,28 +556,137 @@ Set `RUST_LOG=conduit_script_rhai=debug` to see the full error context.
 
 ---
 
-## The Rhai language in a Conduit script
+## Rhai language reference
 
-Rhai is a small Rust-like scripting language; its [book](https://rhai.rs/book/) documents all of it. These are the
-points that matter for a middleware script. Everything else (loops, functions, maps, closures) works as the book says,
-within the [limits](#read-this-first-limits-and-what-happens-when-a-script-fails).
+Rhai is a simple, Rust-like scripting language. Below are the patterns most
+useful when writing request middleware.
 
-- **The value of the last expression is the result of the script**, and a bare `return;` or no value continues the
-  request. Only `false` stops it. A value that is not a boolean does not count as `false`: the request continues.
-- **Header and property reads are strings; absent means `""`**, not an error: `request.header("X-Key") == ""` tests
-  for a missing header. `config` is `()` when the entry has no `config`; test it with `config == ()` before reading a
-  field, because reading a field of `()` is an error (and an error is fail-open).
-- **Strings**: backtick strings interpolate, `` `${request.method} ${request.path}` ``; `starts_with`, `ends_with`,
-  `contains`, `len`, `to_lower`, `to_upper`, `sub_string(start)` and `sub_string(start, length)` are the ones used here.
-- **Arrays** in `config` come through as Rhai arrays: `config.blocked_paths.contains(request.path)`.
-- **`switch`** is the readable form of a chain of comparisons:
+Points that are specific to Conduit (each is checked by a test):
+
+- **Only a boolean `false` stops the request.** The value of the last expression is the result of the script; no
+  value, `true`, or any other value (a number, a string) lets the request continue.
+- **Absent values are empty strings**: `request.header("X-Key") == ""` tests for a missing header, it is not an
+  error. `config` is `()` when the entry has no `config`; test `config == ()` before reading a field, because
+  reading a field of `()` is a runtime error, and a runtime error is fail-open (the request goes on).
+
+### Variables and strings
 
 ```rhai
-let kind = switch request.method {
-    "GET" | "HEAD" => "read",
+let path   = request.path;    // "/api/users"
+let method = request.method;  // "GET"
+let query  = request.query;   // "page=1&size=10"
+let auth   = request.header("Authorization");  // "" if absent
+
+// String interpolation
+let msg = `${method} ${path} rejected`;
+
+// String tests (each is an expression; the value of the last one is the result of a script)
+path.starts_with("/api");
+path.ends_with(".json");
+path.contains("admin");
+auth.len() > 0;
+auth == "";
+
+// Case conversion
+method.to_lower() == "get";
+path.to_upper();
+
+// Extract substring — sub_string(start) or sub_string(start, length)
+let tail = path.sub_string(5);      // skip first 5 chars
+let seg  = path.sub_string(1, 3);   // chars 1..4
+```
+
+### Checks and early return
+
+```rhai
+// Allow → return true (or just fall through)
+// Deny  → set response, return false
+
+if auth == "" {
+    response.status = 401;
+    response.body   = "Unauthorized";
+    return false;
+}
+
+// One-liner guard
+if !path.starts_with("/api") { return true; }  // not our concern
+```
+
+### Arrays
+
+```rhai
+let blocked = ["/admin", "/internal", "/debug"];
+if blocked.contains(path) {
+    response.status = 403;
+    return false;
+}
+
+let methods = ["GET", "POST"];
+if !methods.contains(method) {
+    response.status = 405;
+    response.header("Allow", "GET, POST");
+    return false;
+}
+```
+
+### Accessing config
+
+```rhai
+// config is set in conduit.yaml under middleware[].config
+// Absent config → config == ()
+
+if config == () {
+    // No config provided — use fallback
+    return true;
+}
+
+if config.allowed_key != request.header("X-API-Key") {
+    response.status = 403;
+    return false;
+}
+
+// Numeric config
+if config.max_path_len < path.len() {
+    response.status = 414;
+    return false;
+}
+
+// Array config
+if config.blocked_paths.contains(path) {
+    response.status = 403;
+    return false;
+}
+```
+
+### Response headers and redirect
+
+```rhai
+// Add response header (only effective when returning false)
+response.header("X-Reason", "blocked");
+response.header("Content-Type", "application/json");
+
+// Redirect
+response.status = 302;
+response.header("Location", "/new-path");
+return false;
+```
+
+### Conditionals and loops
+
+<!-- docs-check: skip (the shape of an if/else chain: the braces hold "...") -->
+```rhai
+if x > 10 { ... } else if x > 5 { ... } else { ... }
+
+// Switch-like
+let result = switch method {
+    "GET"  => "read",
     "POST" => "write",
-    _ => "other",
+    _      => "unknown",
 };
+
+// Loops (rarely needed in middleware)
+for item in array { ... }
+while condition { ... }
 ```
 
 Full language documentation: [rhai.rs/book](https://rhai.rs/book/)
