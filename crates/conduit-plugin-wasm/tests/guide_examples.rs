@@ -61,10 +61,23 @@ fn blocks(markdown: &str) -> Vec<Block> {
     found
 }
 
+/// The guide, or `None` when this crate was unpacked on its own (no workspace above it). In the workspace checkout
+/// a guide that cannot be read fails the test: a moved file must not make the check pass by checking nothing.
+fn guide(name: &str) -> Option<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = std::fs::read_to_string(root.join("docs").join(name));
+    let in_workspace =
+        std::fs::read_to_string(root.join("Cargo.toml")).is_ok_and(|t| t.contains("[workspace]"));
+    assert!(
+        read.is_ok() || !in_workspace,
+        "docs/{name} cannot be read in the workspace checkout"
+    );
+    read.ok()
+}
+
 #[test]
 fn every_wat_block_of_the_guide_assembles_into_a_module_the_host_accepts() {
-    let guide = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/wasm.md");
-    let Ok(markdown) = std::fs::read_to_string(&guide) else {
+    let Some(markdown) = guide("wasm.md") else {
         eprintln!("docs/wasm.md is not next to this crate: nothing to check");
         return;
     };
