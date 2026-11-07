@@ -334,6 +334,8 @@ async fn reload_handler(State(state): State<Arc<AppState>>) -> AdminResult<Json<
 
     // Apply: hot-swap config, clear runtime upstream overrides, reset rate limiter.
     state.config.store(Arc::new(new_config));
+    // An edited script or plugin file at an unchanged path takes effect with this reload (issue #566).
+    conduit_middleware::clear_caches();
     state.upstream_health.clear_overrides();
     state.rate_limiter.clear();
 

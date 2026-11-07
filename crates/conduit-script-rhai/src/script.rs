@@ -425,6 +425,35 @@ fn get_or_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
     Ok(ast)
 }
 
+/// Check that the script at `path` can be read and compiled, without running it and without touching
+/// the cache. `conduit validate` calls this (issue #566): a script that cannot be read or compiled is
+/// skipped at run time (fail-open), so without this check a mistake in a guard script was visible only
+/// as a log line on the first request.
+///
+/// # Errors
+///
+/// The reason, as the text a person should read: the kind of I/O error (not the operating system's own
+/// wording, which differs between platforms and would make the messages untestable), or the compile error
+/// with its position.
+pub fn check_script(path: &str) -> Result<(), String> {
+    let source =
+        std::fs::read_to_string(path).map_err(|e| format!("cannot be read ({})", e.kind()))?;
+    engine()
+        .compile(&source)
+        .map(|_| ())
+        .map_err(|e| format!("does not compile: {e}"))
+}
+
+/// Forget every compiled script, so that the next request reads its file again.
+///
+/// A configuration reload calls this (issue #566): the guide promised that `conduit reload` picks up
+/// an edited script, but the cache is keyed by path and was never emptied, so an edit took effect
+/// only after a restart. A script that is running while the cache is emptied finishes with the AST
+/// it already holds.
+pub fn clear_cache() {
+    ast_cache().clear();
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -460,6 +489,29 @@ mod tests {
             run("false", headers(&[])),
             ScriptOutcome::Abort { .. }
         ));
+    }
+
+    /// Issue #566: the cache is keyed by path. Before `clear_cache` existed an edited file was not seen
+    /// until a restart, although the guide said a reload picks it up.
+    #[test]
+    fn clear_cache_makes_an_edited_script_take_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("edited.rhai");
+        let path = p.to_str().unwrap().to_owned();
+        let call = || run_script(&path, "/t", "GET", "", headers(&[]), None);
+        std::fs::write(&p, "false").unwrap();
+        ast_cache().remove(&path);
+        assert!(matches!(call(), ScriptOutcome::Abort { .. }));
+        std::fs::write(&p, "true").unwrap();
+        assert!(
+            matches!(call(), ScriptOutcome::Abort { .. }),
+            "the compiled script is cached by path: the edit is not seen yet"
+        );
+        clear_cache();
+        assert!(
+            matches!(call(), ScriptOutcome::Continue),
+            "after the cache is cleared the edited file is read"
+        );
     }
 
     #[test]

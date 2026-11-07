@@ -83,6 +83,9 @@ pub(super) fn spawn_config_update_watcher(
                     #[cfg(all(feature = "cache", feature = "redis"))]
                     conduit_runtime::proxy::cache_redis::connect_all(&new_cfg).await;
                     state.config.store(Arc::new(new_cfg));
+                    // An edited script or plugin file at an unchanged path takes effect with this
+                    // update (issue #566).
+                    conduit_middleware::clear_caches();
                 }
                 tracing::warn!("config update channel closed; live updates stopped");
             });

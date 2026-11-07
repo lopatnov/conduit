@@ -85,6 +85,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A configuration reload picks up an edited Rhai script or WASM plugin** (issue #566). Compiled scripts and
+  modules are cached by path, and nothing ever emptied the cache, so a file edited at an unchanged path took
+  effect only after a restart, although the Rhai guide said `conduit reload` was enough (the WASM guide said it
+  was not). A reload (`conduit reload`, `POST /reload`, the file watcher) now empties both caches. Measured with
+  the real binary: a script edited from "block with 403" to "allow" and reloaded still answered 403 before,
+  and answers from the new file now.
+- **`conduit validate` reports a Rhai script that cannot be read or compiled** (issue #566). Such an entry is
+  skipped at run time and the request passes through (fail-open), so a mistake in a guard script was visible only
+  as a log line on the first request; `validate` accepted a missing file and a syntax error alike. It now prints
+  `script "..." does not compile: ... (line N, position M)` or `... cannot be read (entity not found)` and exits
+  non-zero; the server logs it as a warning at start-up and on reload and carries on, as before. The documented
+  configurations are checked against stub script files by `scripts/check_doc_configs.py`, and every ```rhai block
+  of `docs/rhai.md` is compiled by a test.
 - **An upstream removed by `outlierDetection` comes back** (issue #650). After an ejection expired, the
   health query that builds the candidate list promoted the upstream to "half-open" and offered it as the probe;
   when the strategy picked another upstream no request was sent, nothing resolved the probe, and the upstream

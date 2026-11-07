@@ -84,6 +84,15 @@ fn module_cache() -> &'static DashMap<String, Arc<Module>> {
     WASM_MODULES.get_or_init(DashMap::new)
 }
 
+/// Forget every compiled module, so that the next request reads its file again.
+///
+/// A configuration reload calls this (issue #566): the cache is keyed by path and was never
+/// emptied, so an edited plugin took effect only after a restart. A call that is running while
+/// the cache is emptied finishes with the module it already holds.
+pub fn clear_module_cache() {
+    module_cache().clear();
+}
+
 fn get_or_compile(path: &str) -> anyhow::Result<Arc<Module>> {
     let cache = module_cache();
     if let Some(m) = cache.get(path) {
@@ -927,6 +936,27 @@ mod tests {
         let m1 = get_or_compile(&p).unwrap();
         let m2 = get_or_compile(&p).unwrap();
         assert!(Arc::ptr_eq(&m1, &m2));
+    }
+
+    /// Issue #566: after `clear_module_cache` the same path is read again (a reload picks up an
+    /// edited plugin); the call that already holds the old module keeps it.
+    #[test]
+    fn clear_module_cache_makes_the_next_call_read_the_file_again() {
+        let (_f, p) =
+            compile_wat("(module (func (export \"on_request\") (result i32) i32.const 0))");
+        module_cache().remove(&p);
+        let before = get_or_compile(&p).unwrap();
+        assert!(Arc::ptr_eq(&before, &get_or_compile(&p).unwrap()));
+        clear_module_cache();
+        let after = get_or_compile(&p).unwrap();
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "the module was compiled again from the file"
+        );
+        assert!(
+            Arc::strong_count(&before) >= 1,
+            "a holder of the old module keeps it"
+        );
     }
 
     // ── Header read ───────────────────────────────────────────────────────────

@@ -12,6 +12,15 @@ fn errs(json: &str) -> Vec<ValidationError> {
     validate(&parse(json))
 }
 
+/// Only the hard errors. A `script` entry whose file does not exist is a warning in a build with the `rhai`
+/// feature (issue #566); the tests that use a made-up script path are about the entry's shape, not its file.
+fn hard_errs(json: &str) -> Vec<ValidationError> {
+    errs(json)
+        .into_iter()
+        .filter(|e| e.severity == Severity::Error)
+        .collect()
+}
+
 #[test]
 fn valid_config_no_errors() {
     assert!(errs(r#"{ "port": 8080 }"#).is_empty());
@@ -949,7 +958,9 @@ fn middleware_script_without_path_is_invalid() {
 
 #[test]
 fn middleware_script_with_path_is_valid() {
-    assert!(errs(r#"{ "middleware": [{ "type": "script", "path": "./my.rhai" }] }"#).is_empty());
+    assert!(
+        hard_errs(r#"{ "middleware": [{ "type": "script", "path": "./my.rhai" }] }"#).is_empty()
+    );
 }
 
 #[test]
@@ -974,7 +985,7 @@ fn middleware_unknown_type_is_invalid() {
 #[test]
 fn middleware_mixed_entries_validated() {
     // Script with path + script without path: one error expected.
-    let e = errs(
+    let e = hard_errs(
         r#"{ "middleware": [
                 { "type": "script", "path": "./ok.rhai" },
                 { "type": "script" }
@@ -1000,11 +1011,11 @@ fn middleware_phase_typo_is_invalid() {
 
 #[test]
 fn middleware_phase_request_and_response_are_valid() {
-    assert!(errs(
+    assert!(hard_errs(
         r#"{ "middleware": [{ "type": "script", "path": "./ok.rhai", "phase": "request" }] }"#
     )
     .is_empty());
-    assert!(errs(
+    assert!(hard_errs(
         r#"{ "middleware": [{ "type": "script", "path": "./ok.rhai", "phase": "response" }] }"#
     )
     .is_empty());
@@ -1012,7 +1023,9 @@ fn middleware_phase_request_and_response_are_valid() {
 
 #[test]
 fn middleware_phase_absent_is_valid() {
-    assert!(errs(r#"{ "middleware": [{ "type": "script", "path": "./ok.rhai" }] }"#).is_empty());
+    assert!(
+        hard_errs(r#"{ "middleware": [{ "type": "script", "path": "./ok.rhai" }] }"#).is_empty()
+    );
 }
 
 #[test]

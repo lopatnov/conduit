@@ -140,10 +140,35 @@ def validate_file(conduit, path):
     return True, ""
 
 
+# A relative path of a Rhai script in a configuration: `./scripts/auth.rhai`, `check.rhai`.
+RHAI_PATH = re.compile(r"(?<![\w/.\\:-])((?:\./)?[A-Za-z0-9_][A-Za-z0-9_./-]*\.rhai)\b")
+
+
+def stub_scripts(text, directory):
+    """Make the scripts a block names exist, so that the check of a script entry (`conduit validate` reads and
+    compiles it) is about the entry and not about files the documentation cannot ship.
+
+    Every relative `.rhai` path in `text` gets an empty file under `directory` (an empty script compiles) and the
+    returned text names that file instead. Paths with `..` are left alone; the guide's real scripts are compiled by
+    the tests of the Rhai crate."""
+
+    def repl(match):
+        rel = match.group(1)
+        if ".." in rel.split("/"):
+            return match.group(0)
+        target = os.path.join(directory, *rel.removeprefix("./").split("/"))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        open(target, "a", encoding="utf-8").close()
+        return target.replace("\\", "/")
+
+    return RHAI_PATH.sub(repl, text)
+
+
 def check_block(conduit, block, tmp):
     """Write one block to a temporary file and validate it; return (ok, output excerpt)."""
     suffix = LANGS[block.lang]
     text = strip_json_comments(block.text) if suffix == ".json" else block.text
+    text = stub_scripts(text, os.path.join(tmp, f"scripts-{id(block)}"))
     path = os.path.join(tmp, f"block-{id(block)}{suffix}")
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
