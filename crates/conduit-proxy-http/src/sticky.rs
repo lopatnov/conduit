@@ -69,7 +69,9 @@ pub(crate) fn resolve_sticky(
     // Strict mode: if the client presented a signed cookie for a peer that
     // is now unhealthy, refuse the request rather than silently routing to
     // a different upstream (which would break session affinity).
-    if cfg.strict.unwrap_or(false) && !ctx.upstream_health.is_healthy(pinned) {
+    // `is_healthy_peek`: a question, asked before the pool is built; it must not use up the probe offer
+    // of a pinned upstream whose ejection has expired (issue #650).
+    if cfg.strict.unwrap_or(false) && !ctx.upstream_health.is_healthy_peek(pinned) {
         tracing::debug!(
             url = %pinned,
             "sticky strict mode: pinned upstream unhealthy — returning 503"

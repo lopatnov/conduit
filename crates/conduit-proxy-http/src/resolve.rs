@@ -268,8 +268,10 @@ fn resolve_backup(
     opts: &RouteOptions<'_>,
     upstream_health: &UpstreamRegistry,
 ) -> Option<ProxyResolution> {
+    // A question, asked before the pool is built: `is_healthy_peek`, so that it does not use up the
+    // probe offer of an upstream whose ejection has expired (issue #650).
     let all_unhealthy =
-        !all_urls.is_empty() && all_urls.iter().all(|u| !upstream_health.is_healthy(u));
+        !all_urls.is_empty() && all_urls.iter().all(|u| !upstream_health.is_healthy_peek(u));
     if !all_unhealthy {
         return None;
     }
@@ -500,6 +502,39 @@ mod tests {
         assert!(
             !state.upstream_conn_slot,
             "backup failover must not claim a conn_count slot"
+        );
+    }
+
+    /// Issue #650: `resolve_backup` runs before the pool is built on every flat-route request. It asks
+    /// whether every upstream is down; asking with the promoting `is_healthy` used up the one probe offer
+    /// of an upstream whose ejection had expired (the one listed first, or after only unhealthy ones), so
+    /// the pool that is built next left it out and it never received the probe request.
+    #[test]
+    fn asking_whether_all_upstreams_are_down_does_not_use_up_the_probe_offer() {
+        let expired = "http://expired:4000".to_string();
+        let healthy = "http://healthy:4000".to_string();
+        let registry = UpstreamRegistry::new();
+        let past = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+            .saturating_sub(1);
+        registry
+            .statuses
+            .entry(expired.clone())
+            .or_default()
+            .ejected_until_secs = Some(past);
+        let target = ProxyRouteTarget::Url(expired.clone());
+        let opts = RouteOptions::from_target(&target);
+        let all_urls = vec![expired.clone(), healthy.clone()];
+
+        assert!(resolve_backup(&all_urls, "/", &opts, &registry).is_none());
+
+        // What `build_pool` does next: the expired upstream must still be offered (a candidate).
+        let (candidates, fail_open) = registry.filter_healthy(&all_urls);
+        assert!(!fail_open);
+        assert!(
+            candidates.contains(&&expired),
+            "the probe offer was used up by the question"
         );
     }
 

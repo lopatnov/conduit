@@ -85,6 +85,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **An upstream removed by `outlierDetection` comes back** (issue #650). After an ejection expired, the
+  health query that builds the candidate list promoted the upstream to "half-open" and offered it as the probe;
+  when the strategy picked another upstream no request was sent, nothing resolved the probe, and the upstream
+  stayed out for as long as Conduit ran (measured: 0 of 6 trials, two upstreams, ejection 2 s, the upstream
+  healthy again for six seconds and more). A promotion that gets no answer now lapses after 10 seconds and the
+  upstream is offered again (measured: back after about 10 seconds in 4 of 4 trials).
 - **`conduit reload`, `status`, `shutdown` and `upstreams` now authenticate and now fail when the server says no** (issues
   #568, #567). The docs promised that the CLI sends `CONDUIT_ADMIN_TOKEN`, but the CLI never read it, so with
   `global.admin.token` set every admin command (including the `systemctl reload` of the shipped unit) got a `401`; and the CLI

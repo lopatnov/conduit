@@ -1823,7 +1823,88 @@ order they're defined, first match wins:
 
 ## Health Checks
 
+"Health check" means three different things in Conduit. Only the first two decide where a
+request goes:
+
+| | What it is | Configured with | Does the balancer use it? |
+| --- | --- | --- | --- |
+| **Active probes** | Conduit sends a request to every upstream of a route on a timer and marks it healthy or unhealthy | `healthCheck` on the route (below) | **Yes.** Every strategy skips an unhealthy upstream |
+| **Passive ejection** | Conduit watches the real responses and ejects an upstream that returns too many 5xx | [`outlierDetection`](#outlier-detection) | **Yes**, the same way |
+| **Site health endpoint** | A URL Conduit itself serves (`/__health__`) so that something in front of it (a cloud load balancer, Kubernetes) can ask whether Conduit is alive | `healthCheck` on the site (see [below](#site-health-endpoint-for-load-balancer-probes)) | No: it is for others to call |
+
+### What the balancer does with the health state
+
+An upstream that is unhealthy (a failed probe series or an ejection) is **left out of the
+candidates of every pick**: round-robin, least-conn, the hash strategies, sticky pins, the
+inside of an upstream group and the retry list all choose among the healthy ones only. When
+it recovers it is a candidate again; `slowStartSecs` can bring it back gradually (see
+[Slow start](#slow-start) for when it does not: the hash strategies and sticky pins send it its
+clients at once, and a route that fails open has no ramp). If *every* upstream of a
+route (or of a group) is unhealthy, all of them stay candidates and the strategy picks one as
+usual: it does not try them in turn, and a route with `groups` has no `retry`. So a wrongly
+failing probe cannot take a route down by itself, but nothing protects the requests then.
+
+A passive ejection ends only through a real request: when it expires, one request is offered to
+the upstream as a probe (a success restores it, a failure ejects it again for twice as long, up
+to `maxEjectionTimeSecs`). If the strategy sends that request to another upstream, the offer
+lapses after 10 seconds and is repeated; measured with two upstreams, the upstream was back
+after about 10 seconds (before #650 it stayed out for good). Active probes do not lift a
+passive ejection.
+
+**Without active probes and without `outlierDetection` the balancer knows nothing**: a dead
+upstream keeps receiving its share of the requests until you fix it. Both are off by default.
+Measured with the real server (two upstreams, `round-robin`, one of them stopped, 20 requests
+right after and 20 six seconds later):
+
+| Configuration | Right after the stop | Six seconds later |
+| --- | --- | --- |
+| nothing configured | 10 ok, 10 `502` | 10 ok, 10 `502`: it never stops |
+| `healthCheck` every 1 s, `unhealthyThreshold: 2` | 10 ok, 10 `502` | 20 ok |
+| `outlierDetection`, `consecutive5xx: 2`, `maxEjectionPercent: 50` | 18 ok, 2 `502` | 20 ok |
+
+So there is always a window in which some requests still go to the dead upstream. For probes
+it is about (`unhealthyThreshold` − 1) to `unhealthyThreshold` times `intervalSecs` (it depends on
+where the failure falls between two probe ticks), plus the time the probes take. The measurement
+above used an upstream that refuses connections, which fails at once; one that hangs takes up to
+5 seconds per phase (connect, write, read): the probe timeout is fixed, `healthCheck` has no
+`timeoutMs` (#652). Passive ejection closes it after
+`consecutive5xx` failed requests, as long as the ejection cap below allows another ejection,
+and it reacts only to real requests (an upstream that gets none is never examined). To lose
+fewer requests during that window add [`retry`](#retry), which repeats a failed request on
+another upstream (on a flat route: a route with `groups` ignores it). A real deployment usually
+wants active probes (they find a dead upstream before a user does and also bring it back),
+plus `outlierDetection` for upstreams that answer probes but fail real requests.
+
+`maxEjectionPercent` limits how many upstreams passive ejection may remove at once: that
+percentage (default 10%) of all the upstreams Conduit tracks, not only this route's, rounded
+down but never below one. So one upstream can always be ejected however low the percentage
+is; with the default 10%, more than one needs at least 20 tracked upstreams. The cap is
+checked and applied without a lock, so when several upstreams reach the threshold at the same
+moment the limit can briefly be exceeded.
+
+Also: `least-response-time` takes its latencies from the active probes, so it needs
+`healthCheck` or it behaves like `round-robin`; and a route with `groups` skips unhealthy
+upstreams only *inside* the chosen group, it does not move traffic to another group (see
+[Upstream groups](#upstream-groups-two-level-balancing)).
+
 ### Active upstream probes
+
+Probing is **optional and off by default**: nothing is sent to an upstream for health unless the
+route has a `healthCheck`. When it has, Conduit sends each of the route's upstreams one `HEAD`
+request (a new TCP connection, `Connection: close`) to `path` every `intervalSecs` (default 10
+seconds), one upstream after the other. A probe **passes when the upstream answers with any HTTP
+status below 500** (waiting at most 5 seconds for each step: connect, send, answer); a refused or timed-out connection, a missing answer or a
+`5xx` is a failure. So the service does not need a health endpoint: any path that answers (the
+default is `/`) is enough, a `404` counts as alive, and a service that cannot or must not be
+asked simply gets no `healthCheck` (and, if wanted, `outlierDetection` instead, which sends
+nothing and judges the real requests).
+
+What can be set today: the path, the interval, and how many failures or passes change the state.
+What cannot: the probe timeout (fixed, #652), the method, what counts as a pass (the status
+below 500 rule is fixed), probing after a number of requests instead of after a time, or
+switching probes off for one upstream of a route. Two timings of the passive side are fixed as
+well: how long a probe offer to an ejected upstream waits for its answer (10 seconds) and the
+backoff after a failed offer (30 seconds, doubling up to 300). All of this is tracked in #653.
 
 ```yaml
 # YAML
@@ -1836,8 +1917,8 @@ proxy:
       unhealthyThreshold: 3
       healthyThreshold: 1
       slowStartSecs: 30
-      unhealthyStatus: [429, 500, 502, 503, 504] # treat these status codes as failures
-      unhealthyLatencyMs: 2000 # treat responses slower than 2s as failures
+      unhealthyStatus: [429, 500, 502, 503, 504] # real responses with these status codes count as failures
+      unhealthyLatencyMs: 2000 # real responses slower than 2 s count as failures
 ```
 
 ```json
@@ -1881,13 +1962,12 @@ healthCheck:
 
 | Field                       | Type     | Default       | Description                                                                                                                                          |
 | --------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `path`                      | string   | `/__health__` | Probe URL path                                                                                                                                       |
-| `intervalSecs`              | number   | `10`          | Probe interval                                                                                                                                       |
-| `timeoutMs`                 | number   | `2000`        | Probe timeout                                                                                                                                        |
-| `unhealthyThreshold`        | number   | `3`           | Consecutive failures before removal                                                                                                                  |
-| `healthyThreshold`          | number   | `1`           | Consecutive passes before re-adding                                                                                                                  |
-| `unhealthyStatus`           | number[] | any non-2xx   | HTTP status codes from the health-check probe that count as failures. Default: any non-2xx response. Example: `[429, 500, 502, 503, 504]` |
-| `unhealthyLatencyMs`        | number   | —             | Health-check probe responses slower than this (ms) count as failures, even if the status code is 2xx                                                 |
+| `path`                      | string   | `/`           | Path of the probe's `HEAD` request (a path without a leading `/` gets one). The default is `/`, not `/__health__` (that is the path of Conduit's own site health endpoint) |
+| `intervalSecs`              | number   | `10`          | Seconds between probes of each upstream (minimum 1)                                                                                                  |
+| `unhealthyThreshold`        | number   | `3`           | Consecutive failed probes before the upstream is left out                                                                                            |
+| `healthyThreshold`          | number   | `1`           | Consecutive passed probes before it is brought back                                                                                                  |
+| `unhealthyStatus`           | number[] | none          | **Real responses, not probes** (passive): a response from the upstream with one of these status codes counts as a failure of that upstream; enough of them in a row eject it when [`outlierDetection`](#outlier-detection) is configured. Example: `[429, 500, 502, 503, 504]` |
+| `unhealthyLatencyMs`        | number   | —             | **Real responses, not probes** (passive): a response slower than this (ms) counts as a failure of that upstream, even if its status is 2xx; ejects it only with [`outlierDetection`](#outlier-detection) |
 | `slowStartSecs`             | number   | `0`           | [Traffic ramp-up period](#slow-start) after recovery. Ignored for `ipHash`/`consistentHash` and sticky routes.                     |
 | `maxConnectionsPerUpstream` | number   | —             | [Circuit breaker](#circuit-breaker) threshold                                                                                                        |
 | `prewarmConnections`        | number   | `0`           | Pre-establish N keepalive connections at startup (max 8). 🚫 Blocked — warms a throwaway client, not Conduit's real upstream pool (Pingora 0.9 has no public API for it) — see note below.  |
