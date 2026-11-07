@@ -409,6 +409,15 @@ fn engine_response() -> &'static rhai::Engine {
     })
 }
 
+/// The functions and properties the two engines register, as Rhai prints them (for the test that checks the guide).
+#[cfg(test)]
+pub(crate) fn registered_signatures() -> (Vec<String>, Vec<String>) {
+    (
+        engine().gen_fn_signatures(false),
+        engine_response().gen_fn_signatures(false),
+    )
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Return the compiled AST for `path`, compiling it on first access.
@@ -1057,5 +1066,27 @@ mod tests {
         assert_eq!(view.header("Content-Type"), "application/json");
         assert_eq!(view.header("content-type"), "application/json");
         assert_eq!(view.header("missing"), "");
+    }
+
+    /// The guide says that reading a field of `config` when the entry has none is a runtime error, and so
+    /// fail-open: the script's own `return false` after it never runs.
+    #[test]
+    fn reading_a_field_of_an_absent_config_is_an_error_that_lets_the_request_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("config-read.rhai");
+        std::fs::write(&p, "let limit = config.limit; false").unwrap();
+        let path = p.to_str().unwrap();
+        let outcome = |config: Option<&serde_json::Value>| {
+            run_script(path, "/", "GET", "", headers(&[]), config)
+        };
+        assert!(
+            matches!(outcome(None), ScriptOutcome::Continue),
+            "the read fails, the request goes on"
+        );
+        let with = serde_json::json!({ "limit": 3 });
+        assert!(
+            matches!(outcome(Some(&with)), ScriptOutcome::Abort { .. }),
+            "with a config the script reaches `false`"
+        );
     }
 }

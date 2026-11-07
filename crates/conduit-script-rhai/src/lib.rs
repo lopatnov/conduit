@@ -63,6 +63,9 @@
 
 pub mod script;
 
+#[cfg(test)]
+mod api_doc_tests;
+
 pub use script::{
     check_script, clear_cache, run_script, run_script_response, ScriptOutcome,
     ScriptResponseOutcome,
