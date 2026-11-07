@@ -31,6 +31,26 @@ Use **Rhai** when you want to inspect headers and allow/deny requests without
 a build step. Switch to [WASM](wasm.md) when you need to add or modify
 forwarded request headers, or access the client IP.
 
+### Read this first: limits and what happens when a script fails
+
+**A script that fails lets the request through (fail-open).** If the file cannot be
+read, does not compile, throws, or runs into a limit below, Conduit logs a warning and
+carries on as if the script had returned `true`:
+
+```text
+WARN conduit_script_rhai::script: Rhai compile error: Syntax error: ... (line 1, position 1) script="/etc/conduit/auth.rhai"
+WARN conduit_script_rhai::script: Rhai runtime error: Division by zero script="/etc/conduit/auth.rhai"
+```
+
+So **a script is not an access-control boundary on its own**: a typo, a missing file or a
+slow loop switches the guard off for every request until it is fixed. Put the checks that must
+hold in configuration (`ipFilter`, `jwtAuth`, `consumers`, `forwardAuth`), use a script for the rest,
+run `conduit validate` (it reports a script that cannot be read or compiled and exits non-zero) and watch the log.
+
+Hard limits per run: **500,000 operations**, strings up to **1 MiB**, arrays and maps up to
+**65,536** elements. A script that exceeds one stops with a runtime error, which is the
+fail-open case above. There is no file, network or system access.
+
 ---
 
 ## Table of Contents
@@ -52,6 +72,7 @@ forwarded request headers, or access the client IP.
 - [Response phase](#response-phase)
 - [Execution model](#execution-model)
 - [Error handling](#error-handling)
+- [Testing and debugging](#testing-and-debugging)
 - [Rhai language reference](#rhai-language-reference)
 
 ---
@@ -95,6 +116,17 @@ middleware:
 
 > Scripts are loaded from the path relative to the **working directory** where
 > `conduit` is started. Paths starting with `/` are absolute.
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | required | `script` for a Rhai file (`wasm` is the other scripting type) |
+| `path` | string | required | The `.rhai` file. Inline scripts are not supported. |
+| `phase` | `"request"` \| `"response"` | `"request"` | When it runs: before the request goes to the upstream, or after the upstream has answered ([Response phase](#response-phase)) |
+| `config` | object | none | Any JSON object; the script sees it as the variable `config` (without it, `config` is `()`) |
+
+Entries run **in the order of the `middleware` list**; in the request phase the first script that
+returns `false` ends the chain (the later ones do not run) and its `response` is sent. The ones
+before it have already run, and a response-phase script cannot stop anything.
 
 ---
 
@@ -448,9 +480,10 @@ if upstream.header("Access-Control-Allow-Origin") == "" {
 
 ## Execution model
 
-- Scripts are **compiled once** (on first use) and the AST is cached for
-  the lifetime of the process. Hot-reload (`conduit reload`) clears the cache
-  so the next request picks up the new file.
+- Scripts are **compiled once** (on first use) and the compiled form is cached by `path`. A configuration
+  reload (`conduit reload`, `POST /reload`, or the file watcher) empties the cache, so an edited file at an
+  unchanged path is read again by the next request (issue #566: before that fix a reload did not
+  pick up an edit, and only a restart did). Editing the file without a reload changes nothing.
 - Scripts execute **synchronously** in the request-handling thread.
 - Each request gets its own `request` and `response` scope — there is **no
   shared mutable state** between requests.
@@ -488,6 +521,26 @@ Set `RUST_LOG=conduit_script_rhai=debug` to see the full error context.
 
 ---
 
+## Testing and debugging
+
+- **Check a script without running the proxy:** `conduit validate -c conduit.yaml` reads and compiles
+  every `script` entry and, for one that cannot be read or does not compile, prints
+  `error at sites[0].middleware[0].path: script "..." does not compile: ... (line 3, position 5)` and exits
+  with status 1, so a pipeline stops before the deploy. (The running server treats the same finding as a
+  warning at start-up and on reload: it logs it, skips the entry and passes requests through.) It does
+  not run the script, so it cannot tell you what the script decides.
+- **Run it:** start Conduit with a copy of the config and send the requests the script is about, for
+  example `curl -i -H "X-Api-Key: wrong" http://localhost:8080/`. Run the passing and the failing case.
+- **Log from a script:** `print("text " + request.path)` writes a line to Conduit's standard output
+  (not to the structured log); `debug(value)` writes `line:position | value` to standard output too.
+  Remove them when done: they run on every request.
+- **Errors at run time** are warnings from `conduit_script_rhai::script` with the script path
+  (see the top of this page). `RUST_LOG=conduit_script_rhai=debug` adds detail.
+- **After an edit:** `conduit reload` (or wait for the file watcher) and the next request runs the new
+  version.
+
+---
+
 ## Rhai language reference
 
 Rhai is a simple, Rust-like scripting language. Below are the patterns most
@@ -504,16 +557,16 @@ let auth   = request.header("Authorization");  // "" if absent
 // String interpolation
 let msg = `${method} ${path} rejected`;
 
-// String tests
-path.starts_with("/api")
-path.ends_with(".json")
-path.contains("admin")
-auth.len() > 0
-auth == ""
+// String tests (each is an expression; the value of the last one is the result of a script)
+path.starts_with("/api");
+path.ends_with(".json");
+path.contains("admin");
+auth.len() > 0;
+auth == "";
 
 // Case conversion
-method.to_lower() == "get"
-path.to_upper()
+method.to_lower() == "get";
+path.to_upper();
 
 // Extract substring — sub_string(start) or sub_string(start, length)
 let tail = path.sub_string(5);      // skip first 5 chars
@@ -597,6 +650,7 @@ return false;
 
 ### Conditionals and loops
 
+<!-- docs-check: skip (the shape of an if/else chain: the braces hold "...") -->
 ```rhai
 if x > 10 { ... } else if x > 5 { ... } else { ... }
 
