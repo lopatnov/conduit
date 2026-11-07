@@ -5,7 +5,7 @@ write `.rhai` files — plain text files in Rhai syntax — and Conduit runs the
 for every request that passes through the middleware. No build step, no
 compiler, no toolchain required.
 
-> **Requires** `cargo build --features rhai`
+> **Requires** the `rhai` feature, part of `full`. New to middleware? See the [middleware overview](middleware.md).
 
 **When to use Rhai vs WASM:**
 

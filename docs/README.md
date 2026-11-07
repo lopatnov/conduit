@@ -7,6 +7,7 @@
 | [cli.md](cli.md)                     | All CLI commands, flags, exit codes and build features                     |
 | [admin.md](admin.md)                 | Admin API — all endpoints, request/response examples, auth, CLI shortcuts  |
 | [building.md](building.md)           | Build from source, cross-compilation, release profile, RISC-V              |
+| [middleware.md](middleware.md)       | The `middleware` list: order, fail-open, and Rhai vs WASM vs built-in       |
 | [rhai.md](rhai.md)                   | Rhai scripting middleware — API reference, examples, execution model       |
 | [wasm.md](wasm.md)                   | WASM plugin middleware — ABI, host functions, Rust/C/Go examples           |
 | [node-python-workers.md](node-python-workers.md) | Recipe — Node.js/Python worker pool behind Conduit via the dynamic-upstream Admin API |

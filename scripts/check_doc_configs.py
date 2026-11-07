@@ -141,16 +141,22 @@ def validate_file(conduit, path):
 
 
 # A relative path of a Rhai script in a configuration: `./scripts/auth.rhai`, `check.rhai`.
-RHAI_PATH = re.compile(r"(?<![\w/.\\:-])((?:\./)?[A-Za-z0-9_][A-Za-z0-9_./-]*\.rhai)\b")
+RHAI_PATH = re.compile(r"(?<![\w/.\\:-])((?:\./)?[A-Za-z0-9_][A-Za-z0-9_./-]*\.(?:rhai|wasm))\b")
+# The smallest module the host accepts: `on_request` returns 0 (`(module (func (export "on_request") (result i32)
+# i32.const 0))`, assembled by hand so that this script needs no WebAssembly tools).
+MINIMAL_WASM = bytes.fromhex(
+    "0061736d01000000" "0105016000017f" "03020100" "070e010a6f6e5f72657175657374" "0000" "0a0601040041000b"
+)
 
 
 def stub_scripts(text, directory):
     """Make the scripts a block names exist, so that the check of a script entry (`conduit validate` reads and
     compiles it) is about the entry and not about files the documentation cannot ship.
 
-    Every relative `.rhai` path in `text` gets an empty file under `directory` (an empty script compiles) and the
-    returned text names that file instead. Paths with `..` are left alone; the guide's real scripts are compiled by
-    the tests of the Rhai crate."""
+    Every relative `.rhai` path in `text` gets an empty file under `directory` (an empty script compiles), every
+    `.wasm` path a minimal plugin, and the returned text names that file instead. Paths with `..` are left alone;
+    the guide's real scripts are compiled by the tests of the Rhai crate and its real plugins by
+    scripts/check_doc_wasm.py."""
 
     def repl(match):
         rel = match.group(1)
@@ -158,7 +164,9 @@ def stub_scripts(text, directory):
             return match.group(0)
         target = os.path.join(directory, *rel.removeprefix("./").split("/"))
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        open(target, "a", encoding="utf-8").close()
+        if not os.path.exists(target):
+            with open(target, "wb") as f:
+                f.write(MINIMAL_WASM if rel.endswith(".wasm") else b"")
         return target.replace("\\", "/")
 
     return RHAI_PATH.sub(repl, text)

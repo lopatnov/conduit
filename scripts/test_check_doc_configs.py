@@ -243,10 +243,20 @@ class StubScripts(unittest.TestCase):
             self.assertNotIn("./scripts/a.rhai", out)
             self.assertTrue(os.path.isfile(os.path.join(tmp, "scripts", "a.rhai")))
 
+    def test_a_wasm_path_gets_a_module_the_host_accepts(self):
+        """A .wasm path gets the smallest valid plugin, so that validate has nothing to say about the file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = cdc.stub_scripts("path: ./plugins/auth.wasm\n", tmp)
+            target = os.path.join(tmp, "plugins", "auth.wasm").replace("\\", "/")
+            self.assertEqual(out, f"path: {target}\n")
+            with open(target, "rb") as f:
+                self.assertEqual(f.read(), cdc.MINIMAL_WASM)
+            self.assertEqual(cdc.MINIMAL_WASM[:8], bytes.fromhex("0061736d01000000"))
+
     def test_absolute_paths_parent_paths_and_other_files_are_left_alone(self):
         """Absolute paths, paths with .. and files of other kinds are left alone and nothing is created for them."""
         with tempfile.TemporaryDirectory() as tmp:
-            text = "a: /etc/conduit/x.rhai\nb: ../up/y.rhai\nc: ./plugin.wasm\nd: C:\\scripts\\z.rhai\n"
+            text = "a: /etc/conduit/x.rhai\nb: ../up/y.rhai\nc: ./notes.txt\nd: C:\\scripts\\z.rhai\n"
             self.assertEqual(cdc.stub_scripts(text, tmp), text)
             self.assertEqual(os.listdir(tmp), [])
 

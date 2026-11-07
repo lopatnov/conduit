@@ -1,38 +1,163 @@
 # WASM Middleware
 
-Conduit can load WebAssembly plugins as middleware. Plugins run for every
-request and can inspect or modify headers, short-circuit with a custom
-response, or redirect the client.
+A WebAssembly plugin is a small program, written in any language that compiles to WebAssembly, that Conduit runs for
+every request (and, optionally, every response). It can read the request, add or remove headers, answer the request
+itself, or redirect the client. It runs in a sandbox: it has no network, no files and no clock, only the
+[host functions](#host-functions) listed below.
 
-> **Requires** `cargo build --features wasm`
+New to middleware? [Middleware overview](middleware.md) says how the `middleware` list behaves and when to
+choose a built-in check, a Rhai script or a plugin.
+
+**Which installs have it.** WASM is the `wasm` Cargo feature, part of the `full` bundle: the `-full` release
+downloads, the `:latest-full` image and the npm package contain it; the `standard` binary and the default build do not
+(see [Optional build features](configuration.md#optional-build-features)). Without the feature a `wasm` entry is
+ignored with a warning, and **the check it performed no longer happens**.
+
+> **A plugin that fails lets the request through (fail-open).** A plugin that cannot be loaded, does not link, runs
+> out of fuel or traps is logged and skipped, and the request goes on as if the plugin had returned "continue". So a
+> plugin must not be the only access check on something that matters: put the real check in `consumers`, `jwtAuth`,
+> `forwardAuth` or `ipFilter`, which fail closed, and use a plugin for what is allowed to fail. `conduit validate`
+> tells you about a plugin file that cannot run ([below](#testing-and-debugging)), but only a test of your own shows
+> that the plugin rejects what it should.
 
 ---
 
-## Table of Contents
+## Contents
 
+- [Limits and guarantees](#limits-and-guarantees)
+- [Your first plugin](#your-first-plugin)
 - [Configuration](#configuration)
-- [Plugin ABI](#plugin-abi)
-  - [Required exports](#required-exports)
-  - [Host functions — read request](#host-functions--read-request)
-  - [Host functions — mutate request](#host-functions--mutate-request)
-  - [Host functions — abort response](#host-functions--abort-response)
-  - [Host functions — logging](#host-functions--logging)
-- [Memory conventions](#memory-conventions)
-- [Supported languages](#supported-languages)
-- [Examples](#examples)
-  - [Minimal plugin (WAT)](#minimal-plugin-wat)
-  - [Header check in Rust](#header-check-in-rust)
-  - [Inject a request header](#inject-a-request-header)
-  - [Redirect old paths](#redirect-old-paths)
-  - [Header check in C](#header-check-in-c)
-  - [Header check in Go (TinyGo)](#header-check-in-go-tinygo)
-  - [Header check in AssemblyScript](#header-check-in-assemblyscript)
-  - [Using the plugin config field](#using-the-plugin-config-field)
-- [Response phase — on_response](#response-phase--on_response)
-- [Building plugins](#building-plugins)
-- [Execution model](#execution-model)
-- [Error handling](#error-handling)
+- [The ABI](#the-abi): [exports](#exports), [memory](#memory-and-the-ptr-len-convention), [host functions](#host-functions), [response phase](#response-phase)
+- [Recipes](#recipes)
+- [Testing and debugging](#testing-and-debugging)
+- [Other languages](#other-languages)
+- [Stability](#stability)
 - [Comparison with Rhai](#comparison-with-rhai)
+
+---
+
+## Limits and guarantees
+
+| | |
+| --- | --- |
+| **Fail-open** | A missing or unreadable file, an invalid module, an import that does not exist, a trap, running out of fuel: the request (or response) goes through, and one warning is logged per call. The one exception is the engine itself: if WebAssembly cannot run on this machine, configuration validation refuses the config (at start-up and on a hot reload) with `middleware type "wasm" cannot run: ...`. |
+| **CPU** | 10,000,000 units of fuel per call, one per executed WebAssembly instruction, counted separately for `on_request` and `on_response`. A plugin that uses it all is stopped (a trap, so fail-open). A plain header check uses well under 100,000. The call runs on the request's own thread and blocks it until it returns. |
+| **Memory** | 16 MiB of linear memory per call, counting the size the module declares and what `memory.grow` adds. A module that declares more fails to instantiate (fail-open); a `memory.grow` over the limit returns `-1` to the plugin, which has to check it. |
+| **No I/O** | No network, no files, no clock, no random numbers, no WASI. Importing anything outside the `"conduit"` module makes the module fail to link. |
+| **No state** | Every call gets a new instance. Nothing survives from one request to the next, or from a request's `on_request` to its `on_response`. |
+| **Body** | A plugin sees no request body. In `on_response` it can replace the response body, with [limits](#response-phase). |
+| **Headers** | A plugin sees each header name once: if a client sends two `Cookie` lines only one value reaches `conduit_get_header`, and the order is not preserved. |
+| **Buffers** | A host function that fills your buffer writes at most `buf_len` bytes and returns the count; a count equal to `buf_len` may mean the value was cut. |
+
+---
+
+## Your first plugin
+
+A plugin that answers `401` to every request that has no `X-Api-Key` header, in Rust. You need
+[Rust](https://rustup.rs) and the WebAssembly target: `rustup target add wasm32-unknown-unknown`.
+
+**1. Create the project.**
+
+```bash
+cargo new --lib first-plugin && cd first-plugin
+```
+
+**2. `Cargo.toml`:** a `cdylib` is what produces a `.wasm` file.
+
+```toml
+[package]
+name = "first-plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"   # small
+strip = true
+```
+
+**3. `src/lib.rs`:**
+
+<!-- docs-check: plugin first-plugin -->
+```rust
+// The host functions live in the "conduit" module; without this attribute they would be looked up in "env".
+#[link(wasm_import_module = "conduit")]
+extern "C" {
+    fn conduit_get_header(name_ptr: *const u8, name_len: i32, buf: *mut u8, buf_len: i32) -> i32;
+    fn conduit_set_response_status(status: i32);
+    fn conduit_set_response_body(body_ptr: *const u8, body_len: i32);
+    fn conduit_log(level: i32, msg_ptr: *const u8, msg_len: i32);
+}
+
+// Called for every request: 0 lets it continue, anything else answers it with the response set below.
+#[no_mangle]
+pub extern "C" fn on_request() -> i32 {
+    let name = b"x-api-key"; // look-up is case-insensitive
+    let mut value = [0u8; 64]; // the host writes the header value here
+    let n = unsafe {
+        conduit_get_header(name.as_ptr(), name.len() as i32, value.as_mut_ptr(), value.len() as i32)
+    };
+    if n < 0 {
+        // -1: the header is not there
+        let msg = b"missing X-Api-Key";
+        unsafe {
+            conduit_log(3, msg.as_ptr(), msg.len() as i32); // 3 = warn
+            conduit_set_response_status(401);
+            conduit_set_response_body(msg.as_ptr(), msg.len() as i32);
+        }
+        return 1; // answer the request with the status and body set above
+    }
+    0
+}
+```
+
+How it works: a plugin and Conduit share the plugin's memory, and a string always travels as a pointer and a length.
+To *read* something, the plugin gives the host a buffer (`value`) and its size; the host copies the value in and
+returns how many bytes it wrote, or `-1` if there is none. To *send* something (the response body, a log line) the
+plugin passes a pointer into its own memory and a length; the host copies it out before the call returns and never
+keeps the pointer. The module must export its memory (`cdylib` does by default), and it must export `on_request`.
+
+**4. Build and look at it.**
+
+```bash
+cargo build --release --target wasm32-unknown-unknown
+# target/wasm32-unknown-unknown/release/first_plugin.wasm  (Cargo turns "-" into "_"; it is 379 bytes)
+```
+
+**5. `conduit.yaml`:** point a `wasm` middleware at the file.
+
+```yaml
+sites:
+  - port: 8080
+    proxy: http://127.0.0.1:4000
+    middleware:
+      - type: wasm
+        path: ./target/wasm32-unknown-unknown/release/first_plugin.wasm
+```
+
+```bash
+conduit validate -c conduit.yaml   # Config is valid — 1 site, 1 route.
+conduit -c conduit.yaml
+```
+
+**6. Try it.**
+
+```bash
+curl -i http://127.0.0.1:8080/                       # 401 Unauthorized, body: missing X-Api-Key
+curl -i -H 'X-Api-Key: anything' http://127.0.0.1:8080/   # 200, from the upstream
+```
+
+The server log shows what the plugin logged (level `3` is `warn`, which is shown by default):
+
+```
+WARN conduit_plugin_wasm::wasm: missing X-Api-Key wasm=true
+```
+
+The `401` response has `content-type: application/octet-stream`: a plugin that sends a body also sets
+`conduit_set_response_header("content-type", ...)` if the client should see something else. The whole run above is
+`scripts/repro-wasm-guide.sh`, which the documentation check runs against the plugins in this guide.
 
 ---
 
@@ -42,557 +167,414 @@ response, or redirect the client.
 middleware:
   - type: wasm
     path: ./plugins/auth-check.wasm
-
-  # Multiple plugins run in order — first abort wins
-  - type: wasm
-    path: ./plugins/rate-check.wasm
-
-  # Pass a JSON config object to the plugin
   - type: wasm
     path: ./plugins/validator.wasm
-    config:
+    config:                     # any JSON value, handed to the plugin as bytes
       max_size_kb: 512
       allowed_origins: ["https://app.example.com"]
 ```
 
-```json
-{
-  "middleware": [
-    { "type": "wasm", "path": "./plugins/auth-check.wasm" },
-    {
-      "type": "wasm",
-      "path": "./plugins/validator.wasm",
-      "config": { "max_size_kb": 512 }
-    }
-  ]
-}
-```
+| Field | Meaning |
+| --- | --- |
+| `type` | `"wasm"`. |
+| `path` | The `.wasm` file: a **binary** core module. The text format (`.wat`), component-model binaries and WASI imports are not accepted. Relative paths are resolved from the directory Conduit is started in. |
+| `config` | Optional JSON, handed to the plugin by `conduit_get_plugin_config` as compact JSON bytes. The plugin parses it itself. |
+| `phase` | Has no effect on a `wasm` entry: the plugin's `on_request` runs in the request phase and its `on_response` (if it has one) in the response phase. (It does apply to `script` entries.) |
 
-Rhai and WASM entries can be mixed freely — they run in declaration order:
+Entries run **in the order written**, `script` and `wasm` mixed; the first one that answers the request ends the chain,
+and the rest do not run for that request. In the response phase every `wasm` entry's `on_response` runs.
 
-```yaml
-middleware:
-  - type: script
-    path: ./scripts/ip-check.rhai
-  - type: wasm
-    path: ./plugins/jwt-validate.wasm
-  - type: script
-    path: ./scripts/log-request.rhai
-```
+> **Changing a plugin.** `conduit reload`, `POST /reload` and a live update from the Kubernetes provider empty the
+> compiled-module cache, so the next request reads the `.wasm` file again. If the new file cannot be read, compiled or run
+> (a build that stopped half-way, a bad copy, a module that exports neither `on_request` nor `on_response`, an import
+> that does not exist), the **last module that worked stays in use** and a warning is logged once per reload, so a bad
+> file does not switch the plugin off. That is a check made when the file is loaded: a module that loads but then traps
+> or runs out of fuel replaces the old one, and so does a module that has an `on_response` but no `on_request` (its
+> request phase logs a warning on every request). Copy the new file into place atomically (write a
+> temporary file, then rename it). **To turn a plugin off, remove its `middleware` entry**: deleting the file keeps the
+> last good module running until a restart. A request that is running during the reload finishes with the module it
+> holds.
 
 ---
 
-## Plugin ABI
+## The ABI
 
-Plugins communicate with Conduit through a set of **host functions** imported
-from the `"conduit"` namespace, and a single **exported function** that
-Conduit calls for each request.
+A plugin talks to Conduit through **exports** that Conduit calls and **host functions** it imports from the
+`"conduit"` module.
 
-### Required exports
+### Exports
 
-| Export       | Signature     | Required | Description                                                                       |
-| ------------ | ------------- | :------: | --------------------------------------------------------------------------------- |
-| `on_request` | `() -> i32`   | **Yes**  | Called for every request. Return `0` to continue, `1` (or any non-zero) to abort |
-| `memory`     | linear memory | **Yes**  | Must be exported — all string data passes through it                              |
-| `on_response`| `(i32) -> i32`| No       | Called after upstream responds. Parameter = upstream status. Return value is ignored — always continues. See [Response phase](#response-phase--on_response) |
+| Export | Signature | Required | |
+| --- | --- | :-: | --- |
+| `on_request` | `() -> i32` | **yes** | Called for every request. `0` continues, anything else answers the request (see [abort functions](#host-functions)). Required even in a plugin that only uses `on_response`; its body may be just `0`. |
+| `on_response` | `(i32) -> i32` | no | Called after the upstream answered; the argument is the upstream status. The return value is ignored. See [response phase](#response-phase). An `on_response` with another type is never called; `conduit validate` says so. |
+| `memory` | linear memory | when a host function touches it | Every host function that reads or writes a string needs it. A module that calls one without exporting `memory` gets empty reads and zero-byte writes, and one warning per call. |
 
-> `on_request` is **always required**, even for response-only plugins. The
-> function body can be empty (`return 0`) if you only need `on_response`.
+### Memory and the `(ptr, len)` convention
 
-### Host functions — read request
+- **Reading:** the plugin passes a buffer `(buf, buf_len)` in its own memory; the host writes up to `buf_len` bytes
+  and returns how many it wrote (`-1` when the value does not exist, as for a missing header).
+- **Writing:** the plugin passes `(ptr, len)` of bytes in its own memory; the host copies them before returning.
+- The host never keeps a pointer after the call, and a `ptr`/`len` outside the plugin's memory reads as empty.
+- All strings are UTF-8 bytes. Bodies are bytes and need not be UTF-8.
 
-All read functions write their result into a caller-supplied buffer and return
-the number of bytes written. If the buffer is too small, the result is
-truncated (no error). If the value does not exist (e.g. header not found),
-`-1` is returned.
+### Host functions
 
-| Function                                                                          | Description                                                         |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `conduit_get_method(buf: i32, buf_len: i32) -> i32`                               | HTTP method (`"GET"`, `"POST"`, …)                                  |
-| `conduit_get_path(buf: i32, buf_len: i32) -> i32`                                 | Request path, e.g. `"/api/users"`                                   |
-| `conduit_get_query(buf: i32, buf_len: i32) -> i32`                                | Raw query string; empty when absent                                 |
-| `conduit_get_uri(buf: i32, buf_len: i32) -> i32`                                  | Full URI: path + `"?"` + query                                      |
-| `conduit_get_client_ip(buf: i32, buf_len: i32) -> i32`                            | Remote client IP address                                            |
-| `conduit_get_request_id(buf: i32, buf_len: i32) -> i32`                           | `X-Request-ID` header value                                         |
-| `conduit_get_header(name_ptr: i32, name_len: i32, buf: i32, buf_len: i32) -> i32` | Named header value; `-1` if absent. Look-up is **case-insensitive** |
-| `conduit_get_header_count() -> i32`                                               | Number of **distinct** request header names (see the note below)    |
-| `conduit_get_header_names(buf: i32, buf_len: i32) -> i32`                         | Distinct header names, newline-separated, in **no guaranteed order** |
-| `conduit_get_plugin_config(buf: i32, buf_len: i32) -> i32`                        | JSON bytes from `middleware[].config`; empty when not set           |
+A module imports only the functions it uses. There are 20 distinct names: 17 in the request phase and 7 in the
+response phase, with 4 in both.
 
-> **Repeated headers (issue #380):** the plugin sees each request header name once. If a
-> client sends the same name twice (two `Cookie` lines, say), only one value reaches
-> `conduit_get_header`, and the name is counted and listed once. Header order is not
-> preserved.
+**Read the request** (request phase only):
 
-### Host functions — mutate request
+| Function | Returns |
+| --- | --- |
+| `conduit_get_method(buf, buf_len) -> i32` | HTTP method, `"GET"`, `"POST"`, … |
+| `conduit_get_path(buf, buf_len) -> i32` | Path, e.g. `"/api/users"` |
+| `conduit_get_query(buf, buf_len) -> i32` | Raw query string; empty when there is none |
+| `conduit_get_uri(buf, buf_len) -> i32` | Path, then `"?"` and the query when there is one |
+| `conduit_get_client_ip(buf, buf_len) -> i32` | Client IP address |
+| `conduit_get_request_id(buf, buf_len) -> i32` | The `X-Request-ID` value (empty when not set yet) |
+| `conduit_get_header(name_ptr, name_len, buf, buf_len) -> i32` | A header value, case-insensitive name; `-1` if absent |
+| `conduit_get_header_count() -> i32` | Number of distinct header names |
+| `conduit_get_header_names(buf, buf_len) -> i32` | Distinct names, newline-separated, in no guaranteed order |
 
-Header mutations are collected during the plugin call and applied to the
-upstream request **after** `on_request` returns `0` (continue). They have no
-effect if the plugin aborts.
+**Change the request** (request phase only). Applied to the upstream request after `on_request` returns `0`; ignored if the plugin answers the request instead.
 
-| Function                                                                               | Description                       |
-| -------------------------------------------------------------------------------------- | --------------------------------- |
-| `conduit_set_request_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32)` | Add or overwrite a request header |
-| `conduit_remove_request_header(name_ptr: i32, name_len: i32)`                          | Remove a request header           |
+| Function | Effect |
+| --- | --- |
+| `conduit_set_request_header(name_ptr, name_len, val_ptr, val_len)` | Add or overwrite a request header |
+| `conduit_remove_request_header(name_ptr, name_len)` | Remove a request header |
 
-### Host functions — abort response
+**Answer the request.** Call these, then return a non-zero value from `on_request`. They have no effect when the plugin returns `0`.
 
-Call these **before** returning `1` from `on_request`. They have no effect
-when the plugin continues (`return 0`).
+| Function | Effect |
+| --- | --- |
+| `conduit_set_response_status(status)` | Status code, clamped to 100–999. **Default `500`** if never called. |
+| `conduit_set_response_header(name_ptr, name_len, val_ptr, val_len)` | Add a header to the answer (in both phases, but [see the response phase](#response-phase)) |
+| `conduit_set_response_body(body_ptr, body_len)` | The body (bytes) |
+| `conduit_abort_with_redirect(url_ptr, url_len)` | `302`, `Location: <url>`, body `Redirecting...`. Still return non-zero. |
 
-| Function                                                                                | Description                                                                                |
-| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `conduit_set_response_status(status: i32)`                                              | HTTP status code (clamped to 100–999; default: `500`)                                      |
-| `conduit_set_response_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32)` | Add a response header                                                                      |
-| `conduit_set_response_body(body_ptr: i32, body_len: i32)`                               | Set the response body (bytes, not required to be UTF-8)                                    |
-| `conduit_abort_with_redirect(url_ptr: i32, url_len: i32)`                               | Shortcut: sets status 302 + `Location` header + body `"Redirecting..."`. Still return `1`. |
+**Both phases:**
 
-### Host functions — logging
+| Function | Effect |
+| --- | --- |
+| `conduit_get_plugin_config(buf, buf_len) -> i32` | The `config` JSON as bytes; `0` bytes when none is configured |
+| `conduit_log(level, msg_ptr, msg_len)` | Write to the log; `0` trace, `1` debug, `2` info, `3` warn, `4` error (anything else is logged as error). The default log level is `warn`; see [debugging](#testing-and-debugging) |
 
-| Function                                              | Description                                                                       |
-| ----------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `conduit_log(level: i32, msg_ptr: i32, msg_len: i32)` | Write to the Conduit log. Levels: `0`=trace `1`=debug `2`=info `3`=warn `4`=error |
+### Response phase
 
----
+A plugin may export `on_response(status: i32) -> i32`. Conduit calls it after the upstream answered, before the client
+gets the response. Seven host functions work there:
 
-## Memory conventions
+| Function | Effect |
+| --- | --- |
+| `conduit_get_response_status() -> i32` | The upstream status |
+| `conduit_get_response_header(name_ptr, name_len, buf, buf_len) -> i32` | An upstream response header; `-1` if absent |
+| `conduit_set_response_header(name_ptr, name_len, val_ptr, val_len)` | Add or overwrite a header on the response the client gets |
+| `conduit_remove_response_header(name_ptr, name_len)` | Remove a header from it |
+| `conduit_set_response_body(body_ptr, body_len)` | Replace the body (below) |
+| `conduit_get_plugin_config`, `conduit_log` | As in the request phase |
 
-All string data passes through the plugin's **linear memory**:
+**One module, both phases.** A module may import functions of both phases. A function that belongs to the *other*
+phase links, and traps (so fails open) only if the plugin calls it there: `conduit_get_header` in `on_response` is
+not available, because the request is gone by then. Before issue #565 such a module did not instantiate in either
+phase and was skipped on every request and every response.
 
-- To **read** from a host function: allocate a buffer in WASM memory, pass
-  `(ptr, len)` to the function, then read up to the returned byte count.
-- To **write** to a host function: write the string into WASM memory, then
-  pass `(ptr, len)` to the function.
-- Conduit **never retains pointers** after the host function returns — no
-  dangling-pointer risk.
-- The host function return value is the number of bytes written (or `-1` for
-  missing headers). A return less than `buf_len` means the full value fit.
+**Replacing the body.** `conduit_set_response_body` in `on_response` replaces the body the client receives (issue
+#379). Conduit drops the upstream `Content-Encoding`, `Transfer-Encoding`, `ETag` and `Content-MD5` headers and sets
+`Content-Length` to the new length; if several plugins set a body, the last one wins. Limits:
 
----
-
-## Supported languages
-
-Any language that compiles to `wasm32-unknown-unknown` (no OS dependencies) works.
-
-| Language           | Toolchain                                                 | Notes                                                                   |
-| ------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------- |
-| **Rust**           | `cargo build --target wasm32-unknown-unknown`             | Best ecosystem for WASM; zero-cost abstractions                         |
-| **C / C++**        | `clang --target=wasm32 -nostdlib`                         | Low-level, minimal binary size                                          |
-| **Go**             | [TinyGo](https://tinygo.org/) `tinygo build -target=wasm-unknown` | Full Go syntax; TinyGo required. Use `wasm-unknown` (freestanding) target — see note below |
-| **AssemblyScript** | `asc` (AssemblyScript compiler)                           | TypeScript-like syntax; designed for WASM                               |
-| **Zig**            | `zig build-lib -target wasm32-freestanding`               | Systems language with excellent WASM support                            |
-
-> **TinyGo target note:** Conduit only registers imports under the `"conduit"`
-> namespace — it does **not** implement `wasi_snapshot_preview1`.
->
-> | TinyGo target | Imports | Works with Conduit? |
-> |---|---|---|
-> | `-target=wasm-unknown` | Only explicit `//go:wasmimport` | ✅ **Use this** |
-> | `-target=wasi` / `-target=wasip1` | `wasi_snapshot_preview1` (fd_write, etc.) | ❌ Fails at instantiation |
-> | `-target=wasm` | env/gojs (browser-focused) | ❌ Not freestanding |
->
-> Use `-target=wasm-unknown` and declare all host functions with
-> `//go:wasmimport conduit <funcname>` — no WASI runtime needed.
+- A response that cannot carry a body (`1xx`, `204`, `205`, `304`, or an upstream `Content-Length: 0`) is sent as the
+  upstream sent it, and Conduit logs one warning (one per process, not per route).
+- `on_response` does not run for a `5xx` that `maskErrors` masks or a retry replaces.
+- Whether the upstream sent an empty body is decided from its own `Content-Length` before any `responseTransform`
+  runs. An HTTP/2 upstream that ends the stream on the HEADERS frame without a `Content-Length` looks like a response
+  with a body, so the replacement is applied and the response is inconsistent. This is a known limitation.
+- Headers that describe the old body (`Content-Range`, `Accept-Ranges`, `Content-Digest`) are left alone: a plugin
+  that replaces a `206` or a digested body removes them with `conduit_remove_response_header`.
+- If the plugin traps or runs out of fuel the original body goes through, so **`on_response` is not a redaction
+  guarantee**. These gaps are tracked in #560.
 
 ---
 
-## Examples
+## Recipes
 
-Every plugin is loaded via `conduit.yaml` (or `conduit.json`). The general
-pattern — place the `middleware` array alongside your proxy/static config:
+Each plugin below is the whole `src/lib.rs` of a crate set up like the [first plugin](#your-first-plugin) (the same
+`Cargo.toml` with another `name`). The documentation check builds each one and runs `conduit validate` on it.
 
-```yaml
-# conduit.yaml
-middleware:
-  - type: wasm
-    path: ./plugins/my-plugin.wasm # path relative to working directory
-proxy:
-  /api: "http://backend:4000"
-```
+### Add a header to the upstream request
 
-```json
-// conduit.json
-{
-  "middleware": [{ "type": "wasm", "path": "./plugins/my-plugin.wasm" }],
-  "proxy": { "/api": "http://backend:4000" }
-}
-```
-
-Plugins run **in order** for every request. Multiple plugins and Rhai scripts
-can be mixed freely. See [configuration.md — WASM middleware](configuration.md#wasm-middleware)
-for all config options.
-
----
-
-### Minimal plugin (WAT)
-
-The smallest possible plugin — always passes through:
-
-```wat
-(module
-  (memory (export "memory") 1)
-  (func (export "on_request") (result i32)
-    i32.const 0   ;; 0 = continue
-  )
-)
-```
-
-Compile with `wat2wasm` or `wasm-tools`:
-
-```bash
-# wat2wasm (from wabt — https://github.com/WebAssembly/wabt)
-wat2wasm minimal.wat -o minimal.wasm
-
-# wasm-tools (modern alternative — cargo install wasm-tools)
-wasm-tools parse minimal.wat -o minimal.wasm
-```
-
-> **What the host runs.** A plugin file is a *core* WebAssembly module in **binary** form (`.wasm`). The `.wat`
-> text format is not accepted (compile it first, as above), and neither are component-model binaries or WASI
-> imports. The host is built with Wasmtime's Cranelift compiler, WebAssembly GC and the atomics instructions, in
-> addition to what every core module can use (reference types, bulk memory, multi-value, SIMD). A module that
-> declares a *shared* memory does not instantiate: the engine never enables it. A module that does not
-> load, for any reason, is **fail-open**: the request continues and a warning is logged, so a plugin that is
-> supposed to reject requests must be tested by loading it, not assumed to run.
-
-**conduit.yaml:**
-
-```yaml
-middleware:
-  - type: wasm
-    path: ./minimal.wasm
-proxy:
-  /: "http://backend:4000"
-```
-
----
-
-### Header check in Rust
-
-Returns `401` when `X-API-Key` is missing or wrong.
-
-**Project structure:**
-
-```
-api-key-check/
-├── Cargo.toml
-└── src/lib.rs
-```
-
-```toml
-# Cargo.toml
-[package]
-name = "api-key-check"   # ← determines the output filename
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]
-```
-
+<!-- docs-check: plugin inject-header -->
 ```rust
-// src/lib.rs
-unsafe extern "C" {
-    fn conduit_get_header(name_ptr: i32, name_len: i32, buf: i32, buf_len: i32) -> i32;
-    fn conduit_set_response_status(status: i32);
-    fn conduit_set_response_body(body_ptr: i32, body_len: i32);
-}
-
-static mut BUF: [u8; 256] = [0u8; 256];
-
-#[no_mangle]
-pub extern "C" fn on_request() -> i32 {
-    let key_name = b"x-api-key";
-    let n = unsafe {
-        conduit_get_header(
-            key_name.as_ptr() as i32, key_name.len() as i32,
-            BUF.as_ptr() as i32, BUF.len() as i32,
-        )
-    };
-    if n < 0 {
-        reject(401, b"missing API key");
-        return 1;
-    }
-    let value = unsafe { &BUF[..n as usize] };
-    // NOTE: For production, use constant-time comparison (e.g. subtle::ConstantTimeEq)
-    // to prevent timing attacks. The direct != leaks key prefix information.
-    if value != b"my-secret" {
-        reject(403, b"invalid API key");
-        return 1;
-    }
-    0
-}
-
-fn reject(status: i32, msg: &[u8]) {
-    unsafe {
-        conduit_set_response_status(status);
-        conduit_set_response_body(msg.as_ptr() as i32, msg.len() as i32);
-    }
-}
-```
-
-**Build:**
-
-```bash
-cargo build --target wasm32-unknown-unknown --release
-# Output: target/wasm32-unknown-unknown/release/api_key_check.wasm
-#         (Cargo replaces hyphens with underscores in the filename)
-cp target/wasm32-unknown-unknown/release/api_key_check.wasm ./plugins/
-```
-
-**conduit.yaml / conduit.json:**
-
-```yaml
-# conduit.yaml
-middleware:
-  - type: wasm
-    path: ./plugins/api_key_check.wasm # the copied .wasm file
-proxy:
-  /api: "http://backend:4000"
-healthCheck: true
-```
-
-```json
-// conduit.json
-{
-  "middleware": [{ "type": "wasm", "path": "./plugins/api_key_check.wasm" }],
-  "proxy": { "/api": "http://backend:4000" },
-  "healthCheck": true
-}
-```
-
----
-
-### Inject a request header
-
-Adds `X-Plugin-Version: 1.0` to every upstream request.
-
-**Project structure:**
-
-```
-inject-header/
-├── Cargo.toml
-└── src/lib.rs
-```
-
-```toml
-# Cargo.toml
-[package]
-name = "inject-header"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]
-```
-
-```rust
-// src/lib.rs
-unsafe extern "C" {
-    fn conduit_set_request_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32);
+#[link(wasm_import_module = "conduit")]
+extern "C" {
+    fn conduit_set_request_header(name_ptr: *const u8, name_len: i32, val_ptr: *const u8, val_len: i32);
 }
 
 #[no_mangle]
 pub extern "C" fn on_request() -> i32 {
-    let name = b"x-plugin-version";
-    let value = b"1.0";
+    let (name, value) = (b"x-plugin-version", b"1.0");
     unsafe {
-        conduit_set_request_header(
-            name.as_ptr() as i32, name.len() as i32,
-            value.as_ptr() as i32, value.len() as i32,
-        );
+        conduit_set_request_header(name.as_ptr(), name.len() as i32, value.as_ptr(), value.len() as i32);
     }
-    0 // continue — header mutation is applied before forwarding
+    0 // continue: the header is added before the request goes upstream
 }
 ```
-
-**Build:**
-
-```bash
-cargo build --target wasm32-unknown-unknown --release
-# Output: target/wasm32-unknown-unknown/release/inject_header.wasm
-cp target/wasm32-unknown-unknown/release/inject_header.wasm ./plugins/
-```
-
-**conduit.yaml / conduit.json:**
-
-```yaml
-# conduit.yaml
-middleware:
-  - type: wasm
-    path: ./plugins/inject_header.wasm
-proxy:
-  /: "http://backend:4000"
-```
-
-```json
-// conduit.json
-{
-  "middleware": [{ "type": "wasm", "path": "./plugins/inject_header.wasm" }],
-  "proxy": { "/": "http://backend:4000" }
-}
-```
-
----
 
 ### Redirect old paths
 
-Sends a 302 redirect from `/old-api/` to `/api/`.
-
-**Project structure:**
-
-```
-path-redirect/
-├── Cargo.toml
-└── src/lib.rs
-```
-
-```toml
-# Cargo.toml
-[package]
-name = "path-redirect"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]
-```
-
+<!-- docs-check: plugin path-redirect -->
 ```rust
-// src/lib.rs
-unsafe extern "C" {
-    fn conduit_get_path(buf: i32, buf_len: i32) -> i32;
-    fn conduit_abort_with_redirect(url_ptr: i32, url_len: i32);
+#[link(wasm_import_module = "conduit")]
+extern "C" {
+    fn conduit_get_path(buf: *mut u8, buf_len: i32) -> i32;
+    fn conduit_abort_with_redirect(url_ptr: *const u8, url_len: i32);
 }
-
-static mut PATH_BUF: [u8; 512] = [0u8; 512];
 
 #[no_mangle]
 pub extern "C" fn on_request() -> i32 {
-    let n = unsafe {
-        conduit_get_path(PATH_BUF.as_ptr() as i32, PATH_BUF.len() as i32)
-    };
-    if n <= 0 { return 0; }
-    let path = unsafe { &PATH_BUF[..n as usize] };
-    if path.starts_with(b"/old-api/") {
-        let new_path = b"/api/";
-        unsafe {
-            conduit_abort_with_redirect(new_path.as_ptr() as i32, new_path.len() as i32);
-        }
-        return 1; // abort with 302 redirect
+    let mut path = [0u8; 512];
+    let n = unsafe { conduit_get_path(path.as_mut_ptr(), path.len() as i32) };
+    if n > 0 && path[..n as usize].starts_with(b"/old-api/") {
+        let target = b"/api/";
+        unsafe { conduit_abort_with_redirect(target.as_ptr(), target.len() as i32) };
+        return 1; // answer with the 302
     }
     0
 }
 ```
 
-**Build:**
-
-```bash
-cargo build --target wasm32-unknown-unknown --release
-# Output: target/wasm32-unknown-unknown/release/path_redirect.wasm
-cp target/wasm32-unknown-unknown/release/path_redirect.wasm ./plugins/
-```
-
-**conduit.yaml / conduit.json:**
+### Read the plugin `config`
 
 ```yaml
-# conduit.yaml
 middleware:
   - type: wasm
-    path: ./plugins/path_redirect.wasm # runs before the proxy
-proxy:
-  /api: "http://backend:4000"
+    path: ./plugins/key-from-config.wasm
+    config:
+      allowed_key: "secret-abc"
 ```
 
-```json
-// conduit.json
-{
-  "middleware": [{ "type": "wasm", "path": "./plugins/path_redirect.wasm" }],
-  "proxy": { "/api": "http://backend:4000" }
+The plugin receives `{"allowed_key":"secret-abc"}` as bytes. This one reads a flat string value by hand to stay free
+of dependencies (it does not handle escapes; in a real plugin use a `no_std`-friendly JSON crate such as
+[`serde-json-core`](https://crates.io/crates/serde-json-core)), and refuses every request when no key is configured.
+
+<!-- docs-check: plugin key-from-config -->
+```rust
+#[link(wasm_import_module = "conduit")]
+extern "C" {
+    fn conduit_get_plugin_config(buf: *mut u8, buf_len: i32) -> i32;
+    fn conduit_get_header(name_ptr: *const u8, name_len: i32, buf: *mut u8, buf_len: i32) -> i32;
+    fn conduit_set_response_status(status: i32);
+}
+
+/// The string value of `key` in a flat JSON object such as `{"key":"abc"}`.
+fn json_str<'a>(json: &'a [u8], key: &str) -> Option<&'a [u8]> {
+    let needle = [b"\"", key.as_bytes(), b"\":\""].concat();
+    let start = json.windows(needle.len()).position(|w| w == needle.as_slice())? + needle.len();
+    let len = json[start..].iter().position(|&b| b == b'"')?;
+    Some(&json[start..start + len])
+}
+
+#[no_mangle]
+pub extern "C" fn on_request() -> i32 {
+    let mut config = [0u8; 1024];
+    let n = unsafe { conduit_get_plugin_config(config.as_mut_ptr(), config.len() as i32) };
+    let Some(allowed) = json_str(&config[..n.max(0) as usize], "allowed_key") else {
+        unsafe { conduit_set_response_status(503) }; // not configured: refuse rather than let everything in
+        return 1;
+    };
+
+    let name = b"x-api-key";
+    let mut given = [0u8; 256];
+    let m = unsafe { conduit_get_header(name.as_ptr(), name.len() as i32, given.as_mut_ptr(), given.len() as i32) };
+    // A plain comparison; use a constant-time one for real secrets.
+    if m < 0 || &given[..m as usize] != allowed {
+        unsafe { conduit_set_response_status(403) };
+        return 1;
+    }
+    0
+}
+```
+
+### A gate and a response tag in one plugin
+
+`on_request` rejects requests without a key; `on_response` marks error responses. The module imports a function of
+each phase and works in both.
+
+<!-- docs-check: plugin gate-and-tag -->
+```rust
+#[link(wasm_import_module = "conduit")]
+extern "C" {
+    fn conduit_get_header(name_ptr: *const u8, name_len: i32, buf: *mut u8, buf_len: i32) -> i32;
+    fn conduit_set_response_status(status: i32);
+    fn conduit_get_response_status() -> i32;
+    fn conduit_set_response_header(name_ptr: *const u8, name_len: i32, val_ptr: *const u8, val_len: i32);
+}
+
+#[no_mangle]
+pub extern "C" fn on_request() -> i32 {
+    let name = b"x-api-key";
+    let mut value = [0u8; 8];
+    let n = unsafe { conduit_get_header(name.as_ptr(), name.len() as i32, value.as_mut_ptr(), value.len() as i32) };
+    if n < 0 {
+        unsafe { conduit_set_response_status(401) };
+        return 1;
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn on_response(_status: i32) -> i32 {
+    if unsafe { conduit_get_response_status() } >= 500 {
+        let (name, value) = (b"x-error-seen", b"1");
+        unsafe {
+            conduit_set_response_header(name.as_ptr(), name.len() as i32, value.as_ptr(), value.len() as i32);
+        }
+    }
+    0 // the return value of on_response is ignored
 }
 ```
 
 ---
 
-### Header check in C
+## Testing and debugging
 
-**Project structure:**
+**Before it runs: `conduit validate`.** It reads, compiles and links every `wasm` entry without running it, and
+reports a file that cannot work, because at run time such a plugin is skipped and the request passes through:
 
 ```
-api-key-check-c/
-└── plugin.c
+$ conduit validate -c conduit.yaml
+error at sites[0].middleware[0].path: plugin "./absent.wasm" cannot be read (entity not found); until that is fixed
+this entry is skipped and requests pass through it (after a reload, a version that already ran in this process
+stays in use)
 ```
+
+It also names a file that is not a regular file or is over 64 MiB, is not a binary module, exports neither `on_request` nor
+`on_response` with the type the host calls, imports a function that does not exist or has the wrong type (a misspelt
+`conduit_get_hedaer`, a WASI import), or declares a shared memory or a memory whose initial size is over the 16 MiB
+limit (any memory, exported or not): all of those make the plugin fail to load or to instantiate, so it is skipped. Three problems leave a
+plugin that still runs, and the warning says so: a module that imports host functions that need memory but exports none
+(those calls read and write nothing), an `on_response` of the wrong type (it is never called), and a missing
+`on_request` in a plugin that has an `on_response` (the request phase logs a warning on every request). A running server only logs these at
+start-up and on reload (a warning there, so that a file can be put in place after the configuration); `conduit
+validate` exits non-zero. What it cannot tell: whether the plugin decides correctly.
+
+**Seeing what a plugin does.** `conduit_log` lines appear in the server log as
+`conduit_plugin_wasm::wasm: <message> wasm=true`. The default level is `warn`, so `info` and below need
+`RUST_LOG=conduit_plugin_wasm=debug`. A failing plugin logs why, once per call:
+
+```
+WARN conduit_plugin_wasm::wasm: WASM plugin error — request passes through (fail-open) plugin="./absent.wasm" error=No such file or directory (os error 2)
+WARN conduit_plugin_wasm::wasm: WASM on_response error — response passes through (fail-open) plugin="./absent.wasm" error=...
+```
+
+A plugin that traps logs it in the same line, as `error=error while executing at wasm backtrace:` followed by
+the function index (a module built with names shows them). To see one, build this:
+
+<!-- docs-check: plugin always-traps -->
+```rust
+#[no_mangle]
+pub extern "C" fn on_request() -> i32 {
+    panic!("boom") // a panic aborts: in WebAssembly that is the `unreachable` instruction, a trap
+}
+```
+
+**Testing the logic without a proxy.** Keep the decision in a function that takes plain values and test that with
+`cargo test` on your own machine; the host functions stay in a thin shim that only exists for `wasm32`:
+
+<!-- docs-check: plugin testable -->
+```rust
+/// What to do with a request, decided from plain values.
+pub fn decide(api_key: Option<&[u8]>) -> Option<i32> {
+    match api_key {
+        None => Some(401),            // answer with 401
+        Some(k) if k.is_empty() => Some(403),
+        Some(_) => None,              // let it through
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod shim {
+    #[link(wasm_import_module = "conduit")]
+    extern "C" {
+        fn conduit_get_header(name_ptr: *const u8, name_len: i32, buf: *mut u8, buf_len: i32) -> i32;
+        fn conduit_set_response_status(status: i32);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn on_request() -> i32 {
+        let name = b"x-api-key";
+        let mut value = [0u8; 64];
+        let n = unsafe { conduit_get_header(name.as_ptr(), name.len() as i32, value.as_mut_ptr(), value.len() as i32) };
+        let key = if n < 0 { None } else { Some(&value[..n as usize]) };
+        match super::decide(key) {
+            Some(status) => {
+                unsafe { conduit_set_response_status(status) };
+                1
+            }
+            None => 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decide;
+
+    #[test]
+    fn a_request_without_a_key_is_refused() {
+        assert_eq!(decide(None), Some(401));
+        assert_eq!(decide(Some(b"")), Some(403));
+        assert_eq!(decide(Some(b"k")), None);
+    }
+}
+```
+
+A final check, with the real host, is a request through a running Conduit as in [Your first plugin](#your-first-plugin);
+the plugin's `.wasm` file can also be fed straight to `conduit validate`.
+
+---
+
+## Other languages
+
+Any language that compiles to a freestanding `wasm32` module works if it can (1) import functions from the module
+`conduit`, (2) export `on_request` and its memory, and (3) not import anything else. The Rust samples above are
+built by the documentation check; **the samples below are not** (C and Go need toolchains the check does not install),
+except that the AssemblyScript one was built and validated by hand when this guide was written.
+
+| Language | Toolchain | Notes |
+| --- | --- | --- |
+| **Rust** | `cargo build --target wasm32-unknown-unknown --release` | `#[link(wasm_import_module = "conduit")]` on the `extern` block. `crate-type = ["cdylib"]`. |
+| **C / C++** | `clang --target=wasm32 -nostdlib -Wl,--no-entry` | `__attribute__((import_module("conduit"), import_name("...")))` on every import. |
+| **Go** | [TinyGo](https://tinygo.org/) `-target=wasm-unknown` | `//go:wasmimport conduit <name>`. `-target=wasi`/`wasip1` imports `wasi_snapshot_preview1` and does not link; `-target=wasm` is browser-oriented. |
+| **AssemblyScript** | `npx asc` | `@external("conduit", "<name>")`. |
+| **Zig** | `zig build-lib -target wasm32-freestanding -dynamic` | Not tried for this guide. |
+
+An API-key check (`401` when `X-Api-Key` is missing) in each:
+
+**C**
 
 ```c
-// plugin.c
-extern int conduit_get_header(
-    const char *name, int name_len,
-    char *buf, int buf_len);
-extern void conduit_set_response_status(int status);
-extern void conduit_set_response_body(const char *body, int body_len);
+// plugin.c — build: clang --target=wasm32 -nostdlib -Wl,--no-entry -Wl,--export=on_request -Wl,--export=memory -o plugin.wasm plugin.c
+#define IMPORT(name) __attribute__((import_module("conduit"), import_name(name)))
+IMPORT("conduit_get_header") extern int conduit_get_header(const char *name, int name_len, char *buf, int buf_len);
+IMPORT("conduit_set_response_status") extern void conduit_set_response_status(int status);
 
 static char buf[256];
 
 __attribute__((export_name("on_request")))
 int on_request(void) {
-    const char *key_name = "x-api-key";
-    int n = conduit_get_header(key_name, 9, buf, sizeof(buf));
-    if (n < 0) {
+    if (conduit_get_header("x-api-key", 9, buf, sizeof buf) < 0) {
         conduit_set_response_status(401);
-        const char *msg = "missing API key";
-        conduit_set_response_body(msg, 15);
         return 1;
-    }
-    const char *expected = "my-secret";
-    if (n != 9) { conduit_set_response_status(403); return 1; }
-    for (int i = 0; i < 9; i++) {
-        if (buf[i] != expected[i]) { conduit_set_response_status(403); return 1; }  // NOTE: use XOR-fold for constant-time
     }
     return 0;
 }
 ```
 
-**Build** (output filename is explicit in `-o`):
-
-```bash
-clang --target=wasm32 -nostdlib -Wl,--no-entry \
-      -Wl,--export=on_request -Wl,--export=memory \
-      -o api_key_check.wasm plugin.c
-# Output: api_key_check.wasm  ← you choose the name in -o
-```
-
-**conduit.yaml / conduit.json:**
-
-```yaml
-# conduit.yaml
-middleware:
-  - type: wasm
-    path: ./api_key_check.wasm # the -o name from build step
-proxy:
-  /api: "http://backend:4000"
-```
-
-```json
-// conduit.json
-{
-  "middleware": [{ "type": "wasm", "path": "./api_key_check.wasm" }],
-  "proxy": { "/api": "http://backend:4000" }
-}
-```
-
----
-
-### Header check in Go (TinyGo)
-
-**Project structure:**
-
-```
-api-key-check-go/
-└── plugin.go
-```
+**Go (TinyGo)**
 
 ```go
-// plugin.go
+// plugin.go — build: tinygo build -o plugin.wasm -target=wasm-unknown ./plugin.go
 package main
 
 import "unsafe"
@@ -603,492 +585,86 @@ func conduitGetHeader(namePtr, nameLen, bufPtr, bufLen uint32) int32
 //go:wasmimport conduit conduit_set_response_status
 func conduitSetResponseStatus(status int32)
 
+var buf [256]byte
+
 //export on_request
 func onRequest() int32 {
-    name := "x-api-key"
-    buf := make([]byte, 256)
-    n := conduitGetHeader(
-        uint32(uintptr(unsafe.Pointer(&[]byte(name)[0]))),
-        uint32(len(name)),
-        uint32(uintptr(unsafe.Pointer(&buf[0]))),
-        uint32(len(buf)),
-    )
-    if n < 0 {
-        conduitSetResponseStatus(401)
-        return 1
-    }
-    // NOTE: For production, use crypto/subtle.ConstantTimeCompare to prevent timing attacks.
-    if string(buf[:n]) != "my-secret" {
-        conduitSetResponseStatus(403)
-        return 1
-    }
-    return 0
+	name := []byte("x-api-key")
+	n := conduitGetHeader(
+		uint32(uintptr(unsafe.Pointer(&name[0]))), uint32(len(name)),
+		uint32(uintptr(unsafe.Pointer(&buf[0]))), uint32(len(buf)))
+	if n < 0 {
+		conduitSetResponseStatus(401)
+		return 1
+	}
+	return 0
 }
 
 func main() {}
 ```
 
-**Build** (output filename is explicit in `-o`):
-
-```bash
-# Install TinyGo: https://tinygo.org/getting-started/install/
-tinygo build -o api_key_check.wasm -target=wasm-unknown ./plugin.go
-# Output: api_key_check.wasm  ← you choose the name in -o
-```
-
-**conduit.yaml / conduit.json:**
-
-```yaml
-# conduit.yaml
-middleware:
-  - type: wasm
-    path: ./api_key_check.wasm # the -o name from build step
-proxy:
-  /api: "http://backend:4000"
-```
-
-```json
-// conduit.json
-{
-  "middleware": [{ "type": "wasm", "path": "./api_key_check.wasm" }],
-  "proxy": { "/api": "http://backend:4000" }
-}
-```
-
----
-
-### Header check in AssemblyScript
-
-AssemblyScript compiles TypeScript-like syntax directly to WASM — no Rust or C toolchain needed.
-
-**Project structure:**
-
-```
-api-key-check-as/
-├── package.json
-└── plugin.ts
-```
-
-```bash
-# package.json — install AssemblyScript compiler
-npm init -y
-npm install --save-dev assemblyscript
-npx asinit .
-```
+**AssemblyScript**
 
 ```typescript
-// plugin.ts
+// plugin.ts — build: npx asc plugin.ts --target release --outFile plugin.wasm --exportRuntime --use abort=
 @external("conduit", "conduit_get_header")
-declare function conduit_get_header(
-  namePtr: i32, nameLen: i32,
-  buf: i32, bufLen: i32
-): i32;
-
+declare function conduit_get_header(namePtr: i32, nameLen: i32, buf: i32, bufLen: i32): i32;
 @external("conduit", "conduit_set_response_status")
 declare function conduit_set_response_status(status: i32): void;
 
-@external("conduit", "conduit_set_response_body")
-declare function conduit_set_response_body(bodyPtr: i32, bodyLen: i32): void;
-
-const BUF_SIZE: i32 = 256;
-let buf = new ArrayBuffer(BUF_SIZE);
+const buf = new ArrayBuffer(256);
 
 export function on_request(): i32 {
-  const keyName = String.UTF8.encode("x-api-key");
-  const bufPtr = changetype<i32>(buf);
-  const n = conduit_get_header(
-    changetype<i32>(keyName), keyName.byteLength,
-    bufPtr, BUF_SIZE
-  );
+  const name = String.UTF8.encode("x-api-key");
+  const n = conduit_get_header(changetype<i32>(name), name.byteLength, changetype<i32>(buf), 256);
   if (n < 0) {
-    const msg = String.UTF8.encode("missing API key");
     conduit_set_response_status(401);
-    conduit_set_response_body(changetype<i32>(msg), msg.byteLength);
-    return 1;
-  }
-  const received = String.UTF8.decodeUnsafe(bufPtr, n);
-  // NOTE: For production, use constant-time comparison (XOR-fold) to prevent timing attacks.
-  if (received != "my-secret") {
-    conduit_set_response_status(403);
     return 1;
   }
   return 0;
 }
 ```
 
-**Build:**
-
-```bash
-npx asc plugin.ts --target release --outFile api_key_check.wasm \
-    --exportRuntime --exportMemory --use abort=
-# Output: api_key_check.wasm
-```
-
-**conduit.yaml / conduit.json:**
-
-```yaml
-# conduit.yaml
-middleware:
-  - type: wasm
-    path: ./api_key_check.wasm
-proxy:
-  /api: "http://backend:4000"
-```
-
-```json
-// conduit.json
-{
-  "middleware": [{ "type": "wasm", "path": "./api_key_check.wasm" }],
-  "proxy": { "/api": "http://backend:4000" }
-}
-```
-
----
-
-### Using the plugin `config` field
-
-The `config` object from `conduit.yaml` is passed to the plugin as a JSON
-string via `conduit_get_plugin_config`. The plugin must parse it itself.
-
-**conduit.yaml / conduit.json:**
-
-```yaml
-# conduit.yaml
-middleware:
-  - type: wasm
-    path: ./plugins/validator.wasm
-    config:
-      allowed_key: "secret-abc"
-      max_body_kb: 512
-proxy:
-  /api: "http://backend:4000"
-```
-
-```json
-// conduit.json
-{
-  "middleware": [
-    {
-      "type": "wasm",
-      "path": "./plugins/validator.wasm",
-      "config": { "allowed_key": "secret-abc", "max_body_kb": 512 }
-    }
-  ],
-  "proxy": { "/api": "http://backend:4000" }
-}
-```
-
-Reading the config in Rust:
-
-```rust
-unsafe extern "C" {
-    fn conduit_get_plugin_config(buf: i32, buf_len: i32) -> i32;
-    fn conduit_get_header(name_ptr: i32, name_len: i32, buf: i32, buf_len: i32) -> i32;
-    fn conduit_set_response_status(status: i32);
-}
-
-static mut CFG_BUF: [u8; 1024] = [0u8; 1024];
-static mut HDR_BUF: [u8; 256] = [0u8; 256];
-
-#[no_mangle]
-pub extern "C" fn on_request() -> i32 {
-    // Read config JSON, e.g. {"allowed_key":"secret-abc"}
-    let cfg_len = unsafe {
-        conduit_get_plugin_config(CFG_BUF.as_ptr() as i32, CFG_BUF.len() as i32)
-    };
-    // Parse with a minimal JSON reader or use a no_std JSON crate.
-    // Example: check for the string "secret-abc" directly in the bytes.
-    let cfg = unsafe { &CFG_BUF[..cfg_len.max(0) as usize] };
-
-    let key_name = b"x-api-key";
-    let n = unsafe {
-        conduit_get_header(
-            key_name.as_ptr() as i32, key_name.len() as i32,
-            HDR_BUF.as_ptr() as i32, HDR_BUF.len() as i32,
-        )
-    };
-    if n < 0 {
-        unsafe { conduit_set_response_status(401); }
-        return 1;
-    }
-
-    let key = unsafe { &HDR_BUF[..n as usize] };
-    // Simple substring check — use a proper JSON parser in production.
-    if !cfg.windows(key.len()).any(|w| w == key) {
-        unsafe { conduit_set_response_status(403); }
-        return 1;
-    }
-
-    0
-}
-```
-
-For a cleaner approach, add a `no_std`-compatible JSON crate like
-[`miniserde`](https://crates.io/crates/miniserde) or
-[`serde_json_core`](https://crates.io/crates/serde-json-core).
-
----
-
-## Response phase — `on_response`
-
-Plugins can optionally export `on_response(status: i32) -> i32` to run after
-the upstream responds. The export is **optional** — if missing, the plugin is
-simply not called for the response.
+**WebAssembly text (WAT).** The smallest plugin, for reading the ABI without a language on top. Assemble it first
+(`wasm-tools parse minimal.wat -o minimal.wasm` or `wat2wasm`): Conduit loads only the binary form.
 
 ```wat
-;; WAT — plugin handles both request and response
 (module
   (memory (export "memory") 1)
-
   (func (export "on_request") (result i32)
-    i32.const 0  ;; continue
-  )
-
-  (func (export "on_response") (param $status i32) (result i32)
-    ;; status parameter = upstream HTTP status code
-    i32.const 0  ;; return value is ignored (always continues)
-  )
-)
+    i32.const 0))   ;; 0 = continue
 ```
 
-### Response host functions
-
-In `on_response`, seven host functions are available:
-
-| Function                                                               | Description                                   |
-| ---------------------------------------------------------------------- | --------------------------------------------- |
-| `conduit_get_response_status() -> i32`                                 | Upstream HTTP status code                     |
-| `conduit_get_response_header(name_ptr, name_len, buf, buf_len) -> i32` | Read upstream response header; `-1` if absent |
-| `conduit_set_response_header(name_ptr, name_len, val_ptr, val_len)`    | Add/overwrite header on client response       |
-| `conduit_remove_response_header(name_ptr, name_len)`                   | Remove header from client response            |
-| `conduit_set_response_body(body_ptr, body_len)`                        | Replace the response body (see the note below) |
-| `conduit_get_plugin_config(buf, buf_len) -> i32`                       | Same as request phase                         |
-| `conduit_log(level, msg_ptr, msg_len)`                                 | Same as request phase                         |
-
-> Request-phase functions (`conduit_get_method`, `conduit_get_header`, etc.)
-> are **not** available in `on_response`.
-
-> `conduit_set_response_body` in `on_response` replaces the body the client receives (issue #379).
-> Conduit drops the upstream `Content-Encoding`, `Transfer-Encoding`, `ETag` and `Content-MD5`
-> headers and sets `Content-Length` to the new length. If several plugins set a body, the last one wins.
-> The upstream body is still read from the upstream; only what the client gets changes.
->
-> Limits: a response that cannot carry a body (`1xx`, `204`, `205`, `304`, or an upstream `Content-Length: 0`) is sent
-> as the upstream sent it, and Conduit logs one warning. `on_response` does not run for a `5xx` that
-> `maskErrors` masks or a retry replaces. Whether the upstream sent an empty body is decided from its own
-> `Content-Length` before any `responseTransform` runs. An HTTP/2 upstream that ends the stream on the HEADERS
-> frame without a `Content-Length` looks like a response with a body here, so the replacement is still applied
-> and the response is inconsistent; this is a known limitation. Headers that describe the old body, such as `Content-Range`,
-> `Accept-Ranges` and `Content-Digest`, are left alone: a plugin that replaces a `206` or a digested body should
-> remove them with `conduit_remove_response_header`. If the plugin traps or runs out of fuel, Conduit fails open and
-> the original body goes through, so `on_response` is not a redaction guarantee.
-
-### Example in Rust — tag error responses
-
-```rust
-// src/lib.rs
-unsafe extern "C" {
-    fn conduit_get_response_status() -> i32;
-    fn conduit_set_response_header(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32);
-}
-
-// on_request is still required even if you only need on_response
-#[no_mangle]
-pub extern "C" fn on_request() -> i32 { 0 }
-
-#[no_mangle]
-pub extern "C" fn on_response(_status: i32) -> i32 {
-    let status = unsafe { conduit_get_response_status() };
-    if status >= 500 {
-        // Tag the response. (Replacing the body with `conduit_set_response_body`
-        // is not applied in `on_response` yet — see the limitation above.)
-        unsafe {
-            let name = b"x-error-handled";
-            let val = b"1";
-            conduit_set_response_header(
-                name.as_ptr() as i32, name.len() as i32,
-                val.as_ptr() as i32, val.len() as i32,
-            );
-        }
-    }
-    0
-}
-```
-
-**conduit.yaml / conduit.json:**
-
-```yaml
-# conduit.yaml — no extra config needed, on_response runs automatically
-middleware:
-  - type: wasm
-    path: ./plugins/error_tagger.wasm
-proxy:
-  /api: "http://backend:4000"
-```
-
-```json
-// conduit.json
-{
-  "middleware": [{ "type": "wasm", "path": "./plugins/error_tagger.wasm" }],
-  "proxy": { "/api": "http://backend:4000" }
-}
-```
+A build can be made smaller with [`wasm-opt`](https://github.com/WebAssembly/binaryen) (`wasm-opt -Os -o out.wasm in.wasm`).
 
 ---
 
-## Building plugins
+## Stability
 
-### Rust — Cargo.toml
-
-```toml
-[package]
-name = "my-plugin"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]   # required: produces a .wasm shared library
-
-[profile.release]
-opt-level = "s"           # optimize for size
-strip = true              # strip debug symbols
-```
-
-### Rust — build
-
-```bash
-# Add the WASM target (once)
-rustup target add wasm32-unknown-unknown
-
-# Build
-cargo build --target wasm32-unknown-unknown --release
-
-# The output filename = package name with hyphens replaced by underscores:
-#   name = "my-plugin"   →   target/.../my_plugin.wasm
-#   name = "api-check"   →   target/.../api_check.wasm
-ls target/wasm32-unknown-unknown/release/*.wasm
-```
-
-> **Cargo naming rule:** Cargo replaces `-` with `_` in the output `.wasm`
-> filename. `name = "api-key-check"` → `api_key_check.wasm`.
-> Use this exact name in `conduit.yaml path:`.
-
-### C / C++ — build
-
-```bash
-# Clang with WASM target (install from llvm.org or via package manager)
-clang --target=wasm32 -nostdlib \
-      -Wl,--no-entry -Wl,--export=on_request -Wl,--export=memory \
-      -o plugin.wasm plugin.c
-```
-
-### Go — build with TinyGo
-
-```bash
-# Install TinyGo: https://tinygo.org/getting-started/install/
-tinygo build -o plugin.wasm -target=wasm-unknown ./plugin.go
-```
-
-### AssemblyScript — build
-
-```bash
-# Install: npm install -g assemblyscript
-asc plugin.ts --target release --outFile plugin.wasm \
-    --exportRuntime --exportMemory
-```
-
-### Optimize binary size (optional)
-
-[`wasm-opt`](https://github.com/WebAssembly/binaryen) shrinks any `.wasm` file regardless of source language:
-
-```bash
-# Install: https://github.com/WebAssembly/binaryen/releases
-wasm-opt -Os -o plugin-opt.wasm plugin.wasm
-```
-
----
-
-## Execution model
-
-- Modules are **compiled once** (on first request) by Wasmtime's Cranelift JIT
-  and cached, keyed by the configured `path`. A configuration reload
-  (`conduit reload`, `POST /reload`, or a live update from the Kubernetes provider) empties the cache, so
-  a `.wasm` file overwritten at the same path is read again by the next request
-  (issue #566; before that fix the process kept serving the already-compiled
-  module until it was restarted, and the same was true of Rhai scripts). A request
-  that is running while the cache is emptied finishes with the module it holds. If the file then cannot
-  be read or compiled (a build that stopped half-way, a bad copy), **the last module that compiled stays
-  in use** and a warning is logged once per reload, so a bad file does not switch the plugin off; copy
-  the new `.wasm` into place atomically (write a temporary file, then rename it). **To turn a plugin off,
-  remove its `middleware` entry**: deleting the file keeps the last good module running until a restart.
-- Each request runs in its **own Wasmtime Store** — no shared mutable state
-  between requests, no global variables visible across calls.
-- WASM execution is **synchronous** and runs in the request-handling thread.
-- There is **no network or filesystem access** from within the WASM sandbox —
-  only the host functions listed above (17 in the request phase) plus the
-  seven host functions available in `on_response` (below).
-- **Fuel limit:** 10,000,000 Wasmtime fuel units per invocation (both
-  `on_request` and `on_response`). Each WASM instruction consumes one unit.
-  A plugin that exceeds the limit is terminated and fails open (request
-  passes through). Typical request-phase plugins use well under 100,000 units.
-- **Memory limit:** each plugin instance is capped at 16 MiB of linear
-  memory (`wasmtime::StoreLimits`). This cap is enforced both for a
-  module's own declared *initial* memory size and for a runtime
-  `memory.grow` call, via the same `ResourceLimiter` hook — confirmed
-  against wasmtime 48.0.1's source (`Memory::limit_new`, called during
-  instantiation for the initial size and again on every `memory.grow`). A
-  denied *initial* allocation fails instantiation outright, which is
-  treated like any other error and fails open (logged, request passes
-  through) — the same as a fuel-exhaustion trap. A denied runtime
-  `memory.grow`, by contrast, returns the standard Wasm `-1` to the guest
-  rather than an error — the plugin keeps running and has to check for
-  and handle that itself, the same as it would any other `memory.grow`
-  failure.
-
----
-
-## Error handling
-
-Conduit uses **fail-open** for WASM: if a plugin fails to load, link, or
-execute (trap), the error is logged and the request passes through as if the
-plugin returned `0` (continue). The one exception is the engine itself: if the WebAssembly engine
-cannot be built on this machine, no plugin could run, so configuration validation refuses the config (at start-up
-and on a hot reload) with `middleware type "wasm" cannot run: ...` instead of letting every plugin fail open.
-
-```
-WARN conduit_plugin_wasm::wasm: WASM plugin error — request passes through (fail-open)
-  plugin="./plugins/auth-check.wasm"
-  error="WASM module missing 'on_request' export"
-```
-
-Common causes:
-| Error | Cause |
-| ----- | ----- |
-| `missing 'on_request' export` | Plugin does not export `on_request` |
-| `missing 'memory' export` | Plugin does not export its linear memory |
-| `trap: unreachable` | Plugin panicked (e.g. array out-of-bounds) |
-| `failed to read file` | Plugin path does not exist or is not readable |
+There is no ABI version export and no formal compatibility promise yet. What holds today: the host functions in this
+guide are what this release ships; a module imports only what it uses, so a function added in a later release does not
+affect modules that do not import it; a function that is removed or retyped makes a module that imports it fail to
+link, which `conduit validate` reports (and the request then passes through, fail-open). Plan for the ABI as
+pre-1.0: changes are listed in [CHANGELOG.md](../CHANGELOG.md). The host runs plugins on Wasmtime with its
+Cranelift compiler; a module may use reference types, bulk memory, multi-value, SIMD and the atomics instructions, but a
+module that declares a *shared* memory does not instantiate.
 
 ---
 
 ## Comparison with Rhai
 
-| Feature                      | Rhai                      | WASM                             |
-| ---------------------------- | ------------------------- | -------------------------------- |
-| Compile-time feature         | `--features rhai`         | `--features wasm`                |
-| Language                     | Rhai (scripting)          | Any language compiling to WASM   |
-| Mutate request headers       | ❌ read-only              | ✅ set + remove                  |
-| Read client IP               | ❌                        | ✅ `conduit_get_client_ip`       |
-| Plugin config                | ✅ `config` variable      | ✅ `conduit_get_plugin_config`   |
-| CPU limit per invocation     | 500,000 operations        | 10,000,000 fuel units            |
-| Performance                  | fast (interpreted)        | faster (JIT-compiled)            |
-| Development speed            | fast (no build step)      | slower (compile needed)          |
-| Error isolation              | fail-open                 | fail-open                        |
-| Shared state across requests | ❌ none                   | ❌ none (new Store per request)  |
+| | Rhai | WASM |
+| --- | --- | --- |
+| Compile-time feature | `rhai` | `wasm` |
+| Language | Rhai scripting | Any language that compiles to WebAssembly |
+| Change request headers | no (`headers` is read-only) | yes: set and remove |
+| Read the client IP | no | yes: `conduit_get_client_ip` |
+| Plugin config | yes | yes: `conduit_get_plugin_config` |
+| CPU limit per call | 500,000 operations | 10,000,000 fuel units |
+| State across requests | none | none |
+| On failure | fail-open | fail-open |
+| Development | no build step | a build step |
 
-**Use Rhai** for simple guards that only read headers and abort — fast to
-write, no build step.
-
-**Use WASM** when you need to mutate request headers, read client IP, use
-plugin config, require better performance, or want to write the logic in
-Rust/Go/C/AssemblyScript.
+Use **Rhai** for a guard that reads headers and answers or lets the request through: no build step. Use **WASM** when
+you need to change request headers, read the client IP, take the logic from a language you already use, or need the
+speed of compiled code. See the [Rhai guide](rhai.md).

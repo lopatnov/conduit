@@ -68,7 +68,7 @@ fn check_runnable(entry: &MiddlewareEntry, entry_prefix: &str, errors: &mut Vec<
                 errors.push(ValidationError::warning(
                     format!("{entry_prefix}.path"),
                     format!(
-                        "script {path:?} {why}; until that is fixed this entry is skipped and requests pass through it"
+                        "script {path:?} {why}; until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)"
                     ),
                 ));
             }
@@ -78,11 +78,32 @@ fn check_runnable(entry: &MiddlewareEntry, entry_prefix: &str, errors: &mut Vec<
     // requests through (fail-open), so refuse the config or the hot reload instead (issue #626).
     #[cfg(feature = "wasm")]
     if entry.r#type == "wasm" {
-        if let Err(e) = conduit_plugin_wasm::check_engine() {
-            errors.push(ValidationError::new(
+        match conduit_plugin_wasm::check_engine() {
+            Err(e) => errors.push(ValidationError::new(
                 format!("{entry_prefix}.type"),
                 format!("middleware type \"wasm\" cannot run: {e}"),
-            ));
+            )),
+            // With a working engine, the file itself: a module that cannot be read, compiled or linked is
+            // skipped at run time and the request passes through, so an access check in it is silently off.
+            // A warning, as for scripts: the file may be put in place after validation (issue #565).
+            Ok(()) => {
+                if let Some(path) = entry.path.as_deref() {
+                    if let Err(problem) = conduit_plugin_wasm::check_module(path) {
+                        let consequence = match problem {
+                            conduit_plugin_wasm::ModuleProblem::Unusable(_) => {
+                                "until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)"
+                            }
+                            conduit_plugin_wasm::ModuleProblem::Degraded(_) => {
+                                "the plugin still runs, but it does not behave as written"
+                            }
+                        };
+                        errors.push(ValidationError::warning(
+                            format!("{entry_prefix}.path"),
+                            format!("plugin {path:?} {}; {consequence}", problem.message()),
+                        ));
+                    }
+                }
+            }
         }
     }
 }
@@ -90,20 +111,105 @@ fn check_runnable(entry: &MiddlewareEntry, entry_prefix: &str, errors: &mut Vec<
 #[cfg(all(test, feature = "wasm"))]
 mod tests {
     use super::*;
+    use conduit_config_core::validation::Severity;
 
-    fn entry(kind: &str) -> MiddlewareEntry {
-        serde_json::from_value(serde_json::json!({ "type": kind, "path": "plugin.wasm" })).unwrap()
+    fn entry(path: &str) -> MiddlewareEntry {
+        serde_json::from_value(serde_json::json!({ "type": "wasm", "path": path })).unwrap()
     }
 
-    /// Issue #626: validation builds the plugin engine for a `wasm` entry. With a healthy engine it adds
-    /// nothing; the refusal path is covered where the engine is built
+    fn validate_one(path: &str) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        validate_middleware(&[entry(path)], "sites[0]", &mut errors);
+        errors
+    }
+
+    /// The smallest module the host accepts: `on_request` returns 0 (`(module (func (export "on_request")
+    /// (result i32) i32.const 0))`, assembled by hand so that this crate needs no WAT parser).
+    const MINIMAL_PLUGIN: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic, version
+        0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, // type: () -> i32
+        0x03, 0x02, 0x01, 0x00, // one function of that type
+        0x07, 0x0e, 0x01, 0x0a, b'o', b'n', b'_', b'r', b'e', b'q', b'u', b'e', b's', b't', 0x00,
+        0x00, // export "on_request"
+        0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x00, 0x0b, // body: i32.const 0
+    ];
+
+    /// Issue #626: validation builds the plugin engine for a `wasm` entry. With a healthy engine and a
+    /// plugin that can run it adds nothing; the refusal path is covered where the engine is built
     /// (`conduit-plugin-wasm`, `an_engine_that_cannot_be_built_is_reported_not_swallowed`).
     #[test]
-    fn a_wasm_entry_with_a_buildable_engine_validates() {
-        let mut errors = Vec::new();
-        validate_middleware(&[entry("wasm")], "sites[0]", &mut errors);
+    fn a_wasm_entry_with_a_buildable_engine_and_a_good_plugin_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("ok.wasm");
+        std::fs::write(&p, MINIMAL_PLUGIN).unwrap();
+        let errors = validate_one(p.to_str().unwrap());
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(conduit_plugin_wasm::check_engine(), Ok(()));
+    }
+
+    /// A plugin that imports a function reading its memory but exports none still runs (its reads come back empty),
+    /// so the warning must not say that the entry is skipped.
+    #[test]
+    fn a_plugin_without_an_exported_memory_is_a_warning_that_says_it_still_runs() {
+        let mut module = Vec::new();
+        module.extend_from_slice(&[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+        // types: (i32, i32) -> i32 and () -> i32
+        module.extend_from_slice(&[
+            0x01, 0x0b, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f,
+        ]);
+        // one import, `conduit.conduit_get_path`, of the first type
+        module.extend_from_slice(&[0x02, 0x1c, 0x01, 0x07]);
+        module.extend_from_slice(b"conduit");
+        module.push(0x10);
+        module.extend_from_slice(b"conduit_get_path");
+        module.extend_from_slice(&[0x00, 0x00]);
+        // one function of the second type, exported as `on_request` (function index 1: the import is 0)
+        module.extend_from_slice(&[0x03, 0x02, 0x01, 0x01, 0x07, 0x0e, 0x01, 0x0a]);
+        module.extend_from_slice(b"on_request");
+        module.extend_from_slice(&[0x00, 0x01]);
+        // body: i32.const 0
+        module.extend_from_slice(&[0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x00, 0x0b]);
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("nomem.wasm");
+        std::fs::write(&p, module).unwrap();
+        let errors = validate_one(p.to_str().unwrap());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].severity, Severity::Warning);
+        assert!(
+            errors[0].message.contains("does not export a memory"),
+            "{errors:?}"
+        );
+        assert!(errors[0].message.contains("still runs"), "{errors:?}");
+        assert!(!errors[0].message.contains("skipped"), "{errors:?}");
+    }
+
+    /// Issue #565: `validate` used to accept a plugin that cannot run; at run time it is skipped.
+    #[test]
+    fn a_missing_plugin_file_is_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("absent.wasm");
+        let errors = validate_one(p.to_str().unwrap());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].severity, Severity::Warning);
+        assert!(errors[0].message.contains("cannot be read"), "{errors:?}");
+        assert!(
+            errors[0].message.contains("requests pass through"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_plugin_that_is_not_a_module_is_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bad.wasm");
+        std::fs::write(&p, b"not webassembly").unwrap();
+        let errors = validate_one(p.to_str().unwrap());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].severity, Severity::Warning);
+        assert!(
+            errors[0].message.contains("not a valid WebAssembly module"),
+            "{errors:?}"
+        );
     }
 }
 

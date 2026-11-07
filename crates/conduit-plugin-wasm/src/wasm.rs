@@ -10,6 +10,8 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use wasmtime::{Caller, Engine, Linker, Module, Store};
 
+use crate::phases::{define_unavailable, REQUEST_ONLY, RESPONSE_ONLY};
+
 // ── Singletons ────────────────────────────────────────────────────────────────
 
 /// The engine every plugin runs on, or why it could not be built (issue #626).
@@ -67,7 +69,7 @@ fn shared_engine() -> &'static Result<Engine, String> {
 
 /// The shared engine. An error here is never papered over with a default engine: a default engine has
 /// no fuel, so `set_fuel` would fail on every call and every plugin would silently fail open (issue #626).
-fn engine() -> anyhow::Result<&'static Engine> {
+pub(crate) fn engine() -> anyhow::Result<&'static Engine> {
     shared_engine().as_ref().map_err(|e| anyhow::anyhow!("{e}"))
 }
 
@@ -130,9 +132,65 @@ fn get_or_compile(path: &str) -> anyhow::Result<Arc<Module>> {
     }
 }
 
+/// The most linear memory a plugin may have per call, declared or grown (16 MiB).
+pub(crate) const MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+/// The largest plugin file that is read (64 MiB): a file that size is not a plugin, and an unbounded read of a
+/// path that is a device or a huge file would exhaust memory in validation, on a reload or on a first request.
+const MAX_MODULE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Why a plugin file could not be read.
+pub(crate) enum ReadError {
+    Io(std::io::Error),
+    NotAFile,
+    TooLarge,
+}
+
+impl ReadError {
+    /// The text for `conduit validate`: the kind of I/O error, not the operating system's own wording.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Self::Io(e) => format!("cannot be read ({})", e.kind()),
+            Self::NotAFile => "is not a regular file".to_owned(),
+            Self::TooLarge => format!(
+                "is larger than {} MiB",
+                MAX_MODULE_FILE_BYTES / (1024 * 1024)
+            ),
+        }
+    }
+}
+
+/// Read a plugin file: a regular file of at most [`MAX_MODULE_FILE_BYTES`]. The type is checked before the file is
+/// opened, because opening a FIFO waits for a writer.
+pub(crate) fn read_module_file(path: &str) -> Result<Vec<u8>, ReadError> {
+    use std::io::Read as _;
+    let meta = std::fs::metadata(path).map_err(ReadError::Io)?;
+    if !meta.is_file() {
+        return Err(ReadError::NotAFile);
+    }
+    if meta.len() > MAX_MODULE_FILE_BYTES {
+        return Err(ReadError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(MAX_MODULE_FILE_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(ReadError::Io)?;
+    if bytes.len() as u64 > MAX_MODULE_FILE_BYTES {
+        return Err(ReadError::TooLarge);
+    }
+    Ok(bytes)
+}
+
 fn read_and_compile(path: &str) -> anyhow::Result<Arc<Module>> {
-    let bytes = std::fs::read(path)?;
+    let bytes = read_module_file(path).map_err(|e| match e {
+        ReadError::Io(io) => anyhow::Error::from(io),
+        other => anyhow::anyhow!("plugin file {}", other.describe()),
+    })?;
     let module = Module::new(engine()?, &bytes)?;
+    // A module that compiles but cannot be run (no `on_request`, an import that does not exist, a memory the
+    // host cannot give it) is treated like one that does not compile: after a reload the last version that worked
+    // stays in use, instead of the plugin failing to instantiate on every call (issue #565).
+    crate::phases::verify(&module, &bytes).map_err(|why| anyhow::anyhow!("plugin {why}"))?;
     Ok(Arc::new(module))
 }
 
@@ -156,7 +214,7 @@ pub struct WasmRequest {
 }
 
 /// Mutable state threaded through the Wasmtime `Store`.
-struct WasmState {
+pub(crate) struct WasmState {
     request: WasmRequest,
     response_status: u32,
     response_headers: Vec<(String, String)>,
@@ -173,7 +231,7 @@ struct WasmState {
 }
 
 impl WasmState {
-    fn new(request: WasmRequest) -> Self {
+    pub(crate) fn new(request: WasmRequest) -> Self {
         Self {
             request,
             response_status: 500,
@@ -182,7 +240,7 @@ impl WasmState {
             added_headers: Vec::new(),
             removed_headers: Vec::new(),
             resource_limits: wasmtime::StoreLimitsBuilder::new()
-                .memory_size(16 * 1024 * 1024) // 16 MiB max per plugin call
+                .memory_size(MEMORY_LIMIT_BYTES) // 16 MiB max per plugin call
                 .build(),
             warned_missing_memory: false,
         }
@@ -282,7 +340,7 @@ pub enum WasmOutcome {
 
 // ── Host function registration ────────────────────────────────────────────────
 
-fn register_host_functions(linker: &mut Linker<WasmState>) -> anyhow::Result<()> {
+pub(crate) fn register_host_functions(linker: &mut Linker<WasmState>) -> anyhow::Result<()> {
     // conduit_get_method
     linker.func_wrap(
         "conduit",
@@ -524,6 +582,8 @@ fn run_inner(request: WasmRequest, path: &str) -> anyhow::Result<WasmOutcome> {
     store.set_fuel(WASM_MAX_FUEL)?;
     let mut linker = Linker::new(engine()?);
     register_host_functions(&mut linker)?;
+    // A module that also uses `on_response` may import that phase's functions: they trap if called here.
+    define_unavailable(&mut linker, &module, RESPONSE_ONLY)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
     let on_request = instance
@@ -561,7 +621,7 @@ pub struct WasmResponseContext {
 }
 
 /// State threaded through the Wasmtime Store for the response phase.
-struct WasmResponseState {
+pub(crate) struct WasmResponseState {
     ctx: WasmResponseContext,
     added_headers: Vec<(String, String)>,
     removed_headers: Vec<String>,
@@ -572,14 +632,14 @@ struct WasmResponseState {
 }
 
 impl WasmResponseState {
-    fn new(ctx: WasmResponseContext) -> Self {
+    pub(crate) fn new(ctx: WasmResponseContext) -> Self {
         Self {
             ctx,
             added_headers: Vec::new(),
             removed_headers: Vec::new(),
             response_body: None,
             resource_limits: wasmtime::StoreLimitsBuilder::new()
-                .memory_size(16 * 1024 * 1024)
+                .memory_size(MEMORY_LIMIT_BYTES)
                 .build(),
             warned_missing_memory: false,
         }
@@ -596,7 +656,9 @@ pub struct WasmResponseOutcome {
     pub body: Option<bytes::Bytes>,
 }
 
-fn register_response_host_functions(linker: &mut Linker<WasmResponseState>) -> anyhow::Result<()> {
+pub(crate) fn register_response_host_functions(
+    linker: &mut Linker<WasmResponseState>,
+) -> anyhow::Result<()> {
     // conduit_get_response_status — read upstream status code
     linker.func_wrap(
         "conduit",
@@ -746,11 +808,21 @@ pub fn run_wasm_response(ctx: WasmResponseContext, path: &str) -> WasmResponseOu
 
 fn run_response_inner(ctx: WasmResponseContext, path: &str) -> anyhow::Result<WasmResponseOutcome> {
     let module = get_or_compile(path)?;
+    // Most plugins have no `on_response`: say so before a Store and an instance are built for every response.
+    if module.get_export("on_response").is_none() {
+        return Ok(WasmResponseOutcome {
+            added_headers: Vec::new(),
+            removed_headers: Vec::new(),
+            body: None,
+        });
+    }
     let mut store = Store::new(engine()?, WasmResponseState::new(ctx));
     store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
     store.set_fuel(WASM_MAX_FUEL)?;
     let mut linker = Linker::new(engine()?);
     register_response_host_functions(&mut linker)?;
+    // The request phase's functions trap if `on_response` calls them; importing them is not an error.
+    define_unavailable(&mut linker, &module, REQUEST_ONLY)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
 
@@ -1015,6 +1087,25 @@ mod tests {
         std::fs::remove_file(&p).unwrap();
         clear_module_cache();
         assert!(Arc::ptr_eq(&good, &get_or_compile(&p).unwrap()));
+    }
+
+    /// Issue #565: a file that compiles but cannot be run (here: no `on_request`) must not replace the version that
+    /// worked, or the plugin would fail to instantiate on every call and the guard would be off.
+    #[test]
+    fn a_plugin_file_that_compiles_but_cannot_run_keeps_its_last_good_module_after_a_reload() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (_f, p) =
+            compile_wat("(module (func (export \"on_request\") (result i32) i32.const 0))");
+        module_cache().remove(&p);
+        last_good_modules().remove(&p);
+        let good = get_or_compile(&p).unwrap();
+        let broken =
+            wat::parse_str("(module (func (export \"on_requst\") (result i32) i32.const 0))")
+                .unwrap();
+        std::fs::write(&p, broken).unwrap();
+        clear_module_cache();
+        let kept = get_or_compile(&p).expect("the last good module stays in use");
+        assert!(Arc::ptr_eq(&good, &kept));
     }
 
     #[test]
@@ -1919,22 +2010,13 @@ mod tests {
 
     #[test]
     fn oversized_memory_grow_is_denied() {
-        // Declaring 257 initial pages (one over the 16 MiB / 256-page cap)
-        // does NOT fail instantiation on its own — Wasmtime only enforces
-        // the ResourceLimiter on `memory.grow`, not on a module's static
-        // initial size (confirmed empirically with a scratch probe: even
-        // with the limiter wired in, `run_inner` returns `Ok` for a
-        // 257-page-declared module — an earlier draft of this test
-        // asserted on that and was a tautology, since a plain successful
-        // `on_request` returning 0 produces the identical `Continue`
-        // outcome). So this module starts at 1 page and tries to
-        // `memory.grow` to 257 pages at runtime instead; a denied grow
-        // returns `-1` to the guest (not a trap) per Wasm semantics, and
-        // the module reports which branch ran via a *distinctive* aborted
-        // status code (298 = grow succeeded / cap broken, 299 = grow
-        // denied / cap working) rather than a plain `Continue`/`Abort`
-        // check, so the test can't pass by accident regardless of which
-        // branch actually executes.
+        // This test is about growth at run time: the module starts at 1 page and tries to `memory.grow` to 257
+        // pages. (A module that *declares* 257 initial pages is a different case, covered by
+        // `oversized_initial_memory_fails_instantiation`: the limiter refuses it at instantiation too, and since
+        // #565 the loader refuses it first.) A denied grow returns `-1` to the guest (not a trap) per Wasm
+        // semantics, and the module reports which branch ran via a *distinctive* aborted status code (298 = grow
+        // succeeded / cap broken, 299 = grow denied / cap working) rather than a plain `Continue`/`Abort` check, so
+        // the test can't pass by accident regardless of which branch actually executes.
         let (_f, p) = compile_wat(
             r#"(module
               (import "conduit" "conduit_set_response_status" (func $set_status (param i32)))
@@ -1979,19 +2061,154 @@ mod tests {
         // error text, not just "some error occurred".
         let (_f, p) = compile_wat(
             r#"(module
-              (memory (export "memory") 257)
+              (memory 257)
               (func (export "on_request") (result i32) i32.const 0))"#,
         );
-        match run_inner(req(), &p) {
-            Ok(outcome) => {
-                panic!("instantiation must fail for oversized initial memory, got {outcome:?}")
-            }
+        // Since #565 the loader refuses such a module before it is ever instantiated (`phases::verify`), so the
+        // limiter is reached here by instantiating the compiled module directly.
+        let module = read_and_compile_unverified(&p);
+        let mut store = Store::new(engine().unwrap(), WasmState::new(req()));
+        store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
+        let mut linker = Linker::new(engine().unwrap());
+        register_host_functions(&mut linker).unwrap();
+        match linker.instantiate(&mut store, &module) {
+            Ok(_) => panic!("instantiation must fail for oversized initial memory"),
             Err(e) => assert!(
                 e.to_string().contains("exceeds memory limits"),
                 "expected a memory-limit rejection, got: {e}"
             ),
         }
-        // And the fail-open contract still holds at the run_wasm level.
+        // Through the loader the module is refused with the reason, and the fail-open contract holds.
+        let refused = run_inner(req(), &p)
+            .expect_err("the loader refuses the module")
+            .to_string();
+        assert!(refused.contains("over the 16 MiB limit"), "{refused}");
         assert!(matches!(run_wasm(req(), &p), WasmOutcome::Continue { .. }));
+    }
+
+    /// Compile a plugin file without the checks of the loader.
+    fn read_and_compile_unverified(path: &str) -> Module {
+        Module::new(engine().unwrap(), std::fs::read(path).unwrap()).unwrap()
+    }
+
+    // ── A plugin that uses both phases (issue #565) ───────────────────────────
+
+    /// Imports one function of each phase, aborts in `on_request` and tags the response in `on_response`.
+    const BOTH_PHASES: &str = r#"(module
+        (import "conduit" "conduit_get_header_count" (func $count (result i32)))
+        (import "conduit" "conduit_get_response_status" (func $upstream (result i32)))
+        (import "conduit" "conduit_set_response_status" (func $set_status (param i32)))
+        (import "conduit" "conduit_set_response_header" (func $set_header (param i32 i32 i32 i32)))
+        (memory (export "memory") 1)
+        (data (i32.const 0) "x-seen")
+        (data (i32.const 8) "yes")
+        (func (export "on_request") (result i32)
+          i32.const 418 call $set_status
+          i32.const 1)
+        (func (export "on_response") (param i32) (result i32)
+          i32.const 0 i32.const 6 i32.const 8 i32.const 3 call $set_header
+          i32.const 0))"#;
+
+    fn response_ctx() -> WasmResponseContext {
+        WasmResponseContext {
+            status: 200,
+            headers: HashMap::new(),
+            plugin_config: Vec::new(),
+        }
+    }
+
+    /// Before #565 both calls failed to instantiate ("unknown import") and failed open, so the plugin
+    /// neither rejected a request nor tagged a response.
+    #[test]
+    fn a_plugin_that_imports_functions_of_both_phases_works_in_both() {
+        let (_f, p) = compile_wat(BOTH_PHASES);
+        match run_inner(req(), &p).expect("the request phase links the module") {
+            WasmOutcome::Abort { status, .. } => assert_eq!(status, 418),
+            other => panic!("expected an abort, got {other:?}"),
+        }
+        let out =
+            run_response_inner(response_ctx(), &p).expect("the response phase links the module");
+        assert_eq!(
+            out.added_headers,
+            vec![("x-seen".to_owned(), "yes".to_owned())]
+        );
+    }
+
+    /// A function of the other phase is defined, not available: calling it traps, and the trap fails open.
+    #[test]
+    fn calling_a_function_of_the_other_phase_traps() {
+        let (_f, p) = compile_wat(
+            r#"(module
+                (import "conduit" "conduit_get_response_status" (func $upstream (result i32)))
+                (func (export "on_request") (result i32) call $upstream drop i32.const 1))"#,
+        );
+        let err = match run_inner(req(), &p) {
+            Ok(_) => panic!("the call must trap"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            err.contains("conduit_get_response_status is not available in this phase"),
+            "{err}"
+        );
+        assert!(
+            matches!(run_wasm(req(), &p), WasmOutcome::Continue { .. }),
+            "a trap fails open"
+        );
+    }
+
+    /// A plugin with only `on_request` that reads headers used to fail to link in the response phase on
+    /// every response and log a warning each time.
+    #[test]
+    fn a_request_only_plugin_is_skipped_quietly_in_the_response_phase() {
+        let (_f, p) = compile_wat(
+            r#"(module
+                (import "conduit" "conduit_get_header_count" (func (result i32)))
+                (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        let out =
+            run_response_inner(response_ctx(), &p).expect("no link error without an on_response");
+        assert!(
+            out.added_headers.is_empty() && out.removed_headers.is_empty() && out.body.is_none()
+        );
+    }
+
+    /// The early return must come before instantiation: a start function that calls a request-only function would
+    /// trap while the response instance is built.
+    #[test]
+    fn a_plugin_without_on_response_is_not_instantiated_for_the_response() {
+        let (_f, p) = compile_wat(
+            r#"(module
+                (import "conduit" "conduit_get_header_count" (func $count (result i32)))
+                (func $start call $count drop)
+                (start $start)
+                (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        assert!(
+            run_response_inner(response_ctx(), &p).is_ok(),
+            "the response instance is never built"
+        );
+        assert!(
+            run_inner(req(), &p).is_ok(),
+            "the request phase runs the start function with the function available"
+        );
+    }
+
+    /// The guide and `check_module` say that a module with a shared memory cannot be instantiated: this is the
+    /// engine, not the check, saying so.
+    #[test]
+    fn a_module_with_a_shared_memory_cannot_be_instantiated() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (memory (export "memory") 1 1 shared)
+              (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        let compiled = Module::new(engine().unwrap(), std::fs::read(&p).unwrap());
+        let mut store = Store::new(engine().unwrap(), WasmState::new(req()));
+        let outcome = compiled.and_then(|m| {
+            Linker::<WasmState>::new(engine().unwrap())
+                .instantiate(&mut store, &m)
+                .map(|_| ())
+        });
+        assert!(outcome.is_err(), "if the engine accepted a shared memory, check_declared_memories would refuse a working plugin");
     }
 }

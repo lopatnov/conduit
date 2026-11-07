@@ -12,4 +12,6 @@
 [forward-auth] error|sites[0].forwardAuth.url|forwardAuth.url points to 127.0.0.1:2019 — this is the Conduit Admin API. Routing external auth requests through the admin API is a security risk. Use a dedicated auth service instead.
 [] error|sites[1].tls|Cannot combine 'acme' with 'cert'/'key' — use Auto-TLS or manual certificates, not both
 [] error|sites[1].host|tls.acme needs a 'host': the certificate is ordered for it, and without one this site would serve plain HTTP on its TLS port
-[rhai] warning|sites[7].middleware[1].path|script "a.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[wasm] warning|sites[7].middleware[0].path|plugin "a.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
+[rhai] warning|sites[7].middleware[1].path|script "a.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
+[wasm] warning|sites[7].middleware[2].path|plugin "b.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
