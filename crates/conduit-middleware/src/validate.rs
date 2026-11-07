@@ -22,35 +22,7 @@ pub fn validate_middleware(
                         ),
                     ));
                 }
-                // A script that cannot be read or compiled is skipped at run time and the request passes
-                // through (fail-open), which for a guard script means the guard is silently off. Say so
-                // here, as a warning: the file may legitimately be put in place after validation
-                // (issue #566).
-                #[cfg(feature = "rhai")]
-                if entry.r#type == "script" {
-                    if let Some(path) = entry.path.as_deref() {
-                        if let Err(why) = conduit_script_rhai::check_script(path) {
-                            errors.push(ValidationError::warning(
-                                format!("{entry_prefix}.path"),
-                                format!(
-                                    "script {path:?} {why}; until that is fixed this entry is skipped and requests pass through it"
-                                ),
-                            ));
-                        }
-                    }
-                }
-                // A `wasm` entry needs an engine that can run plugins. If it cannot be built, every plugin
-                // would pass requests through (fail-open), so refuse the config or the hot reload instead
-                // (issue #626).
-                #[cfg(feature = "wasm")]
-                if entry.r#type == "wasm" {
-                    if let Err(e) = conduit_plugin_wasm::check_engine() {
-                        errors.push(ValidationError::new(
-                            format!("{entry_prefix}.type"),
-                            format!("middleware type \"wasm\" cannot run: {e}"),
-                        ));
-                    }
-                }
+                check_runnable(entry, &entry_prefix, errors);
             }
             "ipFilter" | "rateLimit" | "auth" | "headers" => {
                 // Built-in types — currently executed via top-level config fields;
@@ -75,6 +47,42 @@ pub fn validate_middleware(
                     format!("invalid phase \"{phase}\" — must be \"request\" or \"response\""),
                 ));
             }
+        }
+    }
+}
+
+/// What `validate` can say about a `script` or `wasm` entry beyond its shape: whether it can run at all.
+/// (A separate function: it keeps `validate_middleware` under the complexity limit.)
+#[cfg_attr(
+    not(any(feature = "rhai", feature = "wasm")),
+    allow(unused_variables, clippy::ptr_arg)
+)]
+fn check_runnable(entry: &MiddlewareEntry, entry_prefix: &str, errors: &mut Vec<ValidationError>) {
+    // A script that cannot be read or compiled is skipped at run time and the request passes through
+    // (fail-open), which for a guard script means the guard is silently off. Say so here, as a warning:
+    // the file may legitimately be put in place after validation (issue #566).
+    #[cfg(feature = "rhai")]
+    if entry.r#type == "script" {
+        if let Some(path) = entry.path.as_deref() {
+            if let Err(why) = conduit_script_rhai::check_script(path) {
+                errors.push(ValidationError::warning(
+                    format!("{entry_prefix}.path"),
+                    format!(
+                        "script {path:?} {why}; until that is fixed this entry is skipped and requests pass through it"
+                    ),
+                ));
+            }
+        }
+    }
+    // A `wasm` entry needs an engine that can run plugins. If it cannot be built, every plugin would pass
+    // requests through (fail-open), so refuse the config or the hot reload instead (issue #626).
+    #[cfg(feature = "wasm")]
+    if entry.r#type == "wasm" {
+        if let Err(e) = conduit_plugin_wasm::check_engine() {
+            errors.push(ValidationError::new(
+                format!("{entry_prefix}.type"),
+                format!("middleware type \"wasm\" cannot run: {e}"),
+            ));
         }
     }
 }
