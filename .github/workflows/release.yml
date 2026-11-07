@@ -502,7 +502,8 @@ jobs:
           tags: |
             type=semver,pattern={{version}},suffix=${{ matrix.tag_suffix }}
             type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.tag_suffix }}
-            type=raw,value=${{ matrix.latest_tag }}
+            # A prerelease tag (v2.2.0-rc.1) must not move the `latest*` tags, as the release job's `prerelease:` says.
+            type=raw,value=${{ matrix.latest_tag }},enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Log in to GHCR
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0

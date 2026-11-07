@@ -111,6 +111,10 @@ class ReleaseMatrix(unittest.TestCase):
         """`flavor: latest=false`: otherwise every matrix job would also push a plain `latest` and race for it."""
         self.assertIn("flavor: latest=false", docker_job())
 
+    def test_a_prerelease_tag_does_not_move_the_latest_tags(self):
+        """The raw `latest*` tag is enabled only when the git tag has no `-` (a stable version)."""
+        self.assertIn("enable=${{ !contains(github.ref_name, '-') }}", docker_job())
+
 
 if __name__ == "__main__":
     unittest.main()
