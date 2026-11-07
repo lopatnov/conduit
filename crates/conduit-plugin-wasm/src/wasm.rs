@@ -804,6 +804,10 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
+    /// The cache tests empty the process-wide cache (`clear_module_cache`) and rely on what is cached between
+    /// two calls, so they take turns; the other tests use plugin files of their own.
+    static CACHE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn req() -> WasmRequest {
         WasmRequest {
             method: "GET".into(),
@@ -971,6 +975,7 @@ mod tests {
     /// edited plugin); the call that already holds the old module keeps it.
     #[test]
     fn clear_module_cache_makes_the_next_call_read_the_file_again() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let (_f, p) =
             compile_wat("(module (func (export \"on_request\") (result i32) i32.const 0))");
         module_cache().remove(&p);
@@ -991,6 +996,7 @@ mod tests {
     /// Issue #566: a plugin file saved half-way after a reload keeps its last good version.
     #[test]
     fn a_plugin_file_that_no_longer_compiles_keeps_its_last_good_module_after_a_reload() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let (_f, p) =
             compile_wat("(module (func (export \"on_request\") (result i32) i32.const 0))");
         module_cache().remove(&p);

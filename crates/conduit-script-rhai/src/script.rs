@@ -484,6 +484,10 @@ pub fn clear_cache() {
 mod tests {
     use super::*;
 
+    /// The cache tests empty the process-wide cache (`clear_cache`) and rely on what is cached between two
+    /// calls, so they take turns; the other tests use paths of their own and are not affected.
+    static CACHE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn headers(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
             .iter()
@@ -519,6 +523,7 @@ mod tests {
     /// until a restart, although the guide said a reload picks it up.
     #[test]
     fn clear_cache_makes_an_edited_script_take_effect() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("edited.rhai");
         let path = p.to_str().unwrap().to_owned();
@@ -542,6 +547,7 @@ mod tests {
     /// off: the version that last compiled keeps enforcing, until the file compiles again.
     #[test]
     fn a_script_edited_into_a_syntax_error_keeps_its_last_good_version_after_a_reload() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("guard.rhai");
         let path = p.to_str().unwrap().to_owned();

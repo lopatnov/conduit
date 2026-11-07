@@ -490,6 +490,8 @@ if upstream.header("Access-Control-Allow-Origin") == "" {
   that compiled stays in use** and each request logs `Rhai script cannot be used after a reload (...)`:
   a bad save does not switch a guard off. Save scripts atomically (write a temporary file, then rename
   it) so a reload never sees a half-written one. A script that has never compiled is skipped, as above.
+  **To turn a script off, remove its `middleware` entry**: deleting the file keeps the last good version
+  running until a restart.
 - Scripts execute **synchronously** in the request-handling thread.
 - Each request gets its own `request` and `response` scope — there is **no
   shared mutable state** between requests.

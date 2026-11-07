@@ -1019,7 +1019,8 @@ wasm-opt -Os -o plugin-opt.wasm plugin.wasm
   that is running while the cache is emptied finishes with the module it holds. If the file then cannot
   be read or compiled (a build that stopped half-way, a bad copy), **the last module that compiled stays
   in use** and a warning is logged on each request, so a bad file does not switch the plugin off; copy
-  the new `.wasm` into place atomically (write a temporary file, then rename it).
+  the new `.wasm` into place atomically (write a temporary file, then rename it). **To turn a plugin off,
+  remove its `middleware` entry**: deleting the file keeps the last good module running until a restart.
 - Each request runs in its **own Wasmtime Store** — no shared mutable state
   between requests, no global variables visible across calls.
 - WASM execution is **synchronous** and runs in the request-handling thread.
