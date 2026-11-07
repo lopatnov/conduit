@@ -340,6 +340,20 @@ jobs:
       base_w4_rps_sem: ${{ steps.bench.outputs.base_w4_rps_sem }}
       base_w4_p50_sem: ${{ steps.bench.outputs.base_w4_p50_sem }}
       base_w4_p99_sem: ${{ steps.bench.outputs.base_w4_p99_sem }}
+      head_lb_rps: ${{ steps.bench.outputs.head_lb_rps }}
+      head_lb_p50: ${{ steps.bench.outputs.head_lb_p50 }}
+      head_lb_p99: ${{ steps.bench.outputs.head_lb_p99 }}
+      head_lb_ok: ${{ steps.bench.outputs.head_lb_ok }}
+      head_lb_rps_sem: ${{ steps.bench.outputs.head_lb_rps_sem }}
+      head_lb_p50_sem: ${{ steps.bench.outputs.head_lb_p50_sem }}
+      head_lb_p99_sem: ${{ steps.bench.outputs.head_lb_p99_sem }}
+      base_lb_rps: ${{ steps.bench.outputs.base_lb_rps }}
+      base_lb_p50: ${{ steps.bench.outputs.base_lb_p50 }}
+      base_lb_p99: ${{ steps.bench.outputs.base_lb_p99 }}
+      base_lb_ok: ${{ steps.bench.outputs.base_lb_ok }}
+      base_lb_rps_sem: ${{ steps.bench.outputs.base_lb_rps_sem }}
+      base_lb_p50_sem: ${{ steps.bench.outputs.base_lb_p50_sem }}
+      base_lb_p99_sem: ${{ steps.bench.outputs.base_lb_p99_sem }}
       hw: ${{ steps.hw.outputs.summary }}
 
     steps:
@@ -497,6 +511,40 @@ jobs:
             wait "$CONDUIT_PID" "$UPSTREAM_PID" 2>/dev/null || true
           }
 
+          # One 10 s load-balancing run: LABEL RUN -> /tmp/oha-LABEL-lb-RUN.json. Four upstreams (ports 4001 to
+          # 4004), Conduit with four worker threads and `round-robin` over them, the same `oha` load as above.
+          # Everything shares the runner's four vCPUs, so this says how a build compares with the other build,
+          # not what four free cores would give.
+          lb_run() {
+            lb_pids=""
+            for port in 4001 4002 4003 4004; do
+              PORT="$port" /tmp/bench-upstream-bin &
+              lb_pids="$lb_pids $!"
+            done
+            for port in 4001 4002 4003 4004; do
+              ready=""
+              for _ in $(seq 1 30); do
+                curl -sf "http://127.0.0.1:$port/" > /dev/null 2>&1 && { ready=1; break; }
+                sleep 0.5
+              done
+              [ -n "$ready" ] || { echo "upstream $port never became ready" >&2; exit 1; }
+            done
+            printf '%s' '{ "global": { "workers": 4 }, "sites": [ { "port": 8080, "proxy": { "/": { "targets": ["http://127.0.0.1:4001", "http://127.0.0.1:4002", "http://127.0.0.1:4003", "http://127.0.0.1:4004"], "strategy": "round-robin" } } } ] }' > /tmp/bench-conduit.json
+            "/tmp/conduit-$1" -c /tmp/bench-conduit.json &
+            CONDUIT_PID=$!
+            for _ in $(seq 1 30); do
+              curl -sf http://127.0.0.1:8080/__health__ > /dev/null 2>&1 && break
+              sleep 0.5
+            done
+            curl -sf http://127.0.0.1:8080/__health__ > /dev/null 2>&1 || { echo "conduit never became ready" >&2; exit 1; }
+            oha -z 10s -c 50 --no-tui --output-format json http://127.0.0.1:8080/ > "/tmp/oha-$1-lb-$2.json"
+            kill -KILL "$CONDUIT_PID" 2>/dev/null || true
+            # shellcheck disable=SC2086
+            kill $lb_pids 2>/dev/null || true
+            # shellcheck disable=SC2086
+            wait "$CONDUIT_PID" $lb_pids 2>/dev/null || true
+          }
+
           # The numbers are collected into /tmp/bench-outputs and written to
           # $GITHUB_OUTPUT once, at the very end, after the last binary built
           # from repository code has stopped.
@@ -527,14 +575,21 @@ jobs:
             done
           done
 
+          # Then the load-balancing runs (four upstreams, round-robin, four worker threads): the same alternating order.
+          run=0
+          for label in $labels; do
+            run=$((run + 1))
+            lb_run "$label" "$run"
+          done
+
           python3 - >> /tmp/bench-outputs <<'PY'
           import glob
           import json
 
           for label in ("head", "base"):
-              for workers, tag in ((1, ""), (4, "_w4")):
+              for key, tag in (("w1", ""), ("w4", "_w4"), ("lb", "_lb")):
                   runs = []
-                  for path in sorted(glob.glob(f"/tmp/oha-{label}-w{workers}-*.json")):
+                  for path in sorted(glob.glob(f"/tmp/oha-{label}-{key}-*.json")):
                       try:
                           with open(path, encoding="utf-8") as f:
                               runs.append(json.load(f)["metrics"])
@@ -636,6 +691,20 @@ jobs:
           BASE_W4_RPS_SEM: ${{ needs.performance.outputs.base_w4_rps_sem }}
           BASE_W4_P50_SEM: ${{ needs.performance.outputs.base_w4_p50_sem }}
           BASE_W4_P99_SEM: ${{ needs.performance.outputs.base_w4_p99_sem }}
+          HEAD_LB_RPS: ${{ needs.performance.outputs.head_lb_rps }}
+          HEAD_LB_P50: ${{ needs.performance.outputs.head_lb_p50 }}
+          HEAD_LB_P99: ${{ needs.performance.outputs.head_lb_p99 }}
+          HEAD_LB_OK: ${{ needs.performance.outputs.head_lb_ok }}
+          HEAD_LB_RPS_SEM: ${{ needs.performance.outputs.head_lb_rps_sem }}
+          HEAD_LB_P50_SEM: ${{ needs.performance.outputs.head_lb_p50_sem }}
+          HEAD_LB_P99_SEM: ${{ needs.performance.outputs.head_lb_p99_sem }}
+          BASE_LB_RPS: ${{ needs.performance.outputs.base_lb_rps }}
+          BASE_LB_P50: ${{ needs.performance.outputs.base_lb_p50 }}
+          BASE_LB_P99: ${{ needs.performance.outputs.base_lb_p99 }}
+          BASE_LB_OK: ${{ needs.performance.outputs.base_lb_ok }}
+          BASE_LB_RPS_SEM: ${{ needs.performance.outputs.base_lb_rps_sem }}
+          BASE_LB_P50_SEM: ${{ needs.performance.outputs.base_lb_p50_sem }}
+          BASE_LB_P99_SEM: ${{ needs.performance.outputs.base_lb_p99_sem }}
           HW: ${{ needs.performance.outputs.hw }}
         run: |
           set -euo pipefail

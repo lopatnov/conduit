@@ -40,18 +40,18 @@ second (from 13.7k to 17.5k), and the two copies differed by 0.0% on average. So
 of each mean from the scatter of its runs, and the report calls a difference *within noise* when
 it is smaller than 2.5 times the standard error of the difference. Only an adverse difference beyond
 the noise (and at least 3%) is flagged ⚠️. A drop of 6% that is within noise is not a finding;
-re-run the job or measure with `scripts/bench/ab.sh` before acting on it. A report holds four
-comparisons (throughput and p99 latency at two worker settings), so one lone ⚠️ among them can still be chance:
+re-run the job or measure with `scripts/bench/ab.sh` before acting on it. A report holds nine
+comparisons (throughput, median and p99 latency in each of three tables), so one lone ⚠️ among them can still be chance:
 look for the same direction in the other rows and in a second run.
 
 | | |
 | --- | --- |
 | Runner | GitHub-hosted `ubuntu-latest`: 4 vCPU, 16 GB RAM. GitHub assigns the host CPU generation; the report prints it (for example `4 vCPU, 16 GB RAM allocated to this job (host CPU model: …), ubuntu24 (X64)`). |
 | Build | `cargo build --release` on the stable toolchain: `default` features, `lto = true`, `codegen-units = 1`, `strip = true` |
-| Conduit workers | two settings: `global.workers` unset, which is **one worker thread**, and `global.workers: 4` |
+| Conduit workers | the passthrough runs at two settings: `global.workers` unset, which is **one worker thread**, and `global.workers: 4`; the load-balancing run at `global.workers: 4` |
 | Upstream | the Go server below, port 4000, fixed 22-byte JSON body, keep-alive |
 | Load generator | [oha](https://github.com/hatoo/oha) 1.16.0 (pinned and checked against a SHA-256), 50 connections, 10 seconds |
-| Reported | requests per second and p99 latency, for base and head and their difference with a verdict against the run-to-run noise, for each worker setting; the success rate only when a request failed (the median latency is measured but not shown: at a fixed concurrency it only restates the throughput) |
+| Reported | requests per second, p50 and p99 latency, for base and head and their difference with a verdict against the run-to-run noise, in each table; the success rate only when a request failed |
 
 **Server configuration** — CI writes it as JSON; the YAML is the same configuration:
 
@@ -97,15 +97,25 @@ func main() {
 }
 ```
 
-### Why the report has no load-balancing tables
+### The load-balancing table
 
-An earlier version of the report also ran each balancing strategy through four upstreams. It was removed:
-the four upstreams, the load generator and Conduit's workers all share the runner's four vCPUs, so the
-numbers cannot separate what a strategy costs from how the machine was divided (the same build reached 10 to
-20% fewer requests per second through four upstreams than through one, for every strategy including
-round-robin; the cause is open, see #647). To compare strategies use
-[`scripts/lb_compare.py`](#comparing-the-load-balancing-strategies) on a machine of your own, ideally with the
-upstreams on other cores than Conduit.
+The third table runs the same `oha` load through **four upstreams** (four copies of the Go server above, ports
+4001 to 4004) with Conduit at **four worker threads** and the `round-robin` strategy, so the choice among
+several upstreams is on the request path, which the single-upstream tables never exercise. It is one
+strategy in one configuration on purpose: four workers is what a deployment that balances load runs, round-robin
+is the cheapest strategy and so shows the cost of the balancing path itself, and the other strategies are
+compared with [`scripts/lb_compare.py`](#comparing-the-load-balancing-strategies) on a machine of your own.
+Like the other tables it is the mean of four alternating runs per build, with the same noise verdict.
+
+```json
+{ "global": { "workers": 4 }, "sites": [ { "port": 8080, "proxy": { "/": {
+    "targets": ["http://127.0.0.1:4001", "http://127.0.0.1:4002", "http://127.0.0.1:4003", "http://127.0.0.1:4004"],
+    "strategy": "round-robin" } } } ] }
+```
+
+The four upstreams, the load generator and the workers share the runner's four vCPUs, so read this table as
+base against head: the same build reached 10 to 20% fewer requests per second through four upstreams than through
+one (the cause is open, #647), which makes the absolute numbers not comparable with the tables above.
 
 ## Reproduce it on your machine
 

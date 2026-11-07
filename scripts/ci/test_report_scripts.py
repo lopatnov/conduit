@@ -176,11 +176,59 @@ class WorkerSettings(unittest.TestCase):
         out = perf.render(self.ENV)
         self.assertLess(out.index(perf.FOUR_WORKERS_TITLE), out.index("**Runner:**"))
 
-    def test_the_report_has_no_p50_row_because_it_only_restates_the_throughput(self):
-        """The report has no p50 row because it only restates the throughput."""
+    def test_every_table_has_a_p50_row_with_its_own_delta(self):
+        """Every table has a p50 row with its own delta (head and base), between the throughput and the p99."""
         out = perf.render(self.ENV)
-        self.assertNotIn("p50", out)
-        self.assertIn("p99 latency", out)
+        self.assertEqual(out.count("p50 latency |"), 2)  # one worker and four workers
+        self.assertIn("p50 latency | 1.60 ms | 1.50 ms | ▼ -6.3%", out)
+        lines = [line.split(" |")[0] for line in out.splitlines() if line.startswith(("Requests/sec", "p50", "p99"))]
+        self.assertEqual(lines[:3], ["Requests/sec", "p50 latency", "p99 latency"])
+        head_only = {k: v for k, v in self.ENV.items() if not k.startswith("BASE_")}
+        self.assertIn("p50 latency | 1.50 ms", perf.render(head_only))
+
+    # The load-balancing run: round-robin over four upstreams with four worker threads (the same keys with LB).
+    LB = {
+        "HEAD_LB_RPS": "2400", "HEAD_LB_P50": "1.9", "HEAD_LB_P99": "3.0", "HEAD_LB_OK": "100",
+        "BASE_LB_RPS": "2500", "BASE_LB_P50": "1.8", "BASE_LB_P99": "3.1", "BASE_LB_OK": "100",
+        "HEAD_LB_RPS_SEM": "2.0", "BASE_LB_RPS_SEM": "2.0",
+    }
+
+    def test_the_load_balancing_table_is_one_table_after_the_worker_tables_and_before_the_runner_note(self):
+        """One load-balancing table, after the worker tables and before the runner note."""
+        out = perf.render(dict(self.ENV, **self.LB))
+        self.assertEqual(out.count(perf.LB_TITLE), 1)
+        self.assertLess(out.index(perf.FOUR_WORKERS_TITLE), out.index(perf.LB_TITLE))
+        self.assertLess(out.index(perf.LB_TITLE), out.index("**Runner:**"))
+        section = out.split(perf.LB_TITLE)[1].split("**Runner:**")[0]
+        self.assertIn("Requests/sec | 2500 | 2400 | ▼ -4.0% (within noise, ±2.8%)", section)
+        self.assertIn("p50 latency | 1.80 ms | 1.90 ms", section)
+        self.assertEqual(section.count("Metric | Base | PR head | Δ"), 1)
+
+    def test_without_load_balancing_numbers_the_section_is_left_out(self):
+        """Without load-balancing numbers the section is left out."""
+        self.assertNotIn(perf.LB_TITLE, perf.render(self.ENV))
+
+    def test_a_load_balancing_regression_is_flagged_on_its_own(self):
+        """A load-balancing regression beyond the noise is flagged in its table only."""
+        out = perf.render(dict(self.ENV, **dict(self.LB, HEAD_LB_RPS="1500")))  # 2500 -> 1500 = -40%
+        self.assertIn("⚠️", out.split(perf.LB_TITLE)[1])
+        self.assertNotIn("⚠️", out.split(perf.LB_TITLE)[0])
+
+    def test_hostile_load_balancing_values_are_dropped_and_not_echoed(self):
+        """Hostile load-balancing values leave the section out and are not echoed."""
+        out = perf.render(dict(self.ENV, **dict(self.LB, HEAD_LB_RPS="<script>alert(1)</script>")))
+        self.assertNotIn("<script>", out)
+        self.assertNotIn(perf.LB_TITLE, out)
+        out = perf.render(dict(self.ENV, **dict(self.LB, BASE_LB_P99="[x](http://evil.example)", HEAD_LB_RPS_SEM="inf")))
+        self.assertNotIn("evil.example", out)
+        self.assertIn("Requests/sec | 2500 | 2400", out)  # the rest of the table survives; the bad cells read n/a
+
+    def test_the_load_balancing_section_without_a_base_is_head_only(self):
+        """Without a base measurement the load-balancing table is head only."""
+        env = {k: v for k, v in dict(self.ENV, **self.LB).items() if not k.startswith("BASE_")}
+        out = perf.render(env)
+        self.assertEqual(out.count("Metric | PR head"), 3)
+        self.assertEqual(out.count("nothing to diff against"), 1)
 
     def test_the_success_rate_row_appears_only_when_a_request_failed(self):
         self.assertNotIn("Success rate", perf.render(self.ENV))  # every request succeeded on both sides
