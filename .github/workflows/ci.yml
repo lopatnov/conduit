@@ -772,6 +772,7 @@ jobs:
         run: |
           python3 scripts/test_check_doc_configs.py
           python3 scripts/test_check_doc_features.py
+          python3 scripts/test_check_doc_wasm.py
 
       - name: Every Cargo feature is documented, and the bundle table matches Cargo.toml
         run: python3 scripts/check_doc_features.py
@@ -781,6 +782,14 @@ jobs:
 
       - name: Validate the documented configs
         run: python3 scripts/check_doc_configs.py --conduit target/debug/conduit
+
+      # The Rust plugins of docs/wasm.md are built for wasm32 and validated, then run behind a real Conduit
+      # (scripts/repro-wasm-guide.sh), so a sample or a claim of the guide cannot rot (issue #565).
+      - name: Build and run the WASM guide's plugins
+        run: |
+          rustup target add wasm32-unknown-unknown
+          python3 scripts/check_doc_wasm.py --conduit target/debug/conduit --keep "$RUNNER_TEMP/wasm-guide"
+          scripts/repro-wasm-guide.sh target/debug/conduit "$RUNNER_TEMP/wasm-guide"
 
   # ── Code length report: Rust files over the soft (400) / hard (1000) limits ─
   # Counts *code* lines (comments, blank lines and tests excluded) with

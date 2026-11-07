@@ -85,6 +85,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A WASM plugin may use the host functions of both phases** (issue #565). Each phase linked a module against
+  only its own functions, so a plugin that read a header in `on_request` and the upstream status in `on_response`
+  did not instantiate in either phase and was skipped, fail-open, on every request and every response (measured
+  with the real binary: `unknown import: conduit::conduit_get_response_status has not been defined`). A function
+  that belongs to the other phase now links and traps only if it is called there. A plugin without `on_response`
+  is also skipped before an instance is built for the response, where it used to log a link warning for every
+  response if it imported a request function.
+- **`conduit validate` reports a WASM plugin that cannot run** (issue #565): a file that is missing or not a binary
+  module, no `on_request` of type `() -> i32`, an import that does not exist or has the wrong type (a misspelt
+  host function, a WASI import), a module that calls memory-reading host functions but exports no `memory`. At run
+  time such a plugin is skipped and the request passes through; the server logs the same text as a warning at
+  start-up and on reload, `conduit validate` exits non-zero.
+- **`docs/wasm.md` rewritten, and its samples are built in CI** (issue #565). The Rust sample at the top of the
+  old guide did not link (the host functions were declared without `#[link(wasm_import_module = "conduit")]`, so
+  they were looked up in `env`), and neither would the C one. The guide now starts with the install that has WASM,
+  fail-open and a table of limits, walks through a first plugin end to end, and every Rust plugin in it is built
+  for `wasm32-unknown-unknown` and validated (`scripts/check_doc_wasm.py`), then run behind a real Conduit
+  (`scripts/repro-wasm-guide.sh`) in the `docs-configs` job.
+
 - **A configuration reload picks up an edited Rhai script or WASM plugin** (issue #566). Compiled scripts and
   modules are cached by path, and nothing ever emptied the cache, so a file edited at an unchanged path took
   effect only after a restart, although the Rhai guide said `conduit reload` was enough (the WASM guide said it

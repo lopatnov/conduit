@@ -3779,7 +3779,8 @@ untouched); return `true` (or nothing) to continue the pipeline.
 
 ## WASM Middleware
 
-> **Requires** `cargo build --features wasm`
+> **Requires** the `wasm` feature, part of `full` (the `-full` downloads, `:latest-full` and the npm package).
+> A plugin that fails lets the request through; `conduit validate` reports a plugin file that cannot run.
 
 **→ Full guide with ABI reference, Rust examples, and build instructions: [wasm.md](wasm.md)**
 
