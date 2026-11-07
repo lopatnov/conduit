@@ -32,29 +32,35 @@ Not sure what config to write first? **[← Configuration Recipes](recipes.md)**
 
 ## Docker
 
-Two image variants are published to the GitHub Container Registry on every release:
+Four image variants are published to the GitHub Container Registry on every release. The **full** image has the plain tags; the others carry their bundle name as a suffix:
 
-| Variant  | Tags                                       | Includes                                                                                                                                                         |
-| -------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Standard | `:latest`, `:2.2.0`, `:2.2`                | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
-| Full     | `:latest-full`, `:2.2.0-full`, `:2.2-full` | All 15 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` |
+| Variant  | Tags                                                   | Includes                                                                                                                                                         |
+| -------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Full     | `:latest`, `:2.2.0`, `:2.2`                            | All 15 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` |
+| Standard | `:latest-standard`, `:2.2.0-standard`, `:2.2-standard` | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
+| Gateway  | `:latest-gateway`, `:2.2.0-gateway`, `:2.2-gateway`    | `gateway` bundle (`--no-default-features`): the proxy and the standard stack without static files and live reload                                                |
+| Static   | `:latest-static`, `:2.2.0-static`, `:2.2-static`       | `static-server` bundle (`--no-default-features`): static files, compression and live reload; it does not proxy                                                   |
+
+> **Upgrading from 2.1 and earlier:** `:latest` and `:X.Y.Z` used to be the standard image and the full image was
+> `:latest-full`. Since 2.2.0 the plain tags are the **full** image and standard is `:latest-standard`; pin
+> `:X.Y.Z-standard` to keep the smaller image. Tags of releases up to 2.1.x are unchanged.
 
 ```bash
-# Standard (jwt, consumers, forward-auth, cache, acme)
+# Full — all optional features enabled
 docker pull ghcr.io/lopatnov/conduit:latest
 
-# Full — all optional features enabled
-docker pull ghcr.io/lopatnov/conduit:latest-full
+# Standard (jwt, consumers, forward-auth, cache, acme)
+docker pull ghcr.io/lopatnov/conduit:latest-standard
 ```
 
-> **Standard vs Full:** the standard image covers the majority of production use
+> **Standard vs Full:** the standard image (`:latest-standard`) covers the majority of production use
 > cases — TLS, proxying, routing, rate limiting, basic/API-key/JWT auth, the
 > consumer model, ForwardAuth, response caching, auto-TLS (ACME), metrics,
 > hot-reload. Use the full image (or build from source with `--features`) when
 > you need scripting middleware (Rhai/WASM), file uploads, Redis-backed rate
 > limiting/caching, OTLP tracing, TCP proxy mode, or Kubernetes CRD config.
 
-Both images are multi-stage musl builds packaged into `FROM scratch`.
+All images are multi-stage musl builds packaged into `FROM scratch`.
 They run as UID 65534 (`nobody`) with no shell or OS userland.
 
 > **Healthchecks in FROM scratch images:** because the image has no shell or
@@ -127,15 +133,20 @@ cd conduit
 # Minimal image (default = ["proxy", "compression", "static", "hotreload"])
 docker build -f contrib/Dockerfile -t conduit:local .
 
-# Standard image (matches the published default tag)
+# Standard image (the published :latest-standard)
 docker build -f contrib/Dockerfile \
   --build-arg FEATURES=standard \
   -t conduit:local-standard .
 
-# Full-features image
+# Full-features image (the published :latest)
 docker build -f contrib/Dockerfile \
   --build-arg FEATURES=full \
   -t conduit:local-full .
+
+# Gateway image (the published :latest-gateway); FEATURES=static-server for :latest-static
+docker build -f contrib/Dockerfile \
+  --build-arg FEATURES=gateway --build-arg NO_DEFAULT_FEATURES=true \
+  -t conduit:local-gateway .
 ```
 
 ---
@@ -153,15 +164,16 @@ restart on failure.
 Download a pre-built binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
 ```bash
-# Linux x86-64 (standard: jwt, consumers, forward-auth, cache, acme)
+# Linux x86-64, full (adds Rhai/WASM, OTLP, TCP proxy, Redis, uploads, Kubernetes, etc.).
+# The archive holds one file named like the archive, without .tar.gz.
 curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu.tar.gz \
   | tar xz
-sudo install -m 755 conduit /usr/local/bin/conduit
+sudo install -m 755 conduit-x86_64-unknown-linux-gnu /usr/local/bin/conduit
 
-# Linux x86-64 (full — adds Rhai/WASM, OTLP, TCP proxy, Redis, uploads, Kubernetes, etc.)
-curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu-full.tar.gz \
+# Linux x86-64, standard (jwt, consumers, forward-auth, cache, acme)
+curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu-standard.tar.gz \
   | tar xz
-sudo install -m 755 conduit /usr/local/bin/conduit
+sudo install -m 755 conduit-x86_64-unknown-linux-gnu-standard /usr/local/bin/conduit
 ```
 
 Or build from source — see [docs/building.md](building.md).
@@ -448,7 +460,7 @@ conduit reload --admin 127.0.0.1:2019
 
 ### ConduitSite CRD (`--features kubernetes`)
 
-> **Requires** `cargo build --features kubernetes` — use the `:latest-full` Docker image.
+> **Requires** `cargo build --features kubernetes` — use the `:latest` (full) Docker image.
 
 Instead of a config file or ConfigMap, configure Conduit with Kubernetes custom
 resources. Each `ConduitSite` object maps to one virtual site. Changes are
@@ -537,7 +549,7 @@ spec:
       serviceAccountName: conduit
       containers:
         - name: conduit
-          image: ghcr.io/lopatnov/conduit:latest-full
+          image: ghcr.io/lopatnov/conduit:latest
           args: ["--kubernetes-namespace", "default"]
           ports:
             - containerPort: 8080

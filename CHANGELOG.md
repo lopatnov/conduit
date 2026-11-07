@@ -60,6 +60,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Release names (issue #665): the full build has the plain name, `standard` gets a suffix, and `gateway` and
+  `static` are published too.** Every release now carries four builds of each platform: `conduit-<target>` is
+  **full** (it was the standard build up to 2.1.x, where full ended in `-full`), `conduit-<target>-standard` is
+  the standard build, `-gateway` is the gateway bundle and `-static` the static-server bundle, both built with
+  `--no-default-features` (RISC-V stays standard only). The Docker images follow the same rule: `:latest`,
+  `:X.Y.Z` and `:X.Y` are the **full** image (up to 2.1.x the standard one), and `:latest-standard`,
+  `:latest-gateway`, `:latest-static` (with `:X.Y.Z-…` and `:X.Y-…`) are the others; every image is scanned with
+  Trivy. **A script that downloads the plain name or pulls `:latest` now gets the full build** (about 39 MiB
+  against 22 MiB for standard): pin `-standard` / `:X.Y.Z-standard` to keep the old one. The npm package is
+  unchanged for users (it installs the full build) and now vendors only the full binaries. Releases up to 2.1.x
+  keep their old names. `scripts/test_release_matrix.py` checks that the workflow, the npm tables and the Docker
+  matrix agree.
 - **Load balancing: `least-conn` and `p2c` read `weight`** (issue #506). `least-conn` now picks the
   upstream with the fewest active connections *per unit of weight* (as nginx `least_conn` does), so a
   weight-3 upstream carries three times the in-flight requests of a weight-1 one; `p2c` divides its

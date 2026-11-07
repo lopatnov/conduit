@@ -8,8 +8,8 @@ itself, or redirect the client. It runs in a sandbox: it has no network, no file
 New to middleware? [Middleware overview](middleware.md) says how the `middleware` list behaves and when to
 choose a built-in check, a Rhai script or a plugin.
 
-**Which installs have it.** WASM is the `wasm` Cargo feature, part of the `full` bundle: the `-full` release
-downloads, the `:latest-full` image and the npm package contain it; the `standard` binary and the default build do not
+**Which installs have it.** WASM is the `wasm` Cargo feature, part of the `full` bundle: the plain-named release
+downloads, the `:latest` image and the npm package contain it; the `-standard` binary and the default build do not
 (see [Optional build features](configuration.md#optional-build-features)). Without the feature a `wasm` entry is
 ignored with a warning, and **the check it performed no longer happens**.
 

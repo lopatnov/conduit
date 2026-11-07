@@ -320,9 +320,9 @@ dropped by the next reload. The complete reference is
 | macOS    | Intel, Apple Silicon  |
 | Windows  | x86-64                |
 
-Other platforms (Linux musl, Linux RISC-V 64) and the smaller `standard` build are available as
+Other platforms (Linux musl, Linux RISC-V 64) and the smaller `standard` build (files ending in `-standard`) are available as
 [release downloads](https://github.com/lopatnov/conduit/releases) and as Docker images
-(`ghcr.io/lopatnov/conduit:latest` for standard, `:latest-full` for full), or you can build from
+(`ghcr.io/lopatnov/conduit:latest` for full, `:latest-standard` for standard), or you can build from
 source:
 
 ```bash

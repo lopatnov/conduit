@@ -45,15 +45,16 @@ const BASE_URL = process.env.CONDUIT_DOWNLOAD_BASE ||
 function getAssetName() {
   const { platform, arch } = process;
 
-  // Issue #239: npm ships the `full` feature bundle from the 2.0.0 line
-  // onward (was `standard` through 1.x) — asset names gain a "-full" suffix,
-  // matching release.yml's full-build job names exactly.
+  // npm ships the `full` feature bundle (issue #239). Since 2.2.0 the full
+  // build is the unsuffixed release asset (it was `...-full` in 2.0.x and
+  // 2.1.x, whose packages still ask for their own release's `-full` names);
+  // the other bundles are `-standard`, `-gateway` and `-static`.
   const map = {
-    "linux-x64":    "conduit-x86_64-unknown-linux-gnu-full",
-    "linux-arm64":  "conduit-aarch64-unknown-linux-gnu-full",
-    "darwin-x64":   "conduit-x86_64-apple-darwin-full",
-    "darwin-arm64": "conduit-aarch64-apple-darwin-full",
-    "win32-x64":    "conduit-x86_64-pc-windows-msvc-full.exe",
+    "linux-x64":    "conduit-x86_64-unknown-linux-gnu",
+    "linux-arm64":  "conduit-aarch64-unknown-linux-gnu",
+    "darwin-x64":   "conduit-x86_64-apple-darwin",
+    "darwin-arm64": "conduit-aarch64-apple-darwin",
+    "win32-x64":    "conduit-x86_64-pc-windows-msvc.exe",
   };
 
   const key = `${platform}-${arch}`;

@@ -12,11 +12,11 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ASSETS = [
-  "conduit-x86_64-unknown-linux-gnu-full",
-  "conduit-aarch64-unknown-linux-gnu-full",
-  "conduit-x86_64-apple-darwin-full",
-  "conduit-aarch64-apple-darwin-full",
-  "conduit-x86_64-pc-windows-msvc-full.exe",
+  "conduit-x86_64-unknown-linux-gnu",
+  "conduit-aarch64-unknown-linux-gnu",
+  "conduit-x86_64-apple-darwin",
+  "conduit-aarch64-apple-darwin",
+  "conduit-x86_64-pc-windows-msvc.exe",
 ];
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 

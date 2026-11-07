@@ -26,8 +26,9 @@ every name below is described in the tables that follow:
 3. **Bundles**, which are only a short name for a set of the above: `standard`, `gateway`,
    `static-server`, `full`. A bundle adds no code of its own.
 
-The published downloads and images are `standard` (or `full`, files and tags ending in
-`-full`); `npx` installs `full`; `cargo install lopatnov-conduit` is the default build. See
+The published downloads and images are `full` (the plain file names and tags), `standard`, `gateway` and
+`static-server` (names ending in `-standard`, `-gateway`, `-static`); `npx` installs `full`;
+`cargo install lopatnov-conduit` is the default build. See
 [docs/cli.md: Build features](cli.md#build-features) and
 [Building](building.md) for sizes and build commands.
 
@@ -99,21 +100,22 @@ A bundle is a name for several features. `✓` means the bundle includes the fea
 - **`static-server`**: for `--no-default-features` builds of a file server that does not proxy:
   static files, compression, live reload
   (`cargo build --release --no-default-features --features static-server`).
-- **`full`**: everything above. The `-full` downloads, `:latest-full` and the npm package are
-  this build.
+- **`full`**: everything above. The plain-named downloads, `:latest` and the npm package are this
+  build; `-standard`, `-gateway` and `-static` downloads (and `:latest-standard`, `:latest-gateway`,
+  `:latest-static` images) are the other three bundles.
 
 Which one to pick:
 
 | You want | Build |
 | --- | --- |
-| A reverse proxy with auth, caching and automatic HTTPS | `standard` (the published binary) |
+| A reverse proxy with auth, caching and automatic HTTPS | `standard` (the `-standard` download, `:latest-standard`) |
 | Everything, including scripting, WASM, TCP, uploads, Redis | `full` |
 | The smallest proxy | the default build, or `--no-default-features --features proxy` |
 | A static site server with no upstream at all | `--no-default-features --features static-server` |
 | A gateway without static files | `--no-default-features --features gateway` |
 | A few extra features on top of the default build | `--features "jwt,rhai"` |
 
-Download a `-full` binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases)
+Download the plain-named (full) binary, or one ending in `-standard`, `-gateway` or `-static`, from [GitHub Releases](https://github.com/lopatnov/conduit/releases)
 or build from source: `cargo build --release --features full`.
 
 ---
@@ -3779,7 +3781,7 @@ untouched); return `true` (or nothing) to continue the pipeline.
 
 ## WASM Middleware
 
-> **Requires** the `wasm` feature, part of `full` (the `-full` downloads, `:latest-full` and the npm package).
+> **Requires** the `wasm` feature, part of `full` (the plain-named downloads, `:latest` and the npm package).
 > A plugin that fails lets the request through; `conduit validate` reports a plugin file that cannot run.
 
 **→ Full guide with ABI reference, Rust examples, and build instructions: [wasm.md](wasm.md)**

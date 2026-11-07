@@ -259,7 +259,7 @@ docker build -f contrib/Dockerfile \
   --build-arg FEATURES=standard \
   -t conduit:local-standard .
 
-# Full features image
+# Full features image (the published :latest)
 docker build -f contrib/Dockerfile \
   --build-arg FEATURES=full \
   -t conduit:local-full .
