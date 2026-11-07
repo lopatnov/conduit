@@ -2010,22 +2010,13 @@ mod tests {
 
     #[test]
     fn oversized_memory_grow_is_denied() {
-        // Declaring 257 initial pages (one over the 16 MiB / 256-page cap)
-        // does NOT fail instantiation on its own — Wasmtime only enforces
-        // the ResourceLimiter on `memory.grow`, not on a module's static
-        // initial size (confirmed empirically with a scratch probe: even
-        // with the limiter wired in, `run_inner` returns `Ok` for a
-        // 257-page-declared module — an earlier draft of this test
-        // asserted on that and was a tautology, since a plain successful
-        // `on_request` returning 0 produces the identical `Continue`
-        // outcome). So this module starts at 1 page and tries to
-        // `memory.grow` to 257 pages at runtime instead; a denied grow
-        // returns `-1` to the guest (not a trap) per Wasm semantics, and
-        // the module reports which branch ran via a *distinctive* aborted
-        // status code (298 = grow succeeded / cap broken, 299 = grow
-        // denied / cap working) rather than a plain `Continue`/`Abort`
-        // check, so the test can't pass by accident regardless of which
-        // branch actually executes.
+        // This test is about growth at run time: the module starts at 1 page and tries to `memory.grow` to 257
+        // pages. (A module that *declares* 257 initial pages is a different case, covered by
+        // `oversized_initial_memory_fails_instantiation`: the limiter refuses it at instantiation too, and since
+        // #565 the loader refuses it first.) A denied grow returns `-1` to the guest (not a trap) per Wasm
+        // semantics, and the module reports which branch ran via a *distinctive* aborted status code (298 = grow
+        // succeeded / cap broken, 299 = grow denied / cap working) rather than a plain `Continue`/`Abort` check, so
+        // the test can't pass by accident regardless of which branch actually executes.
         let (_f, p) = compile_wat(
             r#"(module
               (import "conduit" "conduit_set_response_status" (func $set_status (param i32)))
