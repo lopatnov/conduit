@@ -3915,6 +3915,25 @@ sites:
 | `admin.token`         | string | —               | Bearer token required for every Admin API request (strongly recommended)             |
 | `otlp`                | object | —               | OpenTelemetry tracing config (`--features otlp` required — see [OpenTelemetry Tracing](#opentelemetry-tracing)) |
 
+### What happens on SIGTERM
+
+1. Conduit stops accepting new connections.
+2. **Grace period** (`shutdownTimeoutSecs`, default 30 s): Pingora waits the whole period, whether or not
+   the connections have drained. Requests already in flight finish during it, and a request that is still
+   open when it ends is **cut**: measured with the real server (a 12-second request open at SIGTERM and a
+   1-second grace period), the client lost the connection one second after the signal, over HTTP/1.1 and
+   over HTTP/2 (TLS). So set it longer than your slowest request. (`POST /shutdown` and `conduit shutdown`
+   do not wait it out: they poll the number of in-flight requests and exit as soon as it is zero, or when
+   the period expires; see [Admin API](admin.md).)
+3. The process exits at the end of the period. Pingora has a second timeout for the runtimes after it
+   (`graceful_shutdown_timeout_seconds`, 5 s), but it did not change anything in that measurement, so
+   Conduit does not expose it (issue #36): the drain ceiling is `shutdownTimeoutSecs` itself. Exiting as soon
+   as the in-flight requests are done, instead of sleeping the whole period, is #655.
+
+A hot reload is not a shutdown: it swaps the configuration without closing a connection, and a request that
+is already in flight keeps the upstream it was given (measured: a 4-second request open while the upstream
+was changed and the configuration reloaded completed normally). There is nothing to drain on a reload.
+
 ---
 
 ## TCP Proxy
