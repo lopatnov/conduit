@@ -250,8 +250,11 @@ disappears, or a changed `tls.cert/key` on a bound port, needs a restart.
 
 ### POST /shutdown
 
-Initiates a graceful shutdown: stops accepting new connections, waits for
-all in-flight requests to complete, then exits.
+Initiates a shutdown: polls the number of in-flight requests every 50 ms and exits as soon as it is zero, or
+when `global.shutdownTimeoutSecs` (default 30 s) has passed. It does **not** stop accepting new connections
+first, so a request that arrives after the count has reached zero is cut by the exit: take the instance out of
+the load balancer before calling it. (A `SIGTERM` stops accepting but then waits the whole period; see
+[What happens on SIGTERM](configuration.md#what-happens-on-sigterm).)
 
 ```bash
 curl -X POST http://localhost:2019/shutdown

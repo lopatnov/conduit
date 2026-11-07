@@ -3920,19 +3920,29 @@ sites:
 1. Conduit stops accepting new connections.
 2. **Grace period** (`shutdownTimeoutSecs`, default 30 s): Pingora waits the whole period, whether or not
    the connections have drained. Requests already in flight finish during it, and a request that is still
-   open when it ends is **cut**: measured with the real server (a 12-second request open at SIGTERM and a
-   1-second grace period), the client lost the connection one second after the signal, over HTTP/1.1 and
-   over HTTP/2 (TLS). So set it longer than your slowest request. (`POST /shutdown` and `conduit shutdown`
-   do not wait it out: they poll the number of in-flight requests and exit as soon as it is zero, or when
-   the period expires; see [Admin API](admin.md).)
-3. The process exits at the end of the period. Pingora has a second timeout for the runtimes after it
-   (`graceful_shutdown_timeout_seconds`, 5 s), but it did not change anything in that measurement, so
-   Conduit does not expose it (issue #36): the drain ceiling is `shutdownTimeoutSecs` itself. Exiting as soon
-   as the in-flight requests are done, instead of sleeping the whole period, is #655.
+   open when it ends is **cut**: with a 12-second request open at SIGTERM and a 1-second grace period the
+   client lost the connection one second after the signal, over HTTP/1.1 and over HTTP/2 (TLS)
+   (`scripts/repro-shutdown-and-reload.sh` runs it). So set it longer than your slowest request.
+   (`POST /shutdown` and `conduit shutdown` do not wait the period out, and they do not stop accepting
+   connections either: they poll the number of in-flight requests and exit as soon as it is zero, or when the
+   period expires; see [Admin API](admin.md).)
+3. The process exits at the end of the period. Pingora also allows the runtimes a second timeout after it
+   (`graceful_shutdown_timeout_seconds`, 5 s by default), which it applies to the runtimes' own blocking work
+   (it made no difference to the cut request in the run above, so Conduit does not expose it: issue #36).
+   The drain ceiling for requests is `shutdownTimeoutSecs` itself. Exiting as soon as the in-flight requests
+   are done, instead of sleeping the whole period, is #655.
 
-A hot reload is not a shutdown: it swaps the configuration without closing a connection, and a request that
-is already in flight keeps the upstream it was given (measured: a 4-second request open while the upstream
-was changed and the configuration reloaded completed normally). There is nothing to drain on a reload.
+   A supervisor that kills the process after its own deadline (Kubernetes `terminationGracePeriodSeconds`,
+   systemd `TimeoutStopSec`) should allow a margin of a few seconds over `shutdownTimeoutSecs` for that
+   second timeout and for scheduling.
+
+A hot reload is not a shutdown: it swaps the configuration without closing a connection, so there is nothing
+to drain. A request that is already in flight keeps the upstream it was given (a 4-second request open while
+the upstream was changed and the configuration reloaded completed normally, same script), unless a retry
+moves it to another of the upstreams it was given as candidates. A setting that is read again while a request
+goes on may apply to a request that is already in progress (the upload-rate limit
+`limits.minUploadRateBytesPerSec` is checked as the body arrives, so a reload that raises it can end a slow
+upload that was fine before; this part comes from reading the code, not from a run).
 
 ---
 
