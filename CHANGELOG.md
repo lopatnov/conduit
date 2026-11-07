@@ -61,7 +61,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **Release names (issue #665): the full build has the plain name, `standard` gets a suffix, and `gateway` and
-  `static` are published too.** Releases now carry up to four builds of a platform (RISC-V and Android: standard only): `conduit-<target>` is
+  `static` are published too.** Releases now carry up to four builds of a platform (RISC-V: standard only): `conduit-<target>` is
   **full** (it was the standard build up to 2.1.x, where full ended in `-full`), `conduit-<target>-standard` is
   the standard build, `-gateway` is the gateway bundle and `-static` the static-server bundle, both built with
   `--no-default-features` (RISC-V stays standard only). The Docker images follow the same rule: `:latest`,

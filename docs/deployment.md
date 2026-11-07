@@ -168,7 +168,7 @@ It sets up the service for you.
 
 ```bash
 # pick the file for your machine: amd64 (x86-64) or arm64 (Raspberry Pi 4/5, AWS Graviton, ...)
-curl -LO https://github.com/lopatnov/conduit/releases/latest/download/SHA256SUMS.txt
+curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/SHA256SUMS.txt
 curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/conduit-proxy_2.2.0_amd64.deb
 sha256sum --ignore-missing -c SHA256SUMS.txt        # the file must say OK
 sudo apt install ./conduit-proxy_2.2.0_amd64.deb
