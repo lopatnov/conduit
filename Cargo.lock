@@ -3153,6 +3153,7 @@ dependencies = [
  "dashmap 6.2.1",
  "tempfile",
  "tracing",
+ "wasmparser 0.261.0",
  "wasmtime",
  "wat",
 ]

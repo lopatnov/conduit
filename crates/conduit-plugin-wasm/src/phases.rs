@@ -115,7 +115,7 @@ pub fn check_module(path: &str) -> Result<(), ModuleProblem> {
     // warning), but the rest of the plugin works.
     if !has_on_request(&module) {
         return Err(ModuleProblem::Degraded(
-            "does not export on_request as () -> i32, so its request phase is skipped with a warning on every request              (on_request is required even in a plugin that only uses on_response)"
+            "does not export on_request as () -> i32, so its request phase is skipped with a warning on every request (on_request is required even in a plugin that only uses on_response)"
                 .to_owned(),
         ));
     }
@@ -142,31 +142,42 @@ fn load_for_check(path: &str) -> Result<Module, String> {
     let bytes = read_module_file(path).map_err(|e| e.describe())?;
     let module = Module::new(engine().map_err(|e| e.to_string())?, &bytes)
         .map_err(|e| format!("is not a valid WebAssembly module: {e:#}"))?;
-    verify(&module)?;
+    verify(&module, &bytes)?;
     Ok(module)
+}
+
+/// A memory the host cannot give the plugin is a failure to instantiate on every call (fail-open): a shared one,
+/// or one whose declared initial size is over the limit. `Module` does not list the memories a module defines, so
+/// this reads the memory section of the binary (the module has already compiled, so it is well formed).
+fn check_declared_memories(bytes: &[u8]) -> Result<(), String> {
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        let Ok(wasmparser::Payload::MemorySection(reader)) = payload else {
+            continue;
+        };
+        for memory in reader.into_iter().flatten() {
+            if memory.shared {
+                return Err("declares a shared memory, which this host does not enable, so it cannot be instantiated".to_owned());
+            }
+            let initial = memory.initial.saturating_mul(WASM_PAGE_BYTES);
+            if initial > MEMORY_LIMIT_BYTES as u64 {
+                return Err(format!(
+                    "declares an initial memory of {} MiB, over the {} MiB limit, so it cannot be instantiated",
+                    initial / (1024 * 1024),
+                    MEMORY_LIMIT_BYTES / (1024 * 1024)
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What the host needs of a compiled module before it can run it: the exports, a memory it can instantiate, and
 /// imports that link in the phases it uses. The loader applies this too, so a file that compiles but cannot be
 /// run never replaces the version of the plugin that last worked (issue #565, review of #662); `check_module`
 /// reports the same reasons. Nothing in the module runs.
-pub(crate) fn verify(module: &Module) -> Result<(), String> {
+pub(crate) fn verify(module: &Module, bytes: &[u8]) -> Result<(), String> {
     let engine = engine().map_err(|e| e.to_string())?;
-    // A memory the host cannot give the plugin is a failure to instantiate on every call (fail-open). Only an
-    // exported memory can be looked at from outside, and a plugin that uses the host needs to export it.
-    if let Some(ExternType::Memory(memory)) = module.get_export("memory") {
-        if memory.is_shared() {
-            return Err("declares a shared memory, which this host does not enable, so it cannot be instantiated".to_owned());
-        }
-        let initial = memory.minimum().saturating_mul(WASM_PAGE_BYTES);
-        if initial > MEMORY_LIMIT_BYTES as u64 {
-            return Err(format!(
-                "declares an initial memory of {} MiB, over the {} MiB limit, so it cannot be instantiated",
-                initial / (1024 * 1024),
-                MEMORY_LIMIT_BYTES / (1024 * 1024)
-            ));
-        }
-    }
+    check_declared_memories(bytes)?;
 
     // A plugin needs at least one export the host can call. (A module with only `on_response` still works for
     // responses; `check_module` says that its request phase is skipped.)
@@ -463,6 +474,22 @@ mod tests {
         assert!(why.contains("over the 16 MiB limit"), "{why}");
         let (_f, path) = wasm_file(
             r#"(module (memory (export "memory") 256) (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        assert_eq!(check_module(&path), Ok(()), "exactly the limit is allowed");
+    }
+
+    #[test]
+    fn an_unexported_memory_is_checked_too() {
+        let why = problem(
+            r#"(module (memory 257) (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        assert!(why.contains("over the 16 MiB limit"), "{why}");
+        let why = problem(
+            r#"(module (memory 1 1 shared) (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        assert!(why.contains("shared"), "{why}");
+        let (_f, path) = wasm_file(
+            r#"(module (memory 256) (func (export "on_request") (result i32) i32.const 0))"#,
         );
         assert_eq!(check_module(&path), Ok(()), "exactly the limit is allowed");
     }

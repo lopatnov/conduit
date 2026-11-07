@@ -94,7 +94,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   response if it imported a request function.
 - **`conduit validate` reports a WASM plugin that cannot run** (issue #565): a file that is missing or not a binary
   module, no `on_request` of type `() -> i32`, an import that does not exist or has the wrong type (a misspelt
-  host function, a WASI import), a shared memory or an exported memory declared over the 16 MiB limit, a file that is
+  host function, a WASI import), a shared memory or any memory declared over the 16 MiB limit, a file that is
   not a regular file or is over 64 MiB (a plugin file is now read with that cap, in validation and at run time), and,
   as warnings that say the plugin still runs, a module that calls memory-reading host functions but exports no
   `memory`, an `on_response` of the wrong type and a missing `on_request` next to a working `on_response`. A module

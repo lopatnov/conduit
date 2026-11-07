@@ -448,8 +448,8 @@ stays in use)
 
 It also names a file that is not a regular file or is over 64 MiB, is not a binary module, exports neither `on_request` nor
 `on_response` with the type the host calls, imports a function that does not exist or has the wrong type (a misspelt
-`conduit_get_hedaer`, a WASI import), or declares a shared memory or an exported memory whose initial size is over the
-16 MiB limit: all of those make the plugin fail to load or to instantiate, so it is skipped. Three problems leave a
+`conduit_get_hedaer`, a WASI import), or declares a shared memory or a memory whose initial size is over the 16 MiB
+limit (any memory, exported or not): all of those make the plugin fail to load or to instantiate, so it is skipped. Three problems leave a
 plugin that still runs, and the warning says so: a module that imports host functions that need memory but exports none
 (those calls read and write nothing), an `on_response` of the wrong type (it is never called), and a missing
 `on_request` in a plugin that has an `on_response` (the request phase logs a warning on every request). A running server only logs these at

@@ -190,7 +190,7 @@ fn read_and_compile(path: &str) -> anyhow::Result<Arc<Module>> {
     // A module that compiles but cannot be run (no `on_request`, an import that does not exist, a memory the
     // host cannot give it) is treated like one that does not compile: after a reload the last version that worked
     // stays in use, instead of the plugin failing to instantiate on every call (issue #565).
-    crate::phases::verify(&module).map_err(|why| anyhow::anyhow!("plugin {why}"))?;
+    crate::phases::verify(&module, &bytes).map_err(|why| anyhow::anyhow!("plugin {why}"))?;
     Ok(Arc::new(module))
 }
 
@@ -2073,19 +2073,31 @@ mod tests {
               (memory 257)
               (func (export "on_request") (result i32) i32.const 0))"#,
         );
-        // (The memory is not exported: a module that exports an oversized memory is refused earlier, when it is
-        // loaded, by `phases::verify`; this test is about the limiter itself.)
-        match run_inner(req(), &p) {
-            Ok(outcome) => {
-                panic!("instantiation must fail for oversized initial memory, got {outcome:?}")
-            }
+        // Since #565 the loader refuses such a module before it is ever instantiated (`phases::verify`), so the
+        // limiter is reached here by instantiating the compiled module directly.
+        let module = read_and_compile_unverified(&p);
+        let mut store = Store::new(engine().unwrap(), WasmState::new(req()));
+        store.limiter(|s| &mut s.resource_limits as &mut dyn wasmtime::ResourceLimiter);
+        let mut linker = Linker::new(engine().unwrap());
+        register_host_functions(&mut linker).unwrap();
+        match linker.instantiate(&mut store, &module) {
+            Ok(_) => panic!("instantiation must fail for oversized initial memory"),
             Err(e) => assert!(
                 e.to_string().contains("exceeds memory limits"),
                 "expected a memory-limit rejection, got: {e}"
             ),
         }
-        // And the fail-open contract still holds at the run_wasm level.
+        // Through the loader the module is refused with the reason, and the fail-open contract holds.
+        let refused = run_inner(req(), &p)
+            .expect_err("the loader refuses the module")
+            .to_string();
+        assert!(refused.contains("over the 16 MiB limit"), "{refused}");
         assert!(matches!(run_wasm(req(), &p), WasmOutcome::Continue { .. }));
+    }
+
+    /// Compile a plugin file without the checks of the loader.
+    fn read_and_compile_unverified(path: &str) -> Module {
+        Module::new(engine().unwrap(), std::fs::read(path).unwrap()).unwrap()
     }
 
     // ── A plugin that uses both phases (issue #565) ───────────────────────────
@@ -2188,5 +2200,24 @@ mod tests {
             run_inner(req(), &p).is_ok(),
             "the request phase runs the start function with the function available"
         );
+    }
+
+    /// The guide and `check_module` say that a module with a shared memory cannot be instantiated: this is the
+    /// engine, not the check, saying so.
+    #[test]
+    fn a_module_with_a_shared_memory_cannot_be_instantiated() {
+        let (_f, p) = compile_wat(
+            r#"(module
+              (memory (export "memory") 1 1 shared)
+              (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        let compiled = Module::new(engine().unwrap(), std::fs::read(&p).unwrap());
+        let mut store = Store::new(engine().unwrap(), WasmState::new(req()));
+        let outcome = compiled.and_then(|m| {
+            Linker::<WasmState>::new(engine().unwrap())
+                .instantiate(&mut store, &m)
+                .map(|_| ())
+        });
+        assert!(outcome.is_err(), "if the engine accepted a shared memory, check_declared_memories would refuse a working plugin");
     }
 }
