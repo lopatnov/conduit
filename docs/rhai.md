@@ -35,7 +35,9 @@ forwarded request headers, or access the client IP.
 
 **A script that fails lets the request through (fail-open).** If the file cannot be
 read, does not compile, throws, or runs into a limit below, Conduit logs a warning and
-carries on as if the script had returned `true`:
+carries on as if the script had returned `true` (one exception: a script that compiled before
+and was edited into a file that does not compile after a reload keeps running its last good
+version; see [Execution model](#execution-model)):
 
 ```text
 WARN conduit_script_rhai::script: Rhai compile error: Syntax error: ... (line 1, position 1) script="/etc/conduit/auth.rhai"
@@ -484,6 +486,10 @@ if upstream.header("Access-Control-Allow-Origin") == "" {
   reload (`conduit reload`, `POST /reload`, or the file watcher) empties the cache, so an edited file at an
   unchanged path is read again by the next request (issue #566: before that fix a reload did not
   pick up an edit, and only a restart did). Editing the file without a reload changes nothing.
+  If the edited file then does not compile (a typo, or a save that stopped half-way), **the last version
+  that compiled stays in use** and each request logs `Rhai script cannot be used after a reload (...)`:
+  a bad save does not switch a guard off. Save scripts atomically (write a temporary file, then rename
+  it) so a reload never sees a half-written one. A script that has never compiled is skipped, as above.
 - Scripts execute **synchronously** in the request-handling thread.
 - Each request gets its own `request` and `response` scope — there is **no
   shared mutable state** between requests.
