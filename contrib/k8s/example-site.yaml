@@ -76,7 +76,7 @@ spec:
       serviceAccountName: conduit
       containers:
         - name: conduit
-          image: ghcr.io/lopatnov/conduit:latest-full  # kubernetes feature requires full image
+          image: ghcr.io/lopatnov/conduit:latest  # kubernetes feature requires the full image (the plain tag)
           args:
             - --kubernetes-namespace=default   # watch this namespace for ConduitSite CRDs
           securityContext:

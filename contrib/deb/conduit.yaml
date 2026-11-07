@@ -1,0 +1,15 @@
+# Conduit configuration, installed by the conduit-proxy package.
+#
+# The service is installed but not started. Edit this file for your site, check it, then start it:
+#
+#   sudo conduit validate -c /etc/conduit/conduit.yaml
+#   sudo systemctl enable --now conduit      # start now and at every boot
+#   sudo systemctl status conduit
+#   journalctl -u conduit -f                 # the log
+#   sudo systemctl restart conduit           # after you change this file
+#
+# This sample listens on port 8080 and forwards every request to an application on the same machine, port 3000.
+# Documentation: https://lopatnov.github.io/conduit/
+sites:
+  - port: 8080
+    proxy: http://127.0.0.1:3000

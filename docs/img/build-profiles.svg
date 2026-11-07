@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" role="img" aria-labelledby="t d">
   <title id="t">Choose your build</title>
-  <desc id="d">Four build layers, each including the ones below it. Always on: routing, TLS, filters, basic auth, metrics and the Admin API. Default adds reverse proxy, static files, compression and browser live reload. Standard adds JWT, consumers, forward auth, caching and ACME. Full adds scripting, WebAssembly, TCP proxy, upload, Redis, disk cache, fault injection, OpenTelemetry and Kubernetes. npm installs full, release archives and Docker offer standard and full, and cargo install builds the default or any feature set you name.</desc>
+  <desc id="d">Four build layers, each including the ones below it. Always on: routing, TLS, filters, basic auth, metrics and the Admin API. Default adds reverse proxy, static files, compression and browser live reload. Standard adds JWT, consumers, forward auth, caching and ACME. Full adds scripting, WebAssembly, TCP proxy, upload, Redis, disk cache, fault injection, OpenTelemetry and Kubernetes. npm installs full, release archives and Docker offer full, standard, gateway and static, and cargo install builds the default or any feature set you name.</desc>
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
     <marker id="ar-blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="var(--blue)"/></marker>
@@ -87,12 +87,12 @@ text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fil
   <g class="orange"><rect class="cardA" x="620" y="148" width="304" height="78" rx="10"/></g>
   <g class="orange" transform="translate(634 162) scale(0.917)"><g class="ico"><path d="M12 3l8.500 4.500v9L12 21l-8.500-4.500v-9z"/><path d="M3.500 7.500L12 12l8.500-4.500M12 12v9"/></g></g>
   <text x="666" y="178" class="b">GitHub release archives</text>
-  <text x="666" y="198" class="m">standard or full</text>
+  <text x="666" y="198" class="m">full (plain name) or -standard</text>
   <g class="orange"><rect class="cardA" x="620" y="240" width="304" height="78" rx="10"/></g>
   <g class="orange" transform="translate(634 254) scale(0.917)"><g class="ico"><rect x="3" y="4" width="18" height="6.5" rx="1.8"/><rect x="3" y="13.5" width="18" height="6.5" rx="1.8"/><circle cx="7" cy="7.25" r=".9" class="icoF"/><circle cx="7" cy="16.75" r=".9" class="icoF"/></g></g>
   <text x="666" y="270" class="b">Docker image</text>
-  <text x="666" y="290" class="m">:latest is standard,</text>
-  <text x="666" y="305" class="m">:latest-full is full</text>
+  <text x="666" y="290" class="m">:latest is full,</text>
+  <text x="666" y="305" class="m">:latest-standard is standard</text>
   <g class="green"><rect class="cardA" x="620" y="332" width="304" height="78" rx="10"/></g>
   <g class="green" transform="translate(634 346) scale(0.917)"><g class="ico"><path d="M8.500 7L3.500 12l5 5M15.500 7l5 5-5 5M13.500 5l-3 14"/></g></g>
   <text x="666" y="362" class="b">cargo install</text>

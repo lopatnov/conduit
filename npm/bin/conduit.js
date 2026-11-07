@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { assetFor, SUPPORTED } from "./platform.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -17,25 +18,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Platform → binary name mapping (matches GitHub Release asset names)
 // --------------------------------------------------------------------------
 function getPlatformBinary() {
-  const { platform, arch } = process;
-
-  // Issue #239: matches download.js's "-full" asset names (full feature
-  // bundle, shipped from the 2.0.0 line onward).
-  const map = {
-    "linux-x64":   "conduit-x86_64-unknown-linux-gnu-full",
-    "linux-arm64": "conduit-aarch64-unknown-linux-gnu-full",
-    "darwin-x64":  "conduit-x86_64-apple-darwin-full",
-    "darwin-arm64":"conduit-aarch64-apple-darwin-full",
-    "win32-x64":   "conduit-x86_64-pc-windows-msvc-full.exe",
-  };
-
-  const key = `${platform}-${arch}`;
-  const name = map[key];
+  // The table is shared with download.js (platform.js); on Linux it picks the musl build on a musl libc.
+  const { key, name } = assetFor();
 
   if (!name) {
     console.error(
       `[conduit] Unsupported platform: ${key}\n` +
-      `Supported: ${Object.keys(map).join(", ")}\n` +
+      `Supported: ${SUPPORTED.join(", ")}\n` +
       `Install from source: cargo install lopatnov-conduit`
     );
     process.exit(1);

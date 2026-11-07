@@ -1,0 +1,8 @@
+# The binary is a static Rust program. "libyaml" is the Rust translation of it (unsafe-libyaml, used by serde_yaml)
+# compiled into the executable, not a bundled copy of the C library.
+conduit-proxy: embedded-library libyaml [usr/bin/conduit]
+# The binary is linked statically on purpose (musl): no dependency on a libc version, so one package installs on every
+# Debian and Ubuntu release. (lintian reports it for the arm64 binary; the amd64 one is a static-pie.)
+conduit-proxy: statically-linked-binary [usr/bin/conduit]
+# The configuration may hold secrets (an Admin API token, JWT keys): it is readable by the conduit account only.
+conduit-proxy: non-standard-file-perm 0640 != 0644 [etc/conduit/conduit.yaml]

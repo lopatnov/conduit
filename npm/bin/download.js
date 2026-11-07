@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { assetFor } from "./platform.js";
 
 // --------------------------------------------------------------------------
 // Skip conditions
@@ -43,21 +44,10 @@ const BASE_URL = process.env.CONDUIT_DOWNLOAD_BASE ||
 // Platform → asset name
 // --------------------------------------------------------------------------
 function getAssetName() {
-  const { platform, arch } = process;
-
-  // Issue #239: npm ships the `full` feature bundle from the 2.0.0 line
-  // onward (was `standard` through 1.x) — asset names gain a "-full" suffix,
-  // matching release.yml's full-build job names exactly.
-  const map = {
-    "linux-x64":    "conduit-x86_64-unknown-linux-gnu-full",
-    "linux-arm64":  "conduit-aarch64-unknown-linux-gnu-full",
-    "darwin-x64":   "conduit-x86_64-apple-darwin-full",
-    "darwin-arm64": "conduit-aarch64-apple-darwin-full",
-    "win32-x64":    "conduit-x86_64-pc-windows-msvc-full.exe",
-  };
-
-  const key = `${platform}-${arch}`;
-  const name = map[key];
+  // The table is shared with conduit.js (platform.js): the full build, which is the unsuffixed release asset since
+  // 2.2.0 (it was `...-full` in 2.0.x and 2.1.x, whose packages still ask for their own release's `-full` names);
+  // the other bundles are `-standard`, `-gateway` and `-static`. On Linux it picks the musl build on a musl libc.
+  const { key, name } = assetFor();
 
   if (!name) {
     console.warn(

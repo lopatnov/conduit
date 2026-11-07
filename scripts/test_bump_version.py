@@ -86,9 +86,13 @@ class Docs(unittest.TestCase):
         self.assertEqual(bv.bump_doc(text, "2.0.0", "2.1.0"), "Conduit 2.1.0 and 12.0.0 and 2.0.01 and 2.0.0.1")
 
     def test_image_tag_aliases(self):
-        text = "`:latest`, `:2.0.0`, `:2.0` / `:2.0.0-full`, `:2.0-full`"
+        text = "`:latest`, `:2.0.0`, `:2.0` / `:2.0.0-standard`, `:2.0-standard`, `:2.0-gateway`, `:2.0-static`"
         out = bv.bump_doc(text, "2.0.0", "3.4.0", with_tag_aliases=True)
-        self.assertEqual(out, "`:latest`, `:3.4.0`, `:3.4` / `:3.4.0-full`, `:3.4-full`")
+        self.assertEqual(out, "`:latest`, `:3.4.0`, `:3.4` / `:3.4.0-standard`, `:3.4-standard`, `:3.4-gateway`, `:3.4-static`")
+
+    def test_the_old_full_suffix_of_2_1_and_earlier_still_moves(self):
+        out = bv.bump_doc("`:2.0.0-full`, `:2.0-full`", "2.0.0", "2.1.0", with_tag_aliases=True)
+        self.assertEqual(out, "`:2.1.0-full`, `:2.1-full`")
 
     def test_aliases_do_not_move_for_a_prerelease_target(self):
         out = bv.bump_doc("`:2.0.0`, `:2.0`, `:2.0-full`", "2.0.0", "2.1.0-rc.1", with_tag_aliases=True)

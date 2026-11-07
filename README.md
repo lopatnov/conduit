@@ -390,7 +390,7 @@ conduit --kubernetes-namespace default               # in the Conduit pod; '*' w
 
 Conduit watches the namespace, combines the resources into one config, checks it and swaps it in
 without a restart; an update that fails validation is rejected and the running config stays. Use
-the `:latest-full` image (or a build with `--features kubernetes`) and give the pod a service
+the `:latest` (full) image (or a build with `--features kubernetes`) and give the pod a service
 account that may `get`, `list` and `watch` `conduitsites`. Write access to `ConduitSite` objects is
 deploy access: `spec` takes any site field, file paths such as `static` and `upload.dir` included, so
 grant it only to people who may deploy to the Conduit pod.
@@ -451,15 +451,32 @@ Windows x64. See the [npm package page](npm/Readme.md) for details.
 
 Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
-| Platform             | Standard                                    | Full                                             |
-| -------------------- | ------------------------------------------- | ------------------------------------------------ |
-| Linux x86-64         | `conduit-x86_64-unknown-linux-gnu.tar.gz`   | `conduit-x86_64-unknown-linux-gnu-full.tar.gz`   |
-| Linux x86-64 musl    | `conduit-x86_64-unknown-linux-musl.tar.gz`  | `conduit-x86_64-unknown-linux-musl-full.tar.gz`  |
-| Linux ARM64          | `conduit-aarch64-unknown-linux-gnu.tar.gz`  | `conduit-aarch64-unknown-linux-gnu-full.tar.gz`  |
-| Linux RISC-V 64      | `conduit-riscv64gc-unknown-linux-gnu.tar.gz`| —                                                |
-| macOS Intel          | `conduit-x86_64-apple-darwin.tar.gz`        | `conduit-x86_64-apple-darwin-full.tar.gz`        |
-| macOS Apple Silicon  | `conduit-aarch64-apple-darwin.tar.gz`       | `conduit-aarch64-apple-darwin-full.tar.gz`       |
-| Windows x86-64       | `conduit-x86_64-pc-windows-msvc.exe.zip`    | `conduit-x86_64-pc-windows-msvc-full.exe.zip`    |
+A release has up to four builds of a platform. The **full** build has the plain name; the others carry their
+bundle name (see [Choose your build](#choose-your-build)). The names below are for Linux and macOS archives
+(`.tar.gz`); for Windows the archive is `.exe.zip` (`conduit-<target>.exe.zip`, `conduit-<target>-standard.exe.zip`, …).
+Each archive holds one file, named like the archive without `.tar.gz` or `.zip`.
+
+| Build        | File                                      | What it is                                                           |
+| ------------ | ----------------------------------------- | -------------------------------------------------------------------- |
+| **full**     | `conduit-<target>.tar.gz`                 | every optional feature (scripting, WebAssembly, TCP, uploads, …)     |
+| **standard** | `conduit-<target>-standard.tar.gz`        | the default build plus JWT, consumers, forward auth, caching and ACME |
+| **gateway**  | `conduit-<target>-gateway.tar.gz`         | an API gateway: the standard stack without static files and live reload |
+| **static**   | `conduit-<target>-static.tar.gz`          | a static file server that does not proxy                             |
+
+| Platform             | `<target>`                    | Builds                   |
+| -------------------- | ----------------------------- | ------------------------ |
+| Linux x86-64         | `x86_64-unknown-linux-gnu`    | full, standard, gateway, static |
+| Linux x86-64 musl    | `x86_64-unknown-linux-musl`   | full, standard, gateway, static |
+| Linux ARM64          | `aarch64-unknown-linux-gnu`   | full, standard, gateway, static |
+| Linux ARM64 musl     | `aarch64-unknown-linux-musl`  | full, standard, gateway, static |
+| Linux RISC-V 64      | `riscv64gc-unknown-linux-gnu` | standard only            |
+| macOS Intel          | `x86_64-apple-darwin`         | full, standard, gateway, static |
+| macOS Apple Silicon  | `aarch64-apple-darwin`        | full, standard, gateway, static |
+| Windows x86-64       | `x86_64-pc-windows-msvc`      | full, standard, gateway, static |
+
+> **Upgrading from 2.1 and earlier:** the unsuffixed name used to be the standard build and the full build ended in
+> `-full`. Since 2.2.0 the plain name is the **full** build and the standard build ends in `-standard`; the `:latest`
+> image changed the same way. Releases up to 2.1.x keep their old file names.
 
 Every release also carries `SHA256SUMS.txt` (it lists every file attached to the release,
 archives included) and GitHub build-provenance attestations for the bare binaries, which are
@@ -494,19 +511,32 @@ cargo install lopatnov-conduit --no-default-features --features gateway        #
 For build instructions, feature bundles, cross-compilation and troubleshooting see
 **[docs/building.md](docs/building.md)**.
 
+### Debian and Ubuntu (.deb)
+
+Each release carries `conduit-proxy_<version>_amd64.deb` and `_arm64.deb`: the full build as a static binary, with a
+systemd unit, a sample `/etc/conduit/conduit.yaml` and a `conduit` service account. The service is installed but
+**not started**; edit the config, then `sudo systemctl enable --now conduit`
+([the steps](docs/deployment.md#debian-and-ubuntu-the-deb-package)).
+
+```bash
+sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+```
+
 ### Docker
 
 ```bash
-docker pull ghcr.io/lopatnov/conduit:latest        # standard build
-docker pull ghcr.io/lopatnov/conduit:latest-full   # full build
+docker pull ghcr.io/lopatnov/conduit:latest           # full build
+docker pull ghcr.io/lopatnov/conduit:latest-standard  # standard build
+docker pull ghcr.io/lopatnov/conduit:latest-gateway   # gateway build
+docker pull ghcr.io/lopatnov/conduit:latest-static    # static file server
 
 docker run -p 8080:8080 \
   -v $(pwd)/conduit.yaml:/etc/conduit/conduit.yaml:ro \
   ghcr.io/lopatnov/conduit:latest -c /etc/conduit/conduit.yaml
 ```
 
-The images are `FROM scratch` (a static musl binary, no shell, no OS userland) and run as UID
-65534. On Kubernetes, use the `:latest-full` image and `ConduitSite` resources:
+The images are multi-architecture (`linux/amd64` and `linux/arm64`; Docker picks the one of your machine),
+`FROM scratch` (a static musl binary, no shell, no OS userland), and run as UID 65534. On Kubernetes, use the `:latest` (full) image and `ConduitSite` resources:
 [see the example above](#kubernetes-one-conduitsite-per-site-needs-kubernetes).
 **→ docker-compose, systemd, Kubernetes and a production checklist:**
 [docs/deployment.md](docs/deployment.md)
@@ -520,8 +550,8 @@ The images are `FROM scratch` (a static musl binary, no shell, no OS userland) a
 | You install with                    | You get                                            |
 | ----------------------------------- | -------------------------------------------------- |
 | `npx` / `npm install -g`            | full                                               |
-| GitHub Release archives             | standard, or full (files ending in `-full`)        |
-| Docker                              | `:latest` is standard, `:latest-full` is full      |
+| GitHub Release archives             | full (plain name), or `-standard`, `-gateway`, `-static` |
+| Docker                              | `:latest` is full; `:latest-standard`, `:latest-gateway`, `:latest-static` |
 | `cargo install lopatnov-conduit`    | the default build; add `--features …` for more     |
 
 If your config uses a feature your binary was built without, `conduit validate` and the start-up

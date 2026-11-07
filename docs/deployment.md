@@ -14,6 +14,7 @@ Not sure what config to write first? **[← Configuration Recipes](recipes.md)**
   - [docker-compose](#docker-compose)
   - [Build your own image](#build-your-own-image)
 - [systemd](#systemd)
+  - [Debian and Ubuntu: the .deb package](#debian-and-ubuntu-the-deb-package)
   - [Install](#install)
   - [Secrets](#secrets)
   - [Unit file](#unit-file)
@@ -32,29 +33,36 @@ Not sure what config to write first? **[← Configuration Recipes](recipes.md)**
 
 ## Docker
 
-Two image variants are published to the GitHub Container Registry on every release:
+Four image variants are published to the GitHub Container Registry on every release. The **full** image has the plain tags; the others carry their bundle name as a suffix:
 
-| Variant  | Tags                                       | Includes                                                                                                                                                         |
-| -------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Standard | `:latest`, `:2.1.0`, `:2.1`                | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
-| Full     | `:latest-full`, `:2.1.0-full`, `:2.1-full` | All 15 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` |
+| Variant  | Tags                                                   | Includes                                                                                                                                                         |
+| -------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Full     | `:latest`, `:2.2.0`, `:2.2`                            | All 15 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` |
+| Standard | `:latest-standard`, `:2.2.0-standard`, `:2.2-standard` | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
+| Gateway  | `:latest-gateway`, `:2.2.0-gateway`, `:2.2-gateway`    | `gateway` bundle (`--no-default-features`): the proxy and the standard stack without static files and live reload                                                |
+| Static   | `:latest-static`, `:2.2.0-static`, `:2.2-static`       | `static-server` bundle (`--no-default-features`): static files, compression and live reload; it does not proxy                                                   |
+
+> **Upgrading from 2.1 and earlier:** `:latest` and `:X.Y.Z` used to be the standard image and the full image was
+> `:latest-full`. Since 2.2.0 the plain tags are the **full** image and standard is `:latest-standard`; pin
+> `:X.Y.Z-standard` to keep the smaller image. Tags of releases up to 2.1.x are unchanged.
 
 ```bash
-# Standard (jwt, consumers, forward-auth, cache, acme)
+# Full — all optional features enabled
 docker pull ghcr.io/lopatnov/conduit:latest
 
-# Full — all optional features enabled
-docker pull ghcr.io/lopatnov/conduit:latest-full
+# Standard (jwt, consumers, forward-auth, cache, acme)
+docker pull ghcr.io/lopatnov/conduit:latest-standard
 ```
 
-> **Standard vs Full:** the standard image covers the majority of production use
+> **Standard vs Full:** the standard image (`:latest-standard`) covers the majority of production use
 > cases — TLS, proxying, routing, rate limiting, basic/API-key/JWT auth, the
 > consumer model, ForwardAuth, response caching, auto-TLS (ACME), metrics,
 > hot-reload. Use the full image (or build from source with `--features`) when
 > you need scripting middleware (Rhai/WASM), file uploads, Redis-backed rate
 > limiting/caching, OTLP tracing, TCP proxy mode, or Kubernetes CRD config.
 
-Both images are multi-stage musl builds packaged into `FROM scratch`.
+All images are multi-stage musl builds packaged into `FROM scratch`, published for `linux/amd64` and `linux/arm64`
+under one tag (Docker picks the one of your machine; each architecture is built on a native runner, not emulated).
 They run as UID 65534 (`nobody`) with no shell or OS userland.
 
 > **Healthchecks in FROM scratch images:** because the image has no shell or
@@ -127,15 +135,20 @@ cd conduit
 # Minimal image (default = ["proxy", "compression", "static", "hotreload"])
 docker build -f contrib/Dockerfile -t conduit:local .
 
-# Standard image (matches the published default tag)
+# Standard image (the published :latest-standard)
 docker build -f contrib/Dockerfile \
   --build-arg FEATURES=standard \
   -t conduit:local-standard .
 
-# Full-features image
+# Full-features image (the published :latest)
 docker build -f contrib/Dockerfile \
   --build-arg FEATURES=full \
   -t conduit:local-full .
+
+# Gateway image (the published :latest-gateway); FEATURES=static-server for :latest-static
+docker build -f contrib/Dockerfile \
+  --build-arg FEATURES=gateway --build-arg NO_DEFAULT_FEATURES=true \
+  -t conduit:local-gateway .
 ```
 
 ---
@@ -146,6 +159,55 @@ The `contrib/conduit.service` unit file is ready for production use. It includes
 security hardening (`NoNewPrivileges`, `ProtectSystem=strict`) and automatic
 restart on failure.
 
+### Debian and Ubuntu: the .deb package
+
+Each release has a `conduit-proxy_<version>_amd64.deb` and `conduit-proxy_<version>_arm64.deb` on the
+[releases page](https://github.com/lopatnov/conduit/releases): the **full** build as a static binary, so one package
+installs on Debian 12 and 13 and on any Ubuntu release (it needs no libc of a particular version, only `adduser`).
+It sets up the service for you.
+
+```bash
+# pick the file for your machine: amd64 (x86-64) or arm64 (Raspberry Pi 4/5, AWS Graviton, ...)
+curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/conduit-proxy_2.2.0_amd64.deb
+# install only if the file was built by this repository's workflow (the && stops at a failure);
+# needs the GitHub CLI, signed in once with `gh auth login`
+gh attestation verify conduit-proxy_2.2.0_amd64.deb --repo lopatnov/conduit \
+  && sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+```
+
+Without the GitHub CLI, compare the checksum instead. It comes from the same release as the package, so it detects a
+damaged download but not a tampered release; the attestation above is the stronger check.
+
+```bash
+curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/SHA256SUMS.txt
+grep ' conduit-proxy_2.2.0_amd64.deb$' SHA256SUMS.txt | sha256sum -c - \
+  && sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+```
+
+**The service is installed, but it is not enabled and not started**: the sample configuration forwards port 8080 to an
+application on port 3000 of the same machine, which is not there yet. To start it:
+
+```bash
+sudoedit /etc/conduit/conduit.yaml                    # your sites; the file explains how to start the service
+# check it before starting, as the service will run: the same account, the same /etc/conduit/conduit.env (if you made
+# one), read by systemd itself (the file is not shell syntax, so it must not be sourced by a shell)
+sudo systemd-run --pipe --wait --collect -p User=conduit -p Group=conduit -p WorkingDirectory=/etc/conduit \
+  -p EnvironmentFile=-/etc/conduit/conduit.env /usr/bin/conduit validate -c /etc/conduit/conduit.yaml
+sudo systemctl enable --now conduit                   # start now and at every boot
+systemctl status conduit
+journalctl -u conduit -f                              # the log
+sudo systemctl restart conduit                        # after you change the configuration
+```
+
+What the package installs: `/usr/bin/conduit`; the unit `/usr/lib/systemd/system/conduit.service` (runs as the
+system user `conduit`, hardened as described [below](#unit-file)); `/etc/conduit/conduit.yaml` (readable by the
+`conduit` account only, kept when you upgrade or remove the package, deleted by `apt purge`); and the empty
+directories `/var/log/conduit` and `/var/cache/conduit` that the unit may write to. The service account cannot bind ports below 1024: to listen on 80 and 443 run
+`sudo systemctl edit conduit` and add `[Service]` and `AmbientCapabilities=CAP_NET_BIND_SERVICE`. An upgrade restarts the
+service if it is running and never starts one that is stopped. `sudo apt remove conduit-proxy` keeps your configuration;
+`sudo apt purge conduit-proxy` deletes it with the log and cache (the `conduit` account stays). The package and its
+tests are in `scripts/build-deb.sh`, `scripts/test-deb.sh` and `contrib/deb/`.
+
 ### Install
 
 **Step 1 — Get the binary.**
@@ -153,15 +215,16 @@ restart on failure.
 Download a pre-built binary from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
 ```bash
-# Linux x86-64 (standard: jwt, consumers, forward-auth, cache, acme)
+# Linux x86-64, full (adds Rhai/WASM, OTLP, TCP proxy, Redis, uploads, Kubernetes, etc.).
+# The archive holds one file named like the archive, without .tar.gz.
 curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu.tar.gz \
   | tar xz
-sudo install -m 755 conduit /usr/local/bin/conduit
+sudo install -m 755 conduit-x86_64-unknown-linux-gnu /usr/local/bin/conduit
 
-# Linux x86-64 (full — adds Rhai/WASM, OTLP, TCP proxy, Redis, uploads, Kubernetes, etc.)
-curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu-full.tar.gz \
+# Linux x86-64, standard (jwt, consumers, forward-auth, cache, acme)
+curl -L https://github.com/lopatnov/conduit/releases/latest/download/conduit-x86_64-unknown-linux-gnu-standard.tar.gz \
   | tar xz
-sudo install -m 755 conduit /usr/local/bin/conduit
+sudo install -m 755 conduit-x86_64-unknown-linux-gnu-standard /usr/local/bin/conduit
 ```
 
 Or build from source — see [docs/building.md](building.md).
@@ -224,7 +287,8 @@ Key parts of `contrib/conduit.service`:
 User=conduit
 Group=conduit
 WorkingDirectory=/etc/conduit
-ExecStart=/usr/local/bin/conduit -c /etc/conduit/conduit.yaml
+# no -c: reads conduit.json or conduit.yaml from the working directory (conduit.json if both exist)
+ExecStart=/usr/local/bin/conduit
 ExecReload=/usr/local/bin/conduit reload   # ← enables `systemctl reload`
 Restart=on-failure
 RestartSec=5s
@@ -448,7 +512,7 @@ conduit reload --admin 127.0.0.1:2019
 
 ### ConduitSite CRD (`--features kubernetes`)
 
-> **Requires** `cargo build --features kubernetes` — use the `:latest-full` Docker image.
+> **Requires** `cargo build --features kubernetes` — use the `:latest` (full) Docker image.
 
 Instead of a config file or ConfigMap, configure Conduit with Kubernetes custom
 resources. Each `ConduitSite` object maps to one virtual site. Changes are
@@ -537,7 +601,7 @@ spec:
       serviceAccountName: conduit
       containers:
         - name: conduit
-          image: ghcr.io/lopatnov/conduit:latest-full
+          image: ghcr.io/lopatnov/conduit:latest
           args: ["--kubernetes-namespace", "default"]
           ports:
             - containerPort: 8080
@@ -668,7 +732,7 @@ sudo systemctl restart conduit
 
 ```bash
 # Update the image tag — Kubernetes handles the rolling restart
-kubectl set image deployment/myapp conduit=ghcr.io/lopatnov/conduit:2.1.0
+kubectl set image deployment/myapp conduit=ghcr.io/lopatnov/conduit:2.2.0
 kubectl rollout status deployment/myapp
 
 # Roll back if needed
