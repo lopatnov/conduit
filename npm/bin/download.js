@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { assetFor } from "./platform.js";
 
 // --------------------------------------------------------------------------
 // Skip conditions
@@ -43,23 +44,10 @@ const BASE_URL = process.env.CONDUIT_DOWNLOAD_BASE ||
 // Platform → asset name
 // --------------------------------------------------------------------------
 function getAssetName() {
-  const { platform, arch } = process;
-
-  // npm ships the `full` feature bundle (issue #239). Since 2.2.0 the full
-  // build is the unsuffixed release asset (it was `...-full` in 2.0.x and
-  // 2.1.x, whose packages still ask for their own release's `-full` names);
-  // the other bundles are `-standard`, `-gateway` and `-static`.
-  const map = {
-    "linux-x64":    "conduit-x86_64-unknown-linux-gnu",
-    "linux-arm64":  "conduit-aarch64-unknown-linux-gnu",
-    "darwin-x64":   "conduit-x86_64-apple-darwin",
-    "darwin-arm64": "conduit-aarch64-apple-darwin",
-    "win32-x64":    "conduit-x86_64-pc-windows-msvc.exe",
-    "win32-arm64":  "conduit-aarch64-pc-windows-msvc.exe",
-  };
-
-  const key = `${platform}-${arch}`;
-  const name = map[key];
+  // The table is shared with conduit.js (platform.js): the full build, which is the unsuffixed release asset since
+  // 2.2.0 (it was `...-full` in 2.0.x and 2.1.x, whose packages still ask for their own release's `-full` names);
+  // the other bundles are `-standard`, `-gateway` and `-static`. On Linux it picks the musl build on a musl libc.
+  const { key, name } = assetFor();
 
   if (!name) {
     console.warn(

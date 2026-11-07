@@ -30,8 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ubuntu-24.04-arm and windows-11-arm are native arm64 runners: they test the aarch64-unknown-linux-gnu and
-        # aarch64-pc-windows-msvc builds that the release publishes.
+        # ubuntu-24.04-arm and windows-11-arm are native arm64 runners. The first tests the aarch64-unknown-linux-gnu
+        # build that the release publishes; the second only shows whether Windows ARM64 builds and passes the tests
+        # (the release does not publish it yet: see the issue about Windows ARM64).
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
 
     steps:
@@ -838,6 +839,9 @@ jobs:
 
       - name: Check the release asset names against the npm package
         run: python3 scripts/test_release_matrix.py
+
+      - name: Unit-test the .deb build script
+        run: python3 scripts/test_build_deb.py
 
       - name: Unit-test the uncovered-lines script
         run: python3 scripts/test_new_uncovered_lines.py

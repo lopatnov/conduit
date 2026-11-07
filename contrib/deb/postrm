@@ -12,7 +12,7 @@ case "$1" in
 esac
 
 if [ "$1" = "purge" ]; then
-    rm -rf /var/log/conduit /var/cache/conduit
+    rm -rf --one-file-system /var/log/conduit /var/cache/conduit
     rmdir /etc/conduit 2>/dev/null || true
 fi
 

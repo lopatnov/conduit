@@ -72,13 +72,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unchanged for users (it installs the full build) and now vendors only the full binaries. Releases up to 2.1.x
   keep their old names. `scripts/test_release_matrix.py` checks that the workflow, the npm tables and the Docker
   matrix agree.
-- **New platforms: Linux ARM64 musl, Windows ARM64, and Docker images for `linux/arm64`.** The release now also builds
-  `aarch64-unknown-linux-musl` and `aarch64-pc-windows-msvc` (all four bundles; Windows ARM64 on the native
-  `windows-11-arm` runner). The npm package installs the full build on Windows ARM64 too. Every Docker image is built
+- **New platforms: Linux ARM64 musl and Docker images for `linux/arm64`.** The release now also builds
+  `aarch64-unknown-linux-musl` (all four bundles). On Linux the npm package now picks the static musl build on a musl
+  libc (Alpine, `node:alpine` images), where the glibc build does not start; one table in `npm/bin/platform.js` serves the
+  launcher and the downloader. Every Docker image is built
   for `linux/amd64` and `linux/arm64`, each on a runner of its own architecture (no emulation) and scanned with Trivy,
   then joined into one multi-architecture tag; `contrib/Dockerfile` builds for the architecture it runs on. Continuous
-  integration now tests on native arm64 runners (Linux and Windows) and inside Debian 13 and Debian 12 containers (and
-  Debian 13 on arm64), builds the Docker image on both architectures on every pull request, and cross-builds the musl
+  integration now tests on a native arm64 Linux runner, shows on every pull request whether Windows ARM64 builds and passes
+  the tests (it is not released yet), and tests inside Debian 13 and Debian 12 containers (and Debian 13 on arm64), builds the Docker image on both architectures on every pull request, and cross-builds the musl
   ARM64 target. **Android (`aarch64-linux-android`) is not built:** `pingora-core` 0.9.1 does not compile for it
   (`server/daemon.rs`, issue #668).
 - **A `.deb` package (issue #669).** Each release has `conduit-proxy_<version>_amd64.deb` and `_arm64.deb`: the full

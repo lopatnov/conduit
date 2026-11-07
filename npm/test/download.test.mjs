@@ -17,7 +17,8 @@ const ASSETS = [
   "conduit-x86_64-apple-darwin",
   "conduit-aarch64-apple-darwin",
   "conduit-x86_64-pc-windows-msvc.exe",
-  "conduit-aarch64-pc-windows-msvc.exe",
+  "conduit-x86_64-unknown-linux-musl",
+  "conduit-aarch64-unknown-linux-musl",
 ];
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 
@@ -25,6 +26,7 @@ async function run(served, expectedBody, seed = null, platformKey = null) {
   const pkg = mkdtempSync(join(tmpdir(), "conduit-npm-"));
   mkdirSync(join(pkg, "bin"));
   cpSync(join(here, "..", "bin", "download.js"), join(pkg, "bin", "download.js"));
+  cpSync(join(here, "..", "bin", "platform.js"), join(pkg, "bin", "platform.js"));
   writeFileSync(join(pkg, "package.json"), JSON.stringify({ version: "0.0.0", type: "module" }));
   if (expectedBody !== null) {
     const sums = Object.fromEntries(ASSETS.map((a) => [a, sha(expectedBody)]));
@@ -55,7 +57,7 @@ async function run(served, expectedBody, seed = null, platformKey = null) {
   return { code, contents: first, files: existsSync(native) ? readdirSync(native) : [], urls };
 }
 
-const supported = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"]
+const supported = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"]
   .includes(`${process.platform}-${process.arch}`);
 
 test("a download matching checksums.json is installed", { skip: !supported }, async () => {
@@ -90,10 +92,11 @@ test("an existing binary that does not match its checksum is replaced", { skip: 
 const PLATFORM_ASSETS = {
   "linux-x64": "conduit-x86_64-unknown-linux-gnu",
   "linux-arm64": "conduit-aarch64-unknown-linux-gnu",
+  "linux-x64-musl": "conduit-x86_64-unknown-linux-musl",
+  "linux-arm64-musl": "conduit-aarch64-unknown-linux-musl",
   "darwin-x64": "conduit-x86_64-apple-darwin",
   "darwin-arm64": "conduit-aarch64-apple-darwin",
   "win32-x64": "conduit-x86_64-pc-windows-msvc.exe",
-  "win32-arm64": "conduit-aarch64-pc-windows-msvc.exe",
 };
 
 for (const [key, asset] of Object.entries(PLATFORM_ASSETS)) {
@@ -105,3 +108,36 @@ for (const [key, asset] of Object.entries(PLATFORM_ASSETS)) {
     assert.deepEqual(r.files, [asset]);
   });
 }
+
+// The launcher resolves the same file: with no binary installed it names the path it looked for.
+for (const [key, asset] of Object.entries(PLATFORM_ASSETS)) {
+  test(`the launcher looks for ${asset} on ${key}`, async () => {
+    const pkg = mkdtempSync(join(tmpdir(), "conduit-npm-"));
+    mkdirSync(join(pkg, "bin"));
+    for (const f of ["conduit.js", "platform.js"]) cpSync(join(here, "..", "bin", f), join(pkg, "bin", f));
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ version: "0.0.0", type: "module" }));
+    const preload = join(here, "platform-preload.cjs");
+    const { code, stderr } = await new Promise((resolve) => {
+      const p = spawn(process.execPath, ["-r", preload, join(pkg, "bin", "conduit.js")], {
+        env: { ...process.env, CONDUIT_TEST_PLATFORM: key },
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      let err = "";
+      p.stderr.on("data", (d) => (err += d));
+      p.on("exit", (c) => resolve({ code: c, stderr: err }));
+    });
+    assert.equal(code, 1);
+    assert.ok(stderr.includes(join("native", asset)), stderr);
+  });
+}
+
+// A musl libc gets the static musl build, a glibc one the glibc build; other systems have no musl row.
+import { assetFor } from "../bin/platform.js";
+
+test("the table picks the musl build only on Linux with musl", () => {
+  assert.equal(assetFor("linux", "x64", true).name, "conduit-x86_64-unknown-linux-musl");
+  assert.equal(assetFor("linux", "arm64", true).name, "conduit-aarch64-unknown-linux-musl");
+  assert.equal(assetFor("linux", "x64", false).name, "conduit-x86_64-unknown-linux-gnu");
+  assert.equal(assetFor("darwin", "arm64", true).name, "conduit-aarch64-apple-darwin");
+  assert.equal(assetFor("linux", "riscv64", true).name, undefined);
+});

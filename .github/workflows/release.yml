@@ -87,14 +87,6 @@ jobs:
             asset_name: conduit-x86_64-pc-windows-msvc.exe
             archive_ext: zip
 
-          - target: aarch64-pc-windows-msvc
-            os: windows-11-arm
-            use_cross: false
-            bundle: full
-            features: "full"
-            no_default_features: false
-            asset_name: conduit-aarch64-pc-windows-msvc.exe
-            archive_ext: zip
 
           # ── standard (`standard` feature bundle: jwt, consumers, forward-auth, cache, acme — see Cargo.toml
           # [features]): asset names end in "-standard". Also built for RISC-V, which has no other build. ──
@@ -161,14 +153,6 @@ jobs:
             asset_name: conduit-x86_64-pc-windows-msvc-standard.exe
             archive_ext: zip
 
-          - target: aarch64-pc-windows-msvc
-            os: windows-11-arm
-            use_cross: false
-            bundle: standard
-            features: "standard"
-            no_default_features: false
-            asset_name: conduit-aarch64-pc-windows-msvc-standard.exe
-            archive_ext: zip
 
           - target: riscv64gc-unknown-linux-gnu
             os: ubuntu-latest
@@ -245,14 +229,6 @@ jobs:
             asset_name: conduit-x86_64-pc-windows-msvc-gateway.exe
             archive_ext: zip
 
-          - target: aarch64-pc-windows-msvc
-            os: windows-11-arm
-            use_cross: false
-            bundle: gateway
-            features: "gateway"
-            no_default_features: true
-            asset_name: conduit-aarch64-pc-windows-msvc-gateway.exe
-            archive_ext: zip
 
           # ── static (`--no-default-features --features static-server`): a file server that does not proxy. Asset
           # names end in "-static". ──
@@ -319,14 +295,6 @@ jobs:
             asset_name: conduit-x86_64-pc-windows-msvc-static.exe
             archive_ext: zip
 
-          - target: aarch64-pc-windows-msvc
-            os: windows-11-arm
-            use_cross: false
-            bundle: static
-            features: "static-server"
-            no_default_features: true
-            asset_name: conduit-aarch64-pc-windows-msvc-static.exe
-            archive_ext: zip
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -725,7 +693,9 @@ jobs:
             $(printf "${IMAGE_NAME}@sha256:%s " *)
 
       - name: Inspect the image
-        run: docker buildx imagetools inspect "${IMAGE_NAME}:${{ steps.meta.outputs.version }}"
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "${IMAGE_NAME}:${VERSION}"
 
   # ── 5. Publish to npm + GitHub Packages ─────────────────────────────────
   publish-npm:

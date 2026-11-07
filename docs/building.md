@@ -194,9 +194,9 @@ cross build --release --target riscv64gc-unknown-linux-gnu --features standard
 ```
 
 > **macOS targets** can only be built on macOS, and **Windows ARM64**
-> (`aarch64-pc-windows-msvc`) on Windows (an ARM64 host is simplest).
+> (`aarch64-pc-windows-msvc`, not in the releases yet) on Windows (an ARM64 host is simplest).
 > The [release workflow](../.github/workflows/release.yml) uses GitHub-hosted
-> macOS and Windows runners (`windows-11-arm` for ARM64) for those targets.
+> macOS and Windows runners for those targets.
 
 > **RISC-V full build** (`--features wasm`) is best compiled natively on a
 > RISC-V host. wasmtime's Cranelift JIT requires additional toolchain
@@ -214,7 +214,7 @@ cross build --release --target riscv64gc-unknown-linux-gnu --features standard
 | `x86_64-apple-darwin`           | Tier 1 | ✅       | ✅   |
 | `aarch64-apple-darwin`          | Tier 1 | ✅       | ✅   |
 | `x86_64-pc-windows-msvc`        | Tier 1 | ✅       | ✅   |
-| `aarch64-pc-windows-msvc`       | Tier 2 | ✅       | ✅   |
+| `aarch64-pc-windows-msvc`       | Tier 2 | not released yet; built and tested in CI | |
 
 > ¹ Best built natively on a riscv64 host; cross-compilation with `--features wasm`
 > requires additional wasmtime toolchain setup.

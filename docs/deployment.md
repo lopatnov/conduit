@@ -171,6 +171,7 @@ It sets up the service for you.
 curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/SHA256SUMS.txt
 curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/conduit-proxy_2.2.0_amd64.deb
 sha256sum --ignore-missing -c SHA256SUMS.txt        # the file must say OK
+gh attestation verify conduit-proxy_2.2.0_amd64.deb --repo lopatnov/conduit   # built by this repository's workflow
 sudo apt install ./conduit-proxy_2.2.0_amd64.deb
 ```
 
@@ -189,8 +190,9 @@ sudo systemctl restart conduit                        # after you change the con
 What the package installs: `/usr/bin/conduit`; the unit `/usr/lib/systemd/system/conduit.service` (runs as the
 system user `conduit`, hardened as described [below](#unit-file)); `/etc/conduit/conduit.yaml` (readable by the
 `conduit` account only, kept when you upgrade or remove the package, deleted by `apt purge`); and the empty
-directories `/var/log/conduit` and `/var/cache/conduit` that the unit may write to. An upgrade restarts the service if it
-is running and never starts one that is stopped. `sudo apt remove conduit-proxy` keeps your configuration;
+directories `/var/log/conduit` and `/var/cache/conduit` that the unit may write to. The service account cannot bind ports below 1024: to listen on 80 and 443 run
+`sudo systemctl edit conduit` and add `[Service]` and `AmbientCapabilities=CAP_NET_BIND_SERVICE`. An upgrade restarts the
+service if it is running and never starts one that is stopped. `sudo apt remove conduit-proxy` keeps your configuration;
 `sudo apt purge conduit-proxy` deletes it with the log and cache (the `conduit` account stays). The package and its
 tests are in `scripts/build-deb.sh`, `scripts/test-deb.sh` and `contrib/deb/`.
 

@@ -473,7 +473,6 @@ Each archive holds one file, named like the archive without `.tar.gz` or `.zip`.
 | macOS Intel          | `x86_64-apple-darwin`         | full, standard, gateway, static |
 | macOS Apple Silicon  | `aarch64-apple-darwin`        | full, standard, gateway, static |
 | Windows x86-64       | `x86_64-pc-windows-msvc`      | full, standard, gateway, static |
-| Windows ARM64        | `aarch64-pc-windows-msvc`     | full, standard, gateway, static |
 
 > **Upgrading from 2.1 and earlier:** the unsuffixed name used to be the standard build and the full build ended in
 > `-full`. Since 2.2.0 the plain name is the **full** build and the standard build ends in `-standard`; the `:latest`

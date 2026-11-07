@@ -20,7 +20,12 @@ fi
 BINARY=$1 ARCH=$2 VERSION=$3 OUTDIR=$4
 case "$ARCH" in amd64|arm64) ;; *) echo "ARCH must be amd64 or arm64, got: $ARCH" >&2; exit 2 ;; esac
 [ -x "$BINARY" ] || { echo "$BINARY is not an executable file" >&2; exit 2; }
-case "$VERSION" in [0-9]*) ;; *) echo "VERSION must start with a digit (2.2.0), got: $VERSION" >&2; exit 2 ;; esac
+# The version goes into a sed script and a file name: only a semantic version is accepted (a git tag may contain
+# anything), 2.2.0 or 2.2.0-rc.1.
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+  echo "VERSION must be like 2.2.0 or 2.2.0-rc.1, got: $VERSION" >&2
+  exit 2
+fi
 DEB_VERSION=${VERSION//-/\~}
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)

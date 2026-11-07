@@ -21,10 +21,11 @@ STANDARD_ONLY = {"riscv64gc-unknown-linux-gnu"}
 NPM_PLATFORMS = {
     "linux-x64": "x86_64-unknown-linux-gnu",
     "linux-arm64": "aarch64-unknown-linux-gnu",
+    "linux-x64-musl": "x86_64-unknown-linux-musl",
+    "linux-arm64-musl": "aarch64-unknown-linux-musl",
     "darwin-x64": "x86_64-apple-darwin",
     "darwin-arm64": "aarch64-apple-darwin",
     "win32-x64": "x86_64-pc-windows-msvc",
-    "win32-arm64": "aarch64-pc-windows-msvc",
 }
 
 
@@ -78,20 +79,20 @@ def manifest_job():
 
 
 def npm_table(path):
-    """The `"os-arch": "conduit-..."` pairs of an npm file's platform table, as a dict."""
-    return dict(re.findall(r'"([a-z0-9]+-[a-z0-9]+)":\s*"(conduit-[^"]+)"', read(path)))
+    """The `"os-arch[-musl]": "conduit-..."` pairs of an npm file's platform table, as a dict."""
+    return dict(re.findall(r'"([a-z0-9]+-[a-z0-9]+(?:-musl)?)":\s*"(conduit-[^"]+)"', read(path)))
 
 
 class ReleaseMatrix(unittest.TestCase):
     """The matrix, the npm tables, the bundles and the Docker images agree."""
 
     def test_the_builds_are_the_expected_set_and_every_asset_name_is_unique(self):
-        """full, gateway and static on the eight main targets; standard on those and on RISC-V."""
+        """full, gateway and static on the seven main targets; standard on those and on RISC-V."""
         entries = matrix_entries()
         names = [e["asset_name"] for e in entries]
         self.assertEqual(len(names), len(set(names)), "two builds would publish the same file")
         counts = {b: sum(1 for e in entries if e["bundle"] == b) for b in BUNDLES}
-        self.assertEqual(counts, {"full": 8, "standard": 9, "gateway": 8, "static": 8})
+        self.assertEqual(counts, {"full": 7, "standard": 8, "gateway": 7, "static": 7})
         for e in entries:
             if e["bundle"] != "standard":
                 self.assertNotIn(e["target"], STANDARD_ONLY, f"{e['asset_name']} has no other build than standard")
@@ -135,8 +136,11 @@ class ReleaseMatrix(unittest.TestCase):
         expected = {
             key: f"conduit-{target}{'.exe' if 'windows' in target else ''}" for key, target in NPM_PLATFORMS.items()
         }
-        self.assertEqual(npm_table("npm/bin/download.js"), expected)
-        self.assertEqual(npm_table("npm/bin/conduit.js"), expected)
+        self.assertEqual(npm_table("npm/bin/platform.js"), expected)
+        for script in ("npm/bin/download.js", "npm/bin/conduit.js"):
+            text = read(script)
+            self.assertIn('from "./platform.js"', text, f"{script} must use the shared table")
+            self.assertNotIn('"conduit-', text, f"{script} must not carry a table of its own")
         published = {e["asset_name"] for e in matrix_entries() if e["bundle"] == "full"}
         self.assertTrue(set(expected.values()) <= published, "npm asks for a file the release does not publish")
 
