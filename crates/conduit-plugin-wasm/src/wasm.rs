@@ -132,8 +132,60 @@ fn get_or_compile(path: &str) -> anyhow::Result<Arc<Module>> {
     }
 }
 
+/// The most linear memory a plugin may have per call, declared or grown (16 MiB).
+pub(crate) const MEMORY_LIMIT_BYTES: usize = 16 * 1024 * 1024;
+
+/// The largest plugin file that is read (64 MiB): a file that size is not a plugin, and an unbounded read of a
+/// path that is a device or a huge file would exhaust memory in validation, on a reload or on a first request.
+const MAX_MODULE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Why a plugin file could not be read.
+pub(crate) enum ReadError {
+    Io(std::io::Error),
+    NotAFile,
+    TooLarge,
+}
+
+impl ReadError {
+    /// The text for `conduit validate`: the kind of I/O error, not the operating system's own wording.
+    pub(crate) fn describe(&self) -> String {
+        match self {
+            Self::Io(e) => format!("cannot be read ({})", e.kind()),
+            Self::NotAFile => "is not a regular file".to_owned(),
+            Self::TooLarge => format!(
+                "is larger than {} MiB",
+                MAX_MODULE_FILE_BYTES / (1024 * 1024)
+            ),
+        }
+    }
+}
+
+/// Read a plugin file: a regular file of at most [`MAX_MODULE_FILE_BYTES`]. The type is checked before the file is
+/// opened, because opening a FIFO waits for a writer.
+pub(crate) fn read_module_file(path: &str) -> Result<Vec<u8>, ReadError> {
+    use std::io::Read as _;
+    let meta = std::fs::metadata(path).map_err(ReadError::Io)?;
+    if !meta.is_file() {
+        return Err(ReadError::NotAFile);
+    }
+    if meta.len() > MAX_MODULE_FILE_BYTES {
+        return Err(ReadError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(MAX_MODULE_FILE_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(ReadError::Io)?;
+    if bytes.len() as u64 > MAX_MODULE_FILE_BYTES {
+        return Err(ReadError::TooLarge);
+    }
+    Ok(bytes)
+}
+
 fn read_and_compile(path: &str) -> anyhow::Result<Arc<Module>> {
-    let bytes = std::fs::read(path)?;
+    let bytes = read_module_file(path).map_err(|e| match e {
+        ReadError::Io(io) => anyhow::Error::from(io),
+        other => anyhow::anyhow!("plugin file {}", other.describe()),
+    })?;
     let module = Module::new(engine()?, &bytes)?;
     Ok(Arc::new(module))
 }
@@ -184,7 +236,7 @@ impl WasmState {
             added_headers: Vec::new(),
             removed_headers: Vec::new(),
             resource_limits: wasmtime::StoreLimitsBuilder::new()
-                .memory_size(16 * 1024 * 1024) // 16 MiB max per plugin call
+                .memory_size(MEMORY_LIMIT_BYTES) // 16 MiB max per plugin call
                 .build(),
             warned_missing_memory: false,
         }
@@ -583,7 +635,7 @@ impl WasmResponseState {
             removed_headers: Vec::new(),
             response_body: None,
             resource_limits: wasmtime::StoreLimitsBuilder::new()
-                .memory_size(16 * 1024 * 1024)
+                .memory_size(MEMORY_LIMIT_BYTES)
                 .build(),
             warned_missing_memory: false,
         }
@@ -2089,6 +2141,27 @@ mod tests {
             run_response_inner(response_ctx(), &p).expect("no link error without an on_response");
         assert!(
             out.added_headers.is_empty() && out.removed_headers.is_empty() && out.body.is_none()
+        );
+    }
+
+    /// The early return must come before instantiation: a start function that calls a request-only function would
+    /// trap while the response instance is built.
+    #[test]
+    fn a_plugin_without_on_response_is_not_instantiated_for_the_response() {
+        let (_f, p) = compile_wat(
+            r#"(module
+                (import "conduit" "conduit_get_header_count" (func $count (result i32)))
+                (func $start call $count drop)
+                (start $start)
+                (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        assert!(
+            run_response_inner(response_ctx(), &p).is_ok(),
+            "the response instance is never built"
+        );
+        assert!(
+            run_inner(req(), &p).is_ok(),
+            "the request phase runs the start function with the function available"
         );
     }
 }

@@ -13,8 +13,12 @@ use std::collections::HashSet;
 use wasmtime::{ExternType, Linker, Module, ValType};
 
 use crate::wasm::{
-    engine, register_host_functions, register_response_host_functions, WasmResponseState, WasmState,
+    engine, read_module_file, register_host_functions, register_response_host_functions,
+    WasmResponseState, WasmState, MEMORY_LIMIT_BYTES,
 };
+
+/// The size of a WebAssembly memory page.
+const WASM_PAGE_BYTES: u64 = 65_536;
 
 /// Host functions the request phase defines and the response phase does not.
 pub(crate) const REQUEST_ONLY: &[&str] = &[
@@ -107,6 +111,17 @@ impl std::fmt::Display for ModuleProblem {
 /// What this cannot tell: whether the plugin does the right thing, or traps at run time.
 pub fn check_module(path: &str) -> Result<(), ModuleProblem> {
     let module = load_for_check(path).map_err(ModuleProblem::Unusable)?;
+    // An `on_response` of another type is not called (the host asks for `(i32) -> i32` and skips it silently), but
+    // `on_request` and the rest of the plugin work.
+    match module.get_export("on_response") {
+        Some(ExternType::Func(f)) if has_response_type(&f) => {}
+        Some(_) => {
+            return Err(ModuleProblem::Degraded(
+                "exports on_response with a type other than (i32) -> i32, so on_response is never called".to_owned(),
+            ));
+        }
+        None => {}
+    }
     let needs_memory = module
         .imports()
         .any(|i| i.module() == "conduit" && !WITHOUT_MEMORY.contains(&i.name()));
@@ -122,29 +137,36 @@ pub fn check_module(path: &str) -> Result<(), ModuleProblem> {
 
 /// Read, compile and link the module for [`check_module`]; the reason when it cannot run.
 fn load_for_check(path: &str) -> Result<Module, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot be read ({})", e.kind()))?;
+    let bytes = read_module_file(path).map_err(|e| e.describe())?;
     let engine = engine().map_err(|e| e.to_string())?;
     let module = Module::new(engine, &bytes)
         .map_err(|e| format!("is not a valid WebAssembly module: {e:#}"))?;
+    // A memory the host cannot give the plugin is a failure to instantiate on every call (fail-open). Only an
+    // exported memory can be looked at from outside, and a plugin that uses the host needs to export it.
+    if let Some(ExternType::Memory(memory)) = module.get_export("memory") {
+        if memory.is_shared() {
+            return Err("declares a shared memory, which this host does not enable, so it cannot be instantiated".to_owned());
+        }
+        let initial = memory.minimum().saturating_mul(WASM_PAGE_BYTES);
+        if initial > MEMORY_LIMIT_BYTES as u64 {
+            return Err(format!(
+                "declares an initial memory of {} MiB, over the {} MiB limit, so it cannot be instantiated",
+                initial / (1024 * 1024),
+                MEMORY_LIMIT_BYTES / (1024 * 1024)
+            ));
+        }
+    }
 
     match module.get_export("on_request") {
         Some(ExternType::Func(f)) if f.params().len() == 0 && is_one(f.results(), ValType::I32) => {}
         Some(_) => return Err("exports on_request with a type other than () -> i32".to_owned()),
         None => return Err("does not export on_request (it is required even in a plugin that only uses on_response)".to_owned()),
     }
-    let has_on_response =
-        match module.get_export("on_response") {
-            Some(ExternType::Func(f))
-                if is_one(f.params(), ValType::I32) && is_one(f.results(), ValType::I32) =>
-            {
-                true
-            }
-            Some(_) => return Err(
-                "exports on_response with a type other than (i32) -> i32, so it is never called"
-                    .to_owned(),
-            ),
-            None => false,
-        };
+    // Only an `on_response` of the right type is ever called, so only that one needs the response phase to link.
+    let has_on_response = matches!(
+        module.get_export("on_response"),
+        Some(ExternType::Func(f)) if has_response_type(&f)
+    );
 
     let mut request = Linker::<WasmState>::new(engine);
     register_host_functions(&mut request).map_err(|e| e.to_string())?;
@@ -162,6 +184,11 @@ fn load_for_check(path: &str) -> Result<Module, String> {
     }
 
     Ok(module)
+}
+
+/// True when `f` is `(i32) -> i32`, the type the host calls `on_response` with.
+fn has_response_type(f: &wasmtime::FuncType) -> bool {
+    is_one(f.params(), ValType::I32) && is_one(f.results(), ValType::I32)
 }
 
 /// True when `types` is exactly one value of type `want`.
@@ -406,5 +433,54 @@ mod tests {
                 (func (export "on_request") (result i32) i32.const 403 call 0 i32.const 1))"#,
         );
         assert_eq!(check_module(&path), Ok(()));
+    }
+
+    #[test]
+    fn an_initial_memory_over_the_limit_is_reported() {
+        let why = problem(
+            r#"(module (memory (export "memory") 257) (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        assert!(why.contains("over the 16 MiB limit"), "{why}");
+        let (_f, path) = wasm_file(
+            r#"(module (memory (export "memory") 256) (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        assert_eq!(check_module(&path), Ok(()), "exactly the limit is allowed");
+    }
+
+    #[test]
+    fn a_shared_memory_is_reported() {
+        let why = problem(
+            r#"(module (memory (export "memory") 1 1 shared) (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        assert!(why.contains("shared"), "{why}");
+    }
+
+    #[test]
+    fn an_on_response_of_the_wrong_type_is_degraded_not_unusable() {
+        let (_f, path) = wasm_file(
+            r#"(module
+                (func (export "on_request") (result i32) i32.const 0)
+                (func (export "on_response") (result i32) i32.const 0))"#,
+        );
+        assert!(
+            matches!(check_module(&path), Err(ModuleProblem::Degraded(_))),
+            "on_request still runs"
+        );
+    }
+
+    #[test]
+    fn a_directory_and_an_oversized_file_are_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let why = check_module(dir.path().to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(why, "is not a regular file");
+        let big = dir.path().join("big.wasm");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(64 * 1024 * 1024 + 1)
+            .unwrap();
+        let why = check_module(big.to_str().unwrap()).unwrap_err().to_string();
+        assert_eq!(why, "is larger than 64 MiB");
     }
 }

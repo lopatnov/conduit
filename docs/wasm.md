@@ -441,14 +441,18 @@ reports a file that cannot work, because at run time such a plugin is skipped an
 ```
 $ conduit validate -c conduit.yaml
 error at sites[0].middleware[0].path: plugin "./absent.wasm" cannot be read (entity not found); until that is fixed
-this entry is skipped and requests pass through it
+this entry is skipped and requests pass through it (after a reload, a version that already ran in this process
+stays in use)
 ```
 
-It also names a file that is not a binary module, a module without `on_request` (or with another type), an import
-that does not exist or has the wrong type (a misspelt `conduit_get_hedaer`, a WASI import), and a module that imports
-host functions that need memory but exports none (that one still runs, but those calls read and write nothing). A running server only logs these at start-up and on reload (it is
-a warning there so that a file can be put in place after the configuration); `conduit validate` exits non-zero.
-What it cannot tell: whether the plugin decides correctly.
+It also names a file that is not a regular file or is over 64 MiB, is not a binary module, has no `on_request` (or one of
+another type), imports a function that does not exist or has the wrong type (a misspelt `conduit_get_hedaer`, a WASI
+import), or declares a shared memory or an exported memory whose initial size is over the 16 MiB limit: all of those
+make the plugin fail to instantiate, so it is skipped. Two problems leave a plugin that still runs, and the warning says
+so: a module that imports host functions that need memory but exports none (those calls read and write nothing), and an
+`on_response` of the wrong type (it is never called; `on_request` still works). A running server only logs these at
+start-up and on reload (a warning there, so that a file can be put in place after the configuration); `conduit
+validate` exits non-zero. What it cannot tell: whether the plugin decides correctly.
 
 **Seeing what a plugin does.** `conduit_log` lines appear in the server log as
 `conduit_plugin_wasm::wasm: <message> wasm=true`. The default level is `warn`, so `info` and below need

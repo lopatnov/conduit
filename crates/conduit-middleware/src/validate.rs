@@ -68,7 +68,7 @@ fn check_runnable(entry: &MiddlewareEntry, entry_prefix: &str, errors: &mut Vec<
                 errors.push(ValidationError::warning(
                     format!("{entry_prefix}.path"),
                     format!(
-                        "script {path:?} {why}; until that is fixed this entry is skipped and requests pass through it"
+                        "script {path:?} {why}; until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)"
                     ),
                 ));
             }
@@ -91,7 +91,7 @@ fn check_runnable(entry: &MiddlewareEntry, entry_prefix: &str, errors: &mut Vec<
                     if let Err(problem) = conduit_plugin_wasm::check_module(path) {
                         let consequence = match problem {
                             conduit_plugin_wasm::ModuleProblem::Unusable(_) => {
-                                "until that is fixed this entry is skipped and requests pass through it"
+                                "until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)"
                             }
                             conduit_plugin_wasm::ModuleProblem::Degraded(_) => {
                                 "the plugin still runs, but it does not behave as written"

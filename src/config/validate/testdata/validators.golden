@@ -41,32 +41,32 @@
 [] error|sites[65].tcp.targets[0]|TCP target "just-a-host" must include a port, e.g. "host:3306" or "[::1]:3306" for IPv6
 [] error|sites[66].tcp|tcp cannot be combined with proxy on the same site
 [] error|sites[67].middleware[0].path|middleware type "script" requires a "path" field
-[rhai] warning|sites[68].middleware[0].path|script "./my.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[rhai] warning|sites[68].middleware[0].path|script "./my.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
 [] error|sites[73].middleware[0].type|unknown middleware type "magic"
-[rhai] warning|sites[74].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[rhai] warning|sites[74].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
 [] error|sites[74].middleware[1].path|middleware type "script" requires a "path" field
-[rhai] warning|sites[75].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[rhai] warning|sites[75].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
 [] error|sites[75].middleware[0].phase|invalid phase "resposne" — must be "request" or "response"
-[rhai] warning|sites[76].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
-[rhai] warning|sites[77].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
-[rhai] warning|sites[78].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[rhai] warning|sites[76].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
+[rhai] warning|sites[77].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
+[rhai] warning|sites[78].middleware[0].path|script "./ok.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
 [] error|sites[79].rateLimit.limit|limit must be greater than 0
 [] error|sites[80].upload.dir|Upload directory path must not be empty
 [] error|sites[81].ipFilter.deny[0]|Invalid IP address or CIDR block: '10.0.0.0/abc'
 [] error|sites[82].proxy["/api"]|Invalid upstream URL 'ftp://bad' — must start with http:// or https://
 [] error|sites[83].proxy["/api"].targets[0]|Invalid upstream URL 'ftp://bad:4000' — must start with http:// or https://
-[wasm] warning|sites[85].middleware[0].path|plugin "p.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
-[wasm] warning|sites[86].middleware[0].path|plugin "plugin.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
-[wasm] warning|sites[90].middleware[0].path|plugin "a.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
-[rhai] warning|sites[90].middleware[1].path|script "b.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
-[wasm] warning|sites[90].middleware[2].path|plugin "c.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[wasm] warning|sites[85].middleware[0].path|plugin "p.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
+[wasm] warning|sites[86].middleware[0].path|plugin "plugin.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
+[wasm] warning|sites[90].middleware[0].path|plugin "a.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
+[rhai] warning|sites[90].middleware[1].path|script "b.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
+[wasm] warning|sites[90].middleware[2].path|plugin "c.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
 [] error|sites[97].metrics.token|metrics.token must not be an empty string — an empty token matches a request with no Authorization header at all, authenticating every request. Omit the field entirely to leave the endpoint unauthenticated, or set a real token.
 [forward-auth] error|sites[98].forwardAuth.url|forwardAuth.url points to 127.0.0.1:2019 — this is the Conduit Admin API. Routing external auth requests through the admin API is a security risk. Use a dedicated auth service instead.
 [] error|sites[100].apiKey.keys[0]|API key must not be empty — an empty key allows unauthenticated access
 [] error|sites[102].apiKey.keys|apiKey.keys must contain at least one key
 [] error|sites[103].consumers.consumers[0].apiKey|consumer apiKey must not be empty — an empty key allows unauthenticated access
 [] error|sites[110].ipFilter.deny[0]|Invalid IP address or CIDR block: '::1/129'
-[rhai] warning|sites[113].middleware[0].path|script "./filter.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it
+[rhai] warning|sites[113].middleware[0].path|script "./filter.rhai" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
 [] error|sites[118].consumers.consumers[0].username|consumer username must not be empty
 [] error|sites[119].consumers.consumers[1].username|consumer username "alice" is duplicated
 [] error|sites[120].consumers.consumers[0]|consumer requires at least one credential: apiKey, basicAuth, jwt (or configure consumers.sharedJwt)
