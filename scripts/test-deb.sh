@@ -48,12 +48,22 @@ for image in "${IMAGES[@]}"; do
     [ ! -e /usr/bin/conduit ]
     grep -q "# edited by the user" /etc/conduit/conduit.yaml
     apt-get purge -y -qq conduit-proxy >/dev/null
-    [ ! -e /etc/conduit ] && [ ! -e /var/log/conduit ] && [ ! -e /var/cache/conduit ]
+    # (one check per line: in an `a && b && c` list `set -e` stops only when the last one fails)
+    [ ! -e /etc/conduit ]
+    [ ! -e /var/log/conduit ]
+    [ ! -e /var/cache/conduit ]
     getent passwd conduit >/dev/null   # the account stays
 
     # Installing again works (the account already exists).
     apt-get install -y -qq /pkg.deb >/dev/null
     conduit --version >/dev/null
+
+    # A configuration the administrator deleted stays deleted, and the package still configures (postinst must not
+    # fail on the missing file).
+    rm /etc/conduit/conduit.yaml
+    apt-get install -y -qq --reinstall /pkg.deb >/dev/null
+    [ ! -e /etc/conduit/conduit.yaml ]
+    dpkg -s conduit-proxy | grep -q "^Status: install ok installed"
     echo "ok"
   '
 done

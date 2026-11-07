@@ -2,7 +2,7 @@
 #
 # The service is installed but not started. Edit this file for your site, check it, then start it:
 #
-#   conduit validate -c /etc/conduit/conduit.yaml
+#   sudo conduit validate -c /etc/conduit/conduit.yaml
 #   sudo systemctl enable --now conduit      # start now and at every boot
 #   sudo systemctl status conduit
 #   journalctl -u conduit -f                 # the log

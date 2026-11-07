@@ -8,9 +8,13 @@ case "$1" in
         adduser --system --group --no-create-home --home /nonexistent --shell /usr/sbin/nologin conduit
         install -d -o conduit -g conduit -m 0750 /var/log/conduit /var/cache/conduit
         # The config may hold secrets (an Admin API token, JWT keys): readable by the service, not by everyone.
-        chown root:conduit /etc/conduit /etc/conduit/conduit.yaml
+        chown root:conduit /etc/conduit
         chmod 0750 /etc/conduit
-        chmod 0640 /etc/conduit/conduit.yaml
+        # dpkg keeps a conffile the administrator deleted deleted: do not fail on it.
+        if [ -f /etc/conduit/conduit.yaml ]; then
+            chown root:conduit /etc/conduit/conduit.yaml
+            chmod 0640 /etc/conduit/conduit.yaml
+        fi
         if [ -d /run/systemd/system ]; then
             systemctl daemon-reload >/dev/null 2>&1 || true
             # Restart only if it is running (an upgrade); never start a service that was stopped.

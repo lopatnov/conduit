@@ -1,7 +1,7 @@
 Package: conduit-proxy
 Version: @VERSION@
 Architecture: @ARCH@
-Maintainer: lopatnov <lopatnov@users.noreply.github.com>
+Maintainer: Oleksandr Lopatnov <lopatniov@gmail.com>
 Installed-Size: @SIZE@
 Depends: adduser
 Section: net

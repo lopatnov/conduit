@@ -68,6 +68,14 @@ def job_text(name, next_marker):
     return text[text.index(f"\n  {name}:\n"):text.index(next_marker)]
 
 
+def step_body(text, name):
+    """The body of the workflow step called `name`, up to the next step (a line starting `      - `)."""
+    start = text.find(f"      - name: {name}\n")
+    assert start != -1, f"release.yml has no step named {name!r}"
+    following = re.search(r"\n      - (?:name|uses): ", text[start + 1:])
+    return text[start : start + 1 + following.start()] if following else text[start:]
+
+
 def docker_job():
     """The per-architecture build job."""
     return job_text("docker", "  # ── 4a. Join")
@@ -112,8 +120,7 @@ class ReleaseMatrix(unittest.TestCase):
         """The native build, the cross build and the Docker build all honour `no_default_features` and `features`."""
         text = workflow()
         for step in ("Build (native)", "Build (cross)"):
-            body = text[text.index(f"- name: {step}"):]
-            body = body[: body.index("      # ", 1) if "      # " in body[1:] else len(body)]
+            body = step_body(text, step)
             self.assertIn('if [ "${{ matrix.no_default_features }}" = "true" ]; then flags="--no-default-features"; fi', body, step)
             self.assertIn('--features "${{ matrix.features }}"', body, step)
             self.assertIn("$flags", body, step)
@@ -147,7 +154,9 @@ class ReleaseMatrix(unittest.TestCase):
     def test_npm_vendors_exactly_the_full_binaries(self):
         """The npm job's artifact pattern matches the full builds' artifact names and no other build's."""
         text = workflow()
-        pattern = re.search(r"Download the full-build binaries.*?pattern: (\S+)", text, re.S).group(1)
+        found = re.search(r"pattern: (\S+)", step_body(text, "Download the full-build binaries"))
+        self.assertIsNotNone(found, "the npm job's download step has no `pattern:` line")
+        pattern = found.group(1)
         self.assertIn("name: binary-${{ matrix.bundle }}-${{ matrix.target }}", text)
         matched = sorted(
             e["asset_name"] for e in matrix_entries() if fnmatch.fnmatch(f"binary-{e['bundle']}-{e['target']}", pattern)

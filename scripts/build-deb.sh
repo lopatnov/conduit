@@ -35,7 +35,7 @@ chmod 0755 "$STAGE"   # the root of the package becomes the mode of / on install
 
 install -D -m 0755 "$BINARY" "$STAGE/usr/bin/conduit"
 mkdir -p "$STAGE/usr/lib/systemd/system"
-sed 's#/usr/local/bin/conduit#/usr/bin/conduit#g' "$HERE/contrib/conduit.service" > "$STAGE/usr/lib/systemd/system/conduit.service"
+sed -e 's#^ExecStart=/usr/local/bin/conduit$#ExecStart=/usr/bin/conduit -c /etc/conduit/conduit.yaml#' -e 's#/usr/local/bin/conduit#/usr/bin/conduit#g' "$HERE/contrib/conduit.service" > "$STAGE/usr/lib/systemd/system/conduit.service"
 chmod 0644 "$STAGE/usr/lib/systemd/system/conduit.service"
 install -D -m 0640 "$HERE/contrib/deb/conduit.yaml" "$STAGE/etc/conduit/conduit.yaml"
 install -D -m 0644 "$HERE/contrib/deb/copyright" "$STAGE/usr/share/doc/conduit-proxy/copyright"
@@ -45,7 +45,7 @@ install -D -m 0644 "$HERE/contrib/deb/lintian-overrides" "$STAGE/usr/share/linti
   printf 'conduit-proxy (%s) unstable; urgency=medium\n\n' "$DEB_VERSION"
   printf '  * Release %s.\n' "$VERSION"
   printf '    Notes: https://github.com/lopatnov/conduit/releases/tag/v%s\n\n' "$VERSION"
-  printf ' -- lopatnov <lopatnov@users.noreply.github.com>  %s\n' "$(date -u -R ${SOURCE_DATE_EPOCH:+-d "@$SOURCE_DATE_EPOCH"})"
+  printf ' -- Oleksandr Lopatnov <lopatniov@gmail.com>  %s\n' "$(date -u -R ${SOURCE_DATE_EPOCH:+-d "@$SOURCE_DATE_EPOCH"})"
 } | gzip -9n > "$STAGE/usr/share/doc/conduit-proxy/changelog.gz"
 chmod 0644 "$STAGE/usr/share/doc/conduit-proxy/changelog.gz"
 

@@ -170,9 +170,11 @@ It sets up the service for you.
 # pick the file for your machine: amd64 (x86-64) or arm64 (Raspberry Pi 4/5, AWS Graviton, ...)
 curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/SHA256SUMS.txt
 curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/conduit-proxy_2.2.0_amd64.deb
-sha256sum --ignore-missing -c SHA256SUMS.txt        # the file must say OK
-gh attestation verify conduit-proxy_2.2.0_amd64.deb --repo lopatnov/conduit   # built by this repository's workflow
-sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+# install only if the checksum of this very file matches (the && stops at a failure)
+grep ' conduit-proxy_2.2.0_amd64.deb$' SHA256SUMS.txt | sha256sum -c - \
+  && sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+# optional, with the GitHub CLI: the file was built by this repository's workflow
+gh attestation verify conduit-proxy_2.2.0_amd64.deb --repo lopatnov/conduit
 ```
 
 **The service is installed, but it is not enabled and not started**: the sample configuration forwards port 8080 to an
@@ -180,7 +182,7 @@ application on port 3000 of the same machine, which is not there yet. To start i
 
 ```bash
 sudoedit /etc/conduit/conduit.yaml                    # your sites; the file explains how to start the service
-conduit validate -c /etc/conduit/conduit.yaml         # check it before starting
+sudo conduit validate -c /etc/conduit/conduit.yaml    # check it before starting (the file is readable by root and the service only)
 sudo systemctl enable --now conduit                   # start now and at every boot
 systemctl status conduit
 journalctl -u conduit -f                              # the log
@@ -275,7 +277,8 @@ Key parts of `contrib/conduit.service`:
 User=conduit
 Group=conduit
 WorkingDirectory=/etc/conduit
-ExecStart=/usr/local/bin/conduit -c /etc/conduit/conduit.yaml
+# no -c: reads conduit.json or conduit.yaml from the working directory
+ExecStart=/usr/local/bin/conduit
 ExecReload=/usr/local/bin/conduit reload   # ← enables `systemctl reload`
 Restart=on-failure
 RestartSec=5s
