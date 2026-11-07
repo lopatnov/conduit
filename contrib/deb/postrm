@@ -1,0 +1,19 @@
+#!/bin/sh
+# `remove` keeps the configuration (dpkg does); `purge` removes it, the log and the cache. The `conduit` account is
+# kept: files it owns may still exist, and Debian policy is not to delete system accounts.
+set -e
+
+case "$1" in
+    remove|purge)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
+if [ "$1" = "purge" ]; then
+    rm -rf /var/log/conduit /var/cache/conduit
+    rmdir /etc/conduit 2>/dev/null || true
+fi
+
+exit 0

@@ -37,19 +37,22 @@ ARG FEATURES=""
 # Set to "true" to build with --no-default-features (the gateway and static-server bundles are meant for that).
 ARG NO_DEFAULT_FEATURES=""
 
+# No --target: on Alpine the host target is musl (x86_64-unknown-linux-musl on an amd64 builder,
+# aarch64-unknown-linux-musl on an arm64 one), which gives a fully static binary for the architecture the
+# image is built on. The release workflow builds each architecture on its own native runner.
 RUN flags=""; \
     if [ "$NO_DEFAULT_FEATURES" = "true" ]; then flags="--no-default-features"; fi; \
     if [ -n "$FEATURES" ]; then \
-      cargo build --release --target x86_64-unknown-linux-musl $flags --features "$FEATURES"; \
+      cargo build --release $flags --features "$FEATURES"; \
     else \
-      cargo build --release --target x86_64-unknown-linux-musl $flags; \
+      cargo build --release $flags; \
     fi
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM scratch
 
 # Copy the static binary.
-COPY --from=builder /src/target/x86_64-unknown-linux-musl/release/conduit /conduit
+COPY --from=builder /src/target/release/conduit /conduit
 
 # Expose the default proxy port.
 EXPOSE 8080

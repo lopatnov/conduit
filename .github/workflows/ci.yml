@@ -30,7 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # ubuntu-24.04-arm and windows-11-arm are native arm64 runners: they test the aarch64-unknown-linux-gnu and
+        # aarch64-pc-windows-msvc builds that the release publishes.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -123,8 +125,8 @@ jobs:
         run: cargo test -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features full
 
   # ── Build + test with the `standard` feature bundle ──────────────────────────
-  # Matches the feature set shipped in release.yml's un-suffixed binaries and
-  # the un-suffixed Docker image — see Cargo.toml [features] `standard`.
+  # Matches the feature set shipped in release.yml's `-standard` binaries and
+  # the `-standard` Docker image — see Cargo.toml [features] `standard`.
   ci-standard:
     name: Standard feature bundle (Linux)
     runs-on: ubuntu-latest
@@ -1089,19 +1091,112 @@ jobs:
             fi
           done
 
+  # ── Debian ──────────────────────────────────────────────────────────────────
+  # The test jobs above run on Ubuntu runners. These run the whole workspace's tests inside Debian containers
+  # (the official `rust` images are Debian based), on the current stable release (13, trixie) and the previous one
+  # (12, bookworm), and on arm64 hardware for trixie, so the glibc and the system libraries are Debian's.
+  debian:
+    name: Debian ${{ matrix.release }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    container: rust:1-${{ matrix.codename }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - release: "13"
+            codename: trixie
+            arch: amd64
+            runner: ubuntu-latest
+          - release: "12"
+            codename: bookworm
+            arch: amd64
+            runner: ubuntu-latest
+          - release: "13"
+            codename: trixie
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends cmake pkg-config perl git ca-certificates
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          key: debian-${{ matrix.codename }}-${{ matrix.arch }}
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: test (all features)
+        run: cargo test --workspace --features full
+
+  # ── The Docker image builds, natively on amd64 and on arm64 ─────────────────
+  # release.yml builds one image per bundle and architecture on a native runner; this builds the Dockerfile the same
+  # way on every pull request (standard on both, gateway on amd64 for the --no-default-features path) and starts it,
+  # so a Dockerfile or architecture break shows here and not when a tag is pushed.
+  docker-build:
+    name: Docker image (${{ matrix.bundle }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bundle: standard
+            features: standard
+            no_default_features: ""
+            arch: amd64
+            runner: ubuntu-latest
+          - bundle: standard
+            features: standard
+            no_default_features: ""
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - bundle: gateway
+            features: gateway
+            no_default_features: "true"
+            arch: amd64
+            runner: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        run: >
+          docker build -f contrib/Dockerfile
+          --build-arg FEATURES=${{ matrix.features }}
+          --build-arg NO_DEFAULT_FEATURES=${{ matrix.no_default_features }}
+          -t conduit:ci .
+
+      - name: Run it
+        run: docker run --rm conduit:ci --version
+
   # ── Cross-compile smoke tests for non-native architectures ──────────────────
   # Mirrors the `use_cross: true` targets in release.yml's build matrix, but
   # only exercises a release build (no test run / no artifact upload) — just
   # enough to catch target-specific compile breakage early. Add a line to
-  # `matrix.target` to cover another architecture; no other changes needed.
+  # `matrix.include` to cover another architecture. `features` is the richest bundle the release builds for the target
+  # (RISC-V: standard only).
   cross-compile:
     name: Cross-compile ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - riscv64gc-unknown-linux-gnu
+        include:
+          - target: riscv64gc-unknown-linux-gnu
+            features: standard
+          - target: x86_64-unknown-linux-musl
+            features: full
+            deb: amd64
+          - target: aarch64-unknown-linux-musl
+            features: full
+            deb: arm64
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1123,8 +1218,57 @@ jobs:
         with:
           tool: cross
 
-      - name: Build (cross, standard)
-        run: cross build --release --target ${{ matrix.target }} --features standard
+      - name: Build (cross, ${{ matrix.features }})
+        run: cross build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
+
+      # The static musl full builds are what the release packs into the .deb (scripts/build-deb.sh); the package is
+      # built here the same way and tested in Debian containers by the `deb-test` job.
+      - name: Build the Debian package
+        if: matrix.deb != ''
+        run: |
+          version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          scripts/build-deb.sh "target/${{ matrix.target }}/release/conduit" "${{ matrix.deb }}" "$version" deb-out
+
+      - name: Upload the Debian package
+        if: matrix.deb != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: deb-${{ matrix.deb }}
+          path: deb-out/*.deb
+          if-no-files-found: error
+          retention-days: 3
+
+  # ── The Debian package, installed in clean Debian containers ────────────────
+  # scripts/test-deb.sh installs the package built by `cross-compile` in debian:12 and debian:13 on its own
+  # architecture (amd64 on an x86-64 runner, arm64 on a native arm64 runner), runs the binary and the sample
+  # configuration, checks the account, permissions and unit, remove and purge, and runs lintian.
+  deb-test:
+    name: Debian package (${{ matrix.arch }})
+    needs: cross-compile
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: deb-${{ matrix.arch }}
+          path: deb
+
+      - name: Install it in Debian 12 and 13
+        run: |
+          export EXPECT_VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          scripts/test-deb.sh deb/*.deb debian:12 debian:13
 
   # ── ACME integration tests (Linux only, requires Docker for Pebble) ─────────
   acme:

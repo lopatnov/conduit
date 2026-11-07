@@ -451,8 +451,10 @@ Windows x64. See the [npm package page](npm/Readme.md) for details.
 
 Download from [GitHub Releases](https://github.com/lopatnov/conduit/releases):
 
-Each release has four builds of every platform. The **full** build has the plain name; the others
-carry their bundle name (see [Choose your build](#choose-your-build)):
+A release has up to four builds of a platform. The **full** build has the plain name; the others carry their
+bundle name (see [Choose your build](#choose-your-build)). The names below are for Linux and macOS archives
+(`.tar.gz`); for Windows the archive is `.exe.zip` (`conduit-<target>.exe.zip`, `conduit-<target>-standard.exe.zip`, …).
+Each archive holds one file, named like the archive without `.tar.gz` or `.zip`.
 
 | Build        | File                                      | What it is                                                           |
 | ------------ | ----------------------------------------- | -------------------------------------------------------------------- |
@@ -466,10 +468,12 @@ carry their bundle name (see [Choose your build](#choose-your-build)):
 | Linux x86-64         | `x86_64-unknown-linux-gnu`    | full, standard, gateway, static |
 | Linux x86-64 musl    | `x86_64-unknown-linux-musl`   | full, standard, gateway, static |
 | Linux ARM64          | `aarch64-unknown-linux-gnu`   | full, standard, gateway, static |
+| Linux ARM64 musl     | `aarch64-unknown-linux-musl`  | full, standard, gateway, static |
 | Linux RISC-V 64      | `riscv64gc-unknown-linux-gnu` | standard only            |
 | macOS Intel          | `x86_64-apple-darwin`         | full, standard, gateway, static |
 | macOS Apple Silicon  | `aarch64-apple-darwin`        | full, standard, gateway, static |
-| Windows x86-64       | `x86_64-pc-windows-msvc`      | full, standard, gateway, static (`.exe.zip`: `conduit-x86_64-pc-windows-msvc-standard.exe.zip`) |
+| Windows x86-64       | `x86_64-pc-windows-msvc`      | full, standard, gateway, static |
+| Windows ARM64        | `aarch64-pc-windows-msvc`     | full, standard, gateway, static |
 
 > **Upgrading from 2.1 and earlier:** the unsuffixed name used to be the standard build and the full build ended in
 > `-full`. Since 2.2.0 the plain name is the **full** build and the standard build ends in `-standard`; the `:latest`
@@ -508,6 +512,17 @@ cargo install lopatnov-conduit --no-default-features --features gateway        #
 For build instructions, feature bundles, cross-compilation and troubleshooting see
 **[docs/building.md](docs/building.md)**.
 
+### Debian and Ubuntu (.deb)
+
+Each release carries `conduit-proxy_<version>_amd64.deb` and `_arm64.deb`: the full build as a static binary, with a
+systemd unit, a sample `/etc/conduit/conduit.yaml` and a `conduit` service account. The service is installed but
+**not started**; edit the config, then `sudo systemctl enable --now conduit`
+([the steps](docs/deployment.md#debian-and-ubuntu-the-deb-package)).
+
+```bash
+sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+```
+
 ### Docker
 
 ```bash
@@ -521,8 +536,8 @@ docker run -p 8080:8080 \
   ghcr.io/lopatnov/conduit:latest -c /etc/conduit/conduit.yaml
 ```
 
-The images are `FROM scratch` (a static musl binary, no shell, no OS userland) and run as UID
-65534. On Kubernetes, use the `:latest` (full) image and `ConduitSite` resources:
+The images are multi-architecture (`linux/amd64` and `linux/arm64`; Docker picks the one of your machine),
+`FROM scratch` (a static musl binary, no shell, no OS userland), and run as UID 65534. On Kubernetes, use the `:latest` (full) image and `ConduitSite` resources:
 [see the example above](#kubernetes-one-conduitsite-per-site-needs-kubernetes).
 **→ docker-compose, systemd, Kubernetes and a production checklist:**
 [docs/deployment.md](docs/deployment.md)

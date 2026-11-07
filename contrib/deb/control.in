@@ -1,0 +1,19 @@
+Package: conduit-proxy
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: lopatnov <lopatnov@users.noreply.github.com>
+Installed-Size: @SIZE@
+Depends: adduser
+Section: net
+Priority: optional
+Homepage: https://github.com/lopatnov/conduit
+Description: High-performance reverse proxy and static file server
+ Conduit is a reverse proxy, API gateway and static file server written in
+ Rust on Cloudflare Pingora: TLS, JWT and other authentication, rate limiting,
+ load balancing, caching, scripting and WebAssembly plugins, metrics and hot
+ reload, configured from one YAML or JSON file.
+ .
+ This is the full build, a static binary that needs no other library. The
+ service is installed but neither enabled nor started: edit
+ /etc/conduit/conduit.yaml, check it with "conduit validate", then run
+ "systemctl enable --now conduit".

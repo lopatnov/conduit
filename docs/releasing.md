@@ -46,7 +46,7 @@ Pushing a `v*` tag starts `.github/workflows/release.yml`, which:
 | Attest | Build-provenance attestations for the binaries |
 | GitHub Release | Release notes, binaries and `SHA256SUMS.txt` |
 | crates.io | All `lopatnov-conduit-*` crates, in dependency order |
-| GHCR | Docker images (full as the plain tags; `-standard`, `-gateway`, `-static`), each scanned with Trivy |
+| GHCR | Multi-architecture (amd64, arm64) Docker images (full as the plain tags; `-standard`, `-gateway`, `-static`), each architecture scanned with Trivy |
 | npm | `@lopatnov/conduit`, with a `checksums.json` for the postinstall download |
 
 Required repository secrets: `CARGO_REGISTRY_TOKEN` (crates.io) and `NPM_TOKEN` (npm). The image

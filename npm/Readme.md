@@ -318,12 +318,13 @@ dropped by the next reload. The complete reference is
 | -------- | --------------------- |
 | Linux    | x86-64 (glibc), ARM64 (glibc) |
 | macOS    | Intel, Apple Silicon  |
-| Windows  | x86-64                |
+| Windows  | x86-64, ARM64         |
 
-Other platforms (Linux musl, Linux RISC-V 64) and the smaller `standard` build (files ending in `-standard`) are available as
-[release downloads](https://github.com/lopatnov/conduit/releases) and as Docker images
-(`ghcr.io/lopatnov/conduit:latest` for full, `:latest-standard` for standard), or you can build from
-source:
+Other platforms (Linux musl on x86-64 and ARM64, Linux RISC-V 64) and the smaller builds
+(files ending in `-standard`, `-gateway`, `-static`) are [release downloads](https://github.com/lopatnov/conduit/releases);
+RISC-V has the standard build only. Docker images for `linux/amd64` and `linux/arm64` are
+`ghcr.io/lopatnov/conduit:latest` for full and `:latest-standard` for standard (also `-gateway`, `-static`).
+You can also build from source:
 
 ```bash
 cargo install lopatnov-conduit                      # default build

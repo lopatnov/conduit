@@ -51,6 +51,15 @@ jobs:
             asset_name: conduit-aarch64-unknown-linux-gnu
             archive_ext: tar.gz
 
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            bundle: full
+            features: "full"
+            no_default_features: false
+            asset_name: conduit-aarch64-unknown-linux-musl
+            archive_ext: tar.gz
+
           - target: x86_64-apple-darwin
             os: macos-latest
             use_cross: false
@@ -76,6 +85,15 @@ jobs:
             features: "full"
             no_default_features: false
             asset_name: conduit-x86_64-pc-windows-msvc.exe
+            archive_ext: zip
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            use_cross: false
+            bundle: full
+            features: "full"
+            no_default_features: false
+            asset_name: conduit-aarch64-pc-windows-msvc.exe
             archive_ext: zip
 
           # ── standard (`standard` feature bundle: jwt, consumers, forward-auth, cache, acme — see Cargo.toml
@@ -107,13 +125,13 @@ jobs:
             asset_name: conduit-aarch64-unknown-linux-gnu-standard
             archive_ext: tar.gz
 
-          - target: riscv64gc-unknown-linux-gnu
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             use_cross: true
             bundle: standard
             features: "standard"
             no_default_features: false
-            asset_name: conduit-riscv64gc-unknown-linux-gnu-standard
+            asset_name: conduit-aarch64-unknown-linux-musl-standard
             archive_ext: tar.gz
 
           - target: x86_64-apple-darwin
@@ -142,6 +160,25 @@ jobs:
             no_default_features: false
             asset_name: conduit-x86_64-pc-windows-msvc-standard.exe
             archive_ext: zip
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            use_cross: false
+            bundle: standard
+            features: "standard"
+            no_default_features: false
+            asset_name: conduit-aarch64-pc-windows-msvc-standard.exe
+            archive_ext: zip
+
+          - target: riscv64gc-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            bundle: standard
+            features: "standard"
+            no_default_features: false
+            asset_name: conduit-riscv64gc-unknown-linux-gnu-standard
+            archive_ext: tar.gz
+
 
           # ── gateway (`--no-default-features --features gateway`): the API-gateway bundle, no static files and no
           # live reload. Asset names end in "-gateway". ──
@@ -172,6 +209,15 @@ jobs:
             asset_name: conduit-aarch64-unknown-linux-gnu-gateway
             archive_ext: tar.gz
 
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            bundle: gateway
+            features: "gateway"
+            no_default_features: true
+            asset_name: conduit-aarch64-unknown-linux-musl-gateway
+            archive_ext: tar.gz
+
           - target: x86_64-apple-darwin
             os: macos-latest
             use_cross: false
@@ -197,6 +243,15 @@ jobs:
             features: "gateway"
             no_default_features: true
             asset_name: conduit-x86_64-pc-windows-msvc-gateway.exe
+            archive_ext: zip
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            use_cross: false
+            bundle: gateway
+            features: "gateway"
+            no_default_features: true
+            asset_name: conduit-aarch64-pc-windows-msvc-gateway.exe
             archive_ext: zip
 
           # ── static (`--no-default-features --features static-server`): a file server that does not proxy. Asset
@@ -228,6 +283,15 @@ jobs:
             asset_name: conduit-aarch64-unknown-linux-gnu-static
             archive_ext: tar.gz
 
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            bundle: static
+            features: "static-server"
+            no_default_features: true
+            asset_name: conduit-aarch64-unknown-linux-musl-static
+            archive_ext: tar.gz
+
           - target: x86_64-apple-darwin
             os: macos-latest
             use_cross: false
@@ -253,6 +317,15 @@ jobs:
             features: "static-server"
             no_default_features: true
             asset_name: conduit-x86_64-pc-windows-msvc-static.exe
+            archive_ext: zip
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            use_cross: false
+            bundle: static
+            features: "static-server"
+            no_default_features: true
+            asset_name: conduit-aarch64-pc-windows-msvc-static.exe
             archive_ext: zip
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -310,6 +383,25 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "target\${{ matrix.target }}\release\conduit.exe" "dist\${{ matrix.asset_name }}"
           Compress-Archive -Path "dist\${{ matrix.asset_name }}" -DestinationPath "dist\${{ matrix.asset_name }}.zip"
+
+      # The Debian package (issue #669): the static musl full builds, for amd64 and arm64. A static binary needs no
+      # libc, so one package installs on every Debian and Ubuntu release. It is uploaded as a `binary-*` artifact, so
+      # it is attested, checksummed and attached to the release with the binaries.
+      - name: Build the .deb package
+        if: matrix.bundle == 'full' && endsWith(matrix.target, '-linux-musl')
+        shell: bash
+        run: |
+          arch=amd64
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then arch=arm64; fi
+          scripts/build-deb.sh "dist/${{ matrix.asset_name }}" "$arch" "${GITHUB_REF_NAME#v}" deb-out
+
+      - name: Upload the .deb package
+        if: matrix.bundle == 'full' && endsWith(matrix.target, '-linux-musl')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: binary-deb-${{ matrix.target }}
+          path: deb-out/*.deb
+          if-no-files-found: error
 
       # Upload bare binary (used by npm postinstall).
       # The name carries the bundle, so the builds of one target get distinct
@@ -451,13 +543,15 @@ jobs:
           CARGO_TERM_COLOR: never
         run: ./scripts/publish-workspace-retry.sh .
 
-  # ── 4. Publish the Docker images to GHCR and scan each one ──────────────
-  # One image per bundle. The full image owns the plain tags (`:latest`, `:X.Y.Z`, `:X.Y`); every other image
-  # carries its bundle name as a suffix (`:latest-standard`, `:X.Y.Z-gateway`, ...). Each image is scanned with
-  # Trivy in the same job, right after it is pushed.
+  # ── 4. Publish the Docker images to GHCR, one image per bundle for amd64 and arm64 ─────────────────────────
+  # Each architecture is built on a runner of that architecture (no emulation: compiling Rust under QEMU takes
+  # hours) and pushed by digest, then `docker-manifest` joins the two into one multi-architecture image under
+  # the tags. The full image owns the plain tags (`:latest`, `:X.Y.Z`, `:X.Y`); every other image carries its
+  # bundle name as a suffix (`:latest-standard`, `:X.Y.Z-gateway`, ...). Each per-architecture image is scanned
+  # with Trivy right after it is pushed.
   docker:
-    name: Docker image (${{ matrix.bundle }}) to GHCR
-    runs-on: ubuntu-latest
+    name: Docker image (${{ matrix.bundle }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
@@ -468,28 +562,139 @@ jobs:
           - bundle: full
             features: full
             no_default_features: ""
-            tag_suffix: ""
-            latest_tag: latest
+            arch: amd64
+            runner: ubuntu-latest
+          - bundle: full
+            features: full
+            no_default_features: ""
+            arch: arm64
+            runner: ubuntu-24.04-arm
           - bundle: standard
             features: standard
             no_default_features: ""
-            tag_suffix: "-standard"
-            latest_tag: latest-standard
+            arch: amd64
+            runner: ubuntu-latest
+          - bundle: standard
+            features: standard
+            no_default_features: ""
+            arch: arm64
+            runner: ubuntu-24.04-arm
           - bundle: gateway
             features: gateway
             no_default_features: "true"
-            tag_suffix: "-gateway"
-            latest_tag: latest-gateway
+            arch: amd64
+            runner: ubuntu-latest
+          - bundle: gateway
+            features: gateway
+            no_default_features: "true"
+            arch: arm64
+            runner: ubuntu-24.04-arm
           - bundle: static
             features: static-server
             no_default_features: "true"
-            tag_suffix: "-static"
-            latest_tag: latest-static
+            arch: amd64
+            runner: ubuntu-latest
+          - bundle: static
+            features: static-server
+            no_default_features: "true"
+            arch: arm64
+            runner: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      # Only the labels of this step are used; the tags come from `docker-manifest`.
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          flavor: latest=false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
+        with:
+          context: .
+          file: contrib/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            FEATURES=${{ matrix.features }}
+            NO_DEFAULT_FEATURES=${{ matrix.no_default_features }}
+
+      - name: Scan the image (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          version: 'v0.71.0'
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+      - name: Export the digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "${RUNNER_TEMP}/digests"
+          touch "${RUNNER_TEMP}/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: digests-${{ matrix.bundle }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── 4a. Join the two architectures of each image into one multi-architecture manifest ─────────────────────
+  docker-manifest:
+    name: Docker manifest (${{ matrix.bundle }})
+    needs: docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bundle: full
+            tag_suffix: ""
+            latest_tag: latest
+          - bundle: standard
+            tag_suffix: "-standard"
+            latest_tag: latest-standard
+          - bundle: gateway
+            tag_suffix: "-gateway"
+            latest_tag: latest-gateway
+          - bundle: static
+            tag_suffix: "-static"
+            latest_tag: latest-static
+
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          pattern: digests-${{ matrix.bundle }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Extract metadata
         id: meta
@@ -512,29 +717,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
-        with:
-          context: .
-          file: contrib/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            FEATURES=${{ matrix.features }}
-            NO_DEFAULT_FEATURES=${{ matrix.no_default_features }}
+      - name: Create the manifest list and push it
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE_NAME}@sha256:%s " *)
 
-      # `version` is the first tag's version, suffix included (for example 2.2.0-standard).
-      - name: Scan the image (Trivy)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
-        with:
-          image-ref: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
-          version: 'v0.71.0'
-          format: table
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: CRITICAL,HIGH
+      - name: Inspect the image
+        run: docker buildx imagetools inspect "${IMAGE_NAME}:${{ steps.meta.outputs.version }}"
 
   # ── 5. Publish to npm + GitHub Packages ─────────────────────────────────
   publish-npm:

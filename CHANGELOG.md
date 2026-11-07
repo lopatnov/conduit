@@ -61,7 +61,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **Release names (issue #665): the full build has the plain name, `standard` gets a suffix, and `gateway` and
-  `static` are published too.** Every release now carries four builds of each platform: `conduit-<target>` is
+  `static` are published too.** Releases now carry up to four builds of a platform (RISC-V and Android: standard only): `conduit-<target>` is
   **full** (it was the standard build up to 2.1.x, where full ended in `-full`), `conduit-<target>-standard` is
   the standard build, `-gateway` is the gateway bundle and `-static` the static-server bundle, both built with
   `--no-default-features` (RISC-V stays standard only). The Docker images follow the same rule: `:latest`,
@@ -72,6 +72,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unchanged for users (it installs the full build) and now vendors only the full binaries. Releases up to 2.1.x
   keep their old names. `scripts/test_release_matrix.py` checks that the workflow, the npm tables and the Docker
   matrix agree.
+- **New platforms: Linux ARM64 musl, Windows ARM64, and Docker images for `linux/arm64`.** The release now also builds
+  `aarch64-unknown-linux-musl` and `aarch64-pc-windows-msvc` (all four bundles; Windows ARM64 on the native
+  `windows-11-arm` runner). The npm package installs the full build on Windows ARM64 too. Every Docker image is built
+  for `linux/amd64` and `linux/arm64`, each on a runner of its own architecture (no emulation) and scanned with Trivy,
+  then joined into one multi-architecture tag; `contrib/Dockerfile` builds for the architecture it runs on. Continuous
+  integration now tests on native arm64 runners (Linux and Windows) and inside Debian 13 and Debian 12 containers (and
+  Debian 13 on arm64), builds the Docker image on both architectures on every pull request, and cross-builds the musl
+  ARM64 target. **Android (`aarch64-linux-android`) is not built:** `pingora-core` 0.9.1 does not compile for it
+  (`server/daemon.rs`, issue #668).
+- **A `.deb` package (issue #669).** Each release has `conduit-proxy_<version>_amd64.deb` and `_arm64.deb`: the full
+  build as a static musl binary (so it installs on Debian 12 and 13 and on any Ubuntu, with only `adduser` as a
+  dependency), the systemd unit, a sample `/etc/conduit/conduit.yaml` kept on upgrade and remove, and the `conduit`
+  service account. The service is installed but neither enabled nor started; `docs/deployment.md` says how to start
+  it. The package is built by `scripts/build-deb.sh` in the release `build` job (attested and checksummed like the
+  binaries) and installed, run, removed and purged in clean `debian:12` and `debian:13` containers on amd64 and arm64
+  on every pull request (`scripts/test-deb.sh`, with lintian). `contrib/conduit.service` now points at
+  `conduit.yaml`, the file the documentation tells you to install (it said `conduit.json`).
 - **Load balancing: `least-conn` and `p2c` read `weight`** (issue #506). `least-conn` now picks the
   upstream with the fewest active connections *per unit of weight* (as nginx `least_conn` does), so a
   weight-3 upstream carries three times the in-flight requests of a weight-1 one; `p2c` divides its

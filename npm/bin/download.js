@@ -55,6 +55,7 @@ function getAssetName() {
     "darwin-x64":   "conduit-x86_64-apple-darwin",
     "darwin-arm64": "conduit-aarch64-apple-darwin",
     "win32-x64":    "conduit-x86_64-pc-windows-msvc.exe",
+    "win32-arm64":  "conduit-aarch64-pc-windows-msvc.exe",
   };
 
   const key = `${platform}-${arch}`;

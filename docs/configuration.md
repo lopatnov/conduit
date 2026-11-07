@@ -93,7 +93,7 @@ A bundle is a name for several features. `✓` means the bundle includes the fea
 
 - **`standard`**: the default set plus the authentication, cache and automatic-TLS stack most
   self-hosted reverse proxies and API gateways need. This is what the published "standard"
-  binaries and the `:latest` image contain.
+  binaries (`-standard`) and the `:latest-standard` image contain.
 - **`gateway`**: for `--no-default-features` builds of a pure API gateway: the proxy and the same
   stack, compression, but no static files and no live reload
   (`cargo build --release --no-default-features --features gateway`).

@@ -14,6 +14,7 @@ Not sure what config to write first? **[← Configuration Recipes](recipes.md)**
   - [docker-compose](#docker-compose)
   - [Build your own image](#build-your-own-image)
 - [systemd](#systemd)
+  - [Debian and Ubuntu: the .deb package](#debian-and-ubuntu-the-deb-package)
   - [Install](#install)
   - [Secrets](#secrets)
   - [Unit file](#unit-file)
@@ -60,7 +61,8 @@ docker pull ghcr.io/lopatnov/conduit:latest-standard
 > you need scripting middleware (Rhai/WASM), file uploads, Redis-backed rate
 > limiting/caching, OTLP tracing, TCP proxy mode, or Kubernetes CRD config.
 
-All images are multi-stage musl builds packaged into `FROM scratch`.
+All images are multi-stage musl builds packaged into `FROM scratch`, published for `linux/amd64` and `linux/arm64`
+under one tag (Docker picks the one of your machine; each architecture is built on a native runner, not emulated).
 They run as UID 65534 (`nobody`) with no shell or OS userland.
 
 > **Healthchecks in FROM scratch images:** because the image has no shell or
@@ -156,6 +158,41 @@ docker build -f contrib/Dockerfile \
 The `contrib/conduit.service` unit file is ready for production use. It includes
 security hardening (`NoNewPrivileges`, `ProtectSystem=strict`) and automatic
 restart on failure.
+
+### Debian and Ubuntu: the .deb package
+
+Each release has a `conduit-proxy_<version>_amd64.deb` and `conduit-proxy_<version>_arm64.deb` on the
+[releases page](https://github.com/lopatnov/conduit/releases): the **full** build as a static binary, so one package
+installs on Debian 12 and 13 and on any Ubuntu release (it needs no libc of a particular version, only `adduser`).
+It sets up the service for you.
+
+```bash
+# pick the file for your machine: amd64 (x86-64) or arm64 (Raspberry Pi 4/5, AWS Graviton, ...)
+curl -LO https://github.com/lopatnov/conduit/releases/latest/download/SHA256SUMS.txt
+curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/conduit-proxy_2.2.0_amd64.deb
+sha256sum --ignore-missing -c SHA256SUMS.txt        # the file must say OK
+sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+```
+
+**The service is installed, but it is not enabled and not started**: the sample configuration forwards port 8080 to an
+application on port 3000 of the same machine, which is not there yet. To start it:
+
+```bash
+sudoedit /etc/conduit/conduit.yaml                    # your sites; the file explains how to start the service
+conduit validate -c /etc/conduit/conduit.yaml         # check it before starting
+sudo systemctl enable --now conduit                   # start now and at every boot
+systemctl status conduit
+journalctl -u conduit -f                              # the log
+sudo systemctl restart conduit                        # after you change the configuration
+```
+
+What the package installs: `/usr/bin/conduit`; the unit `/usr/lib/systemd/system/conduit.service` (runs as the
+system user `conduit`, hardened as described [below](#unit-file)); `/etc/conduit/conduit.yaml` (readable by the
+`conduit` account only, kept when you upgrade or remove the package, deleted by `apt purge`); and the empty
+directories `/var/log/conduit` and `/var/cache/conduit` that the unit may write to. An upgrade restarts the service if it
+is running and never starts one that is stopped. `sudo apt remove conduit-proxy` keeps your configuration;
+`sudo apt purge conduit-proxy` deletes it with the log and cache (the `conduit` account stays). The package and its
+tests are in `scripts/build-deb.sh`, `scripts/test-deb.sh` and `contrib/deb/`.
 
 ### Install
 
