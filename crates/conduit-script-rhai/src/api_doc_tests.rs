@@ -12,7 +12,9 @@
 //! and passes.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+
+#[path = "../tests/common/mod.rs"]
+mod common;
 
 /// One member of an object a script can use: (object variable, member name, is a method).
 type Member = (String, String, bool);
@@ -105,24 +107,9 @@ fn difference(left: &BTreeSet<Member>, right: &BTreeSet<Member>) -> Vec<String> 
         .collect()
 }
 
-/// The guide, or `None` when this crate was unpacked on its own (no workspace above it). In the workspace checkout
-/// a guide that cannot be read fails the test: a moved file must not make the check pass by checking nothing.
-fn guide(name: &str) -> Option<String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let read = std::fs::read_to_string(root.join("docs").join(name));
-    let in_workspace =
-        std::fs::read_to_string(root.join("Cargo.toml")).is_ok_and(|t| t.contains("[workspace]"));
-    assert!(
-        read.is_ok() || !in_workspace,
-        "docs/{name} cannot be read in the workspace checkout"
-    );
-    read.ok()
-}
-
 #[test]
 fn the_api_tables_of_the_guide_list_exactly_what_the_engines_register() {
-    let Some(markdown) = guide("rhai.md") else {
-        eprintln!("docs/rhai.md is not next to this crate: nothing to check");
+    let Some(markdown) = common::guide("rhai.md") else {
         return;
     };
     let (request_signatures, response_signatures) = crate::script::registered_signatures();
