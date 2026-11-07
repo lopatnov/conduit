@@ -56,6 +56,7 @@ serve() {
   fi
   "$CONDUIT" -c "$WORK/conduit.yaml" > "$WORK/serve.log" 2>&1 &
   SERVER=$!
+  PIDS="$PIDS $SERVER"
   for _ in $(seq 1 40); do curl -s -o /dev/null -m 1 -H 'X-Api-Key: secret-abc' http://127.0.0.1:8720/ && break; sleep 0.25; done
 }
 stop() { kill "$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null; }

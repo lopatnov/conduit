@@ -36,7 +36,8 @@ sites:
   forward auth, redirects, fault injection) and before the request is routed to an upstream. A request the built-in
   checks refuse never reaches a script or plugin.
 - **Fail-open.** A script or plugin that cannot be loaded, does not compile or link, runs out of its budget or crashes is
-  logged and skipped, and the request goes on. The built-in checks fail closed. **Do not make a script or a plugin the
+  logged and skipped, and the request goes on. The access checks (IP filter, credentials, JWT, forward auth) fail closed; rate limiting with a Redis store that is down
+  falls back to a per-instance in-memory limit instead of refusing. **Do not make a script or a plugin the
   only guard of anything that matters**; put the real check in `consumers`, `jwtAuth`, `forwardAuth` or `ipFilter`.
 - **Reload.** `conduit reload` (and `POST /reload`) re-reads edited files; a file that no longer compiles keeps its last
   good version, and to turn an entry off you remove it from the list. `conduit validate` reads and compiles every
@@ -48,7 +49,7 @@ sites:
 
 | You want | Use |
 | --- | --- |
-| Allow or deny by IP, rate, credentials, JWT, an external auth service, a redirect | The built-in setting: it fails closed and is cheaper than anything you write. |
+| Allow or deny by IP, credentials, JWT or an external auth service; limit the rate; redirect | The built-in setting: the access checks fail closed, and all of them are cheaper than anything you write. |
 | A small rule on headers or the path: block a bot, require a header, answer a path yourself | A [Rhai script](rhai.md): no build step, edit and reload. |
 | Change the request headers that go upstream, read the client IP, take the logic from a language you already use, or run compiled code | A [WASM plugin](wasm.md). |
 | Run on the upstream's answer | `phase: response` in Rhai, or `on_response` in WASM. |
