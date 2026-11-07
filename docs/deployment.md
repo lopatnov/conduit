@@ -189,9 +189,10 @@ application on port 3000 of the same machine, which is not there yet. To start i
 
 ```bash
 sudoedit /etc/conduit/conduit.yaml                    # your sites; the file explains how to start the service
-# check it before starting, with the variables the service will get from /etc/conduit/conduit.env (if you made one);
-# the files are readable by root and the service only, hence sudo
-sudo sh -c 'set -a; [ -r /etc/conduit/conduit.env ] && . /etc/conduit/conduit.env; set +a; conduit validate -c /etc/conduit/conduit.yaml'
+# check it before starting, as the service will run: the same account, the same /etc/conduit/conduit.env (if you made
+# one), read by systemd itself (the file is not shell syntax, so it must not be sourced by a shell)
+sudo systemd-run --pipe --wait --collect -p User=conduit -p Group=conduit -p WorkingDirectory=/etc/conduit \
+  -p EnvironmentFile=-/etc/conduit/conduit.env /usr/bin/conduit validate -c /etc/conduit/conduit.yaml
 sudo systemctl enable --now conduit                   # start now and at every boot
 systemctl status conduit
 journalctl -u conduit -f                              # the log
