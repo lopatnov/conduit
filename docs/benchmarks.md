@@ -237,7 +237,8 @@ A comparison is only fair when everything but the proxy is the same:
 Pull requests get a **Footprint report** comment (`.github/workflows/ci.yml`; on a pull request from a fork the
 comment cannot be posted and the report stays in the job log): the stripped
 release binary size and the number of normal dependencies (`cargo tree -e normal | wc -l`, a rough measure) for `--no-default-features`,
-`--no-default-features --features static`, `default`, `standard` and `full`. Sizes depend on the
+`--no-default-features --features static`, `default`, the two bundles for `--no-default-features` builds
+(`static-server`, `gateway`), `standard` and `full`. Sizes depend on the
 target (musl, glibc, Windows), so compare like with like. To measure one locally:
 
 ```bash
