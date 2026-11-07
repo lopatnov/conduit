@@ -63,4 +63,7 @@
 
 pub mod script;
 
-pub use script::{run_script, run_script_response, ScriptOutcome, ScriptResponseOutcome};
+pub use script::{
+    check_script, clear_cache, run_script, run_script_response, ScriptOutcome,
+    ScriptResponseOutcome,
+};

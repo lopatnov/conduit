@@ -223,5 +223,49 @@ class Main(unittest.TestCase):
             self.assertEqual(cdc.main(["--conduit", cmd, os.path.join(tmp, "missing.md")]), 2)
 
 
+class StubScripts(unittest.TestCase):
+    """The script files a documented configuration names (issue #566): `conduit validate` reads and compiles them."""
+
+    def test_a_relative_rhai_path_gets_an_empty_file_and_the_text_names_it(self):
+        """A relative .rhai path gets an empty file under the directory and the text names that file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = cdc.stub_scripts("path: ./scripts/auth.rhai\nother: check.rhai\n", tmp)
+            first = os.path.join(tmp, "scripts", "auth.rhai").replace("\\", "/")
+            second = os.path.join(tmp, "check.rhai").replace("\\", "/")
+            self.assertEqual(out, f"path: {first}\nother: {second}\n")
+            self.assertTrue(os.path.isfile(first) and os.path.getsize(first) == 0)
+            self.assertTrue(os.path.isfile(second))
+
+    def test_json_quoted_paths_are_found_too(self):
+        """A path inside JSON quotes is found as well."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = cdc.stub_scripts('{ "path": "./scripts/a.rhai" }', tmp)
+            self.assertNotIn("./scripts/a.rhai", out)
+            self.assertTrue(os.path.isfile(os.path.join(tmp, "scripts", "a.rhai")))
+
+    def test_absolute_paths_parent_paths_and_other_files_are_left_alone(self):
+        """Absolute paths, paths with .. and files of other kinds are left alone and nothing is created for them."""
+        with tempfile.TemporaryDirectory() as tmp:
+            text = "a: /etc/conduit/x.rhai\nb: ../up/y.rhai\nc: ./plugin.wasm\nd: C:\\scripts\\z.rhai\n"
+            self.assertEqual(cdc.stub_scripts(text, tmp), text)
+            self.assertEqual(os.listdir(tmp), [])
+
+    def test_a_block_that_names_a_script_is_validated_against_the_stub(self):
+        """check_block hands the stub's path to the validator, not the one in the documentation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = os.path.join(tmp, "conduit_stub.py")
+            with open(stub, "w", encoding="utf-8") as f:
+                f.write(
+                    "import sys\n"
+                    "text = open(sys.argv[sys.argv.index('-c') + 1], encoding='utf-8').read()\n"
+                    "path = [w for w in text.split() if w.endswith('.rhai')][0]\n"
+                    "import os\n"
+                    "sys.exit(0 if os.path.isfile(path) else 1)\n"
+                )
+            block = cdc.Block("docs/x.md", 1, "yaml", "path: ./scripts/auth.rhai\n", None)
+            ok, out = cdc.check_block([sys.executable, stub], block, tmp)
+            self.assertTrue(ok, out)
+
+
 if __name__ == "__main__":
     unittest.main()

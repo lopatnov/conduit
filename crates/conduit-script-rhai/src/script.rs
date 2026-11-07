@@ -80,6 +80,14 @@ fn ast_cache() -> &'static DashMap<String, AST> {
     AST_CACHE.get_or_init(DashMap::new)
 }
 
+/// The last version of each script that compiled, kept when [`clear_cache`] empties [`AST_CACHE`] so that a
+/// script edited into a state that does not compile keeps enforcing its previous version (issue #566).
+static LAST_GOOD: OnceLock<DashMap<String, AST>> = OnceLock::new();
+
+fn last_good() -> &'static DashMap<String, AST> {
+    LAST_GOOD.get_or_init(DashMap::new)
+}
+
 /// Return a reference to the shared Rhai engine with the Conduit API
 /// registered.  The engine is constructed at most once per process.
 /// Maximum Rhai operations per script execution.
@@ -404,6 +412,11 @@ fn engine_response() -> &'static rhai::Engine {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Return the compiled AST for `path`, compiling it on first access.
+///
+/// When a reload has emptied the cache and the file can no longer be read or compiled (an editor that
+/// writes in place can leave it half written, or the edit has a typo), the last version that compiled
+/// stays in use and a warning says so: a guard script must not switch itself off because of a bad
+/// save (issue #566). A path that never compiled has no such version and fails as before.
 fn get_or_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
     let cache = ast_cache();
     if let Some(ast) = cache.get(path) {
@@ -411,18 +424,61 @@ fn get_or_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
     }
     // Compile and insert.  If two threads race here the second write wins
     // (idempotent — both produce the same AST for the same file).
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            return Err(Box::new(rhai::EvalAltResult::ErrorSystem(
-                "I/O".into(),
-                Box::new(e),
-            )))
+    match read_and_compile(path) {
+        Ok(ast) => {
+            cache.insert(path.to_owned(), ast.clone());
+            last_good().insert(path.to_owned(), ast.clone());
+            Ok(ast)
         }
-    };
-    let ast = engine().compile(&source)?;
-    cache.insert(path.to_owned(), ast.clone());
-    Ok(ast)
+        Err(e) => match last_good().get(path) {
+            Some(previous) => {
+                tracing::warn!(
+                    script = path,
+                    "Rhai script cannot be used after a reload ({e}); the last version that compiled stays in use"
+                );
+                // Cached until the next reload, which is the only thing that can make the file readable
+                // again for us: one warning per reload, and no read and compile on every request.
+                cache.insert(path.to_owned(), previous.clone());
+                Ok(previous.clone())
+            }
+            None => Err(e),
+        },
+    }
+}
+
+fn read_and_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| Box::new(rhai::EvalAltResult::ErrorSystem("I/O".into(), Box::new(e))))?;
+    Ok(engine().compile(&source)?)
+}
+
+/// Check that the script at `path` can be read and compiled, without running it and without touching
+/// the cache. `conduit validate` calls this (issue #566): a script that cannot be read or compiled is
+/// skipped at run time (fail-open), so without this check a mistake in a guard script was visible only
+/// as a log line on the first request.
+///
+/// # Errors
+///
+/// The reason, as the text a person should read: the kind of I/O error (not the operating system's own
+/// wording, which differs between platforms and would make the messages untestable), or the compile error
+/// with its position.
+pub fn check_script(path: &str) -> Result<(), String> {
+    let source =
+        std::fs::read_to_string(path).map_err(|e| format!("cannot be read ({})", e.kind()))?;
+    engine()
+        .compile(&source)
+        .map(|_| ())
+        .map_err(|e| format!("does not compile: {e}"))
+}
+
+/// Forget every compiled script, so that the next request reads its file again.
+///
+/// A configuration reload calls this (issue #566): the guide promised that `conduit reload` picks up
+/// an edited script, but the cache is keyed by path and was never emptied, so an edit took effect
+/// only after a restart. A script that is running while the cache is emptied finishes with the AST
+/// it already holds, and a script whose edited file no longer compiles keeps its last good version.
+pub fn clear_cache() {
+    ast_cache().clear();
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -430,6 +486,10 @@ fn get_or_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cache tests empty the process-wide cache (`clear_cache`) and rely on what is cached between two
+    /// calls, so they take turns; the other tests use paths of their own and are not affected.
+    static CACHE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn headers(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -459,6 +519,81 @@ mod tests {
         assert!(matches!(
             run("false", headers(&[])),
             ScriptOutcome::Abort { .. }
+        ));
+    }
+
+    /// Issue #566: the cache is keyed by path. Before `clear_cache` existed an edited file was not seen
+    /// until a restart, although the guide said a reload picks it up.
+    #[test]
+    fn clear_cache_makes_an_edited_script_take_effect() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("edited.rhai");
+        let path = p.to_str().unwrap().to_owned();
+        let call = || run_script(&path, "/t", "GET", "", headers(&[]), None);
+        std::fs::write(&p, "false").unwrap();
+        ast_cache().remove(&path);
+        assert!(matches!(call(), ScriptOutcome::Abort { .. }));
+        std::fs::write(&p, "true").unwrap();
+        assert!(
+            matches!(call(), ScriptOutcome::Abort { .. }),
+            "the compiled script is cached by path: the edit is not seen yet"
+        );
+        clear_cache();
+        assert!(
+            matches!(call(), ScriptOutcome::Continue),
+            "after the cache is cleared the edited file is read"
+        );
+    }
+
+    /// Issue #566: after a reload a file that was saved half-way or with a typo must not switch a guard script
+    /// off: the version that last compiled keeps enforcing, until the file compiles again.
+    #[test]
+    fn a_script_edited_into_a_syntax_error_keeps_its_last_good_version_after_a_reload() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("guard.rhai");
+        let path = p.to_str().unwrap().to_owned();
+        let call = || run_script(&path, "/t", "GET", "", headers(&[]), None);
+        std::fs::write(&p, "response.status = 401; false").unwrap();
+        ast_cache().remove(&path);
+        last_good().remove(&path);
+        assert!(matches!(call(), ScriptOutcome::Abort { status: 401, .. }));
+        std::fs::write(&p, "this is not rhai (").unwrap();
+        clear_cache();
+        assert!(
+            matches!(call(), ScriptOutcome::Abort { status: 401, .. }),
+            "the broken edit must not switch the guard off"
+        );
+        assert!(
+            ast_cache().contains_key(&path),
+            "the fallback is cached until the next reload (no read and compile, no warning, per request)"
+        );
+        std::fs::write(&p, "response.status = 403; false").unwrap();
+        clear_cache();
+        assert!(
+            matches!(call(), ScriptOutcome::Abort { status: 403, .. }),
+            "once the file compiles again the new version is used"
+        );
+        std::fs::remove_file(&p).unwrap();
+        clear_cache();
+        assert!(
+            matches!(call(), ScriptOutcome::Abort { status: 403, .. }),
+            "a file that has gone away keeps the last good version too"
+        );
+    }
+
+    #[test]
+    fn a_script_that_never_compiled_still_fails_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("never.rhai");
+        let path = p.to_str().unwrap().to_owned();
+        std::fs::write(&p, "this is not rhai (").unwrap();
+        ast_cache().remove(&path);
+        last_good().remove(&path);
+        assert!(matches!(
+            run_script(&path, "/t", "GET", "", headers(&[]), None),
+            ScriptOutcome::Continue
         ));
     }
 

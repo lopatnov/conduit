@@ -1011,14 +1011,16 @@ wasm-opt -Os -o plugin-opt.wasm plugin.wasm
 ## Execution model
 
 - Modules are **compiled once** (on first request) by Wasmtime's Cranelift JIT
-  and cached for the lifetime of the process, keyed by the configured `path`.
-  Overwriting the `.wasm` file at the same path and running `conduit reload`
-  does **not** pick up the new bytes — the process keeps serving the
-  already-compiled module until it's fully restarted (the same
-  compile-once-per-path caching Rhai scripts use, see `AST_CACHE` in
-  `script.rs`). Point `middleware[].path` at a new file path instead of
-  overwriting one in place if you need a running server to pick up a
-  rebuilt plugin without a restart.
+  and cached, keyed by the configured `path`. A configuration reload
+  (`conduit reload`, `POST /reload`, or a live update from the Kubernetes provider) empties the cache, so
+  a `.wasm` file overwritten at the same path is read again by the next request
+  (issue #566; before that fix the process kept serving the already-compiled
+  module until it was restarted, and the same was true of Rhai scripts). A request
+  that is running while the cache is emptied finishes with the module it holds. If the file then cannot
+  be read or compiled (a build that stopped half-way, a bad copy), **the last module that compiled stays
+  in use** and a warning is logged once per reload, so a bad file does not switch the plugin off; copy
+  the new `.wasm` into place atomically (write a temporary file, then rename it). **To turn a plugin off,
+  remove its `middleware` entry**: deleting the file keeps the last good module running until a restart.
 - Each request runs in its **own Wasmtime Store** — no shared mutable state
   between requests, no global variables visible across calls.
 - WASM execution is **synchronous** and runs in the request-handling thread.

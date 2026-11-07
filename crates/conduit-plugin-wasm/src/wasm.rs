@@ -84,16 +84,56 @@ fn module_cache() -> &'static DashMap<String, Arc<Module>> {
     WASM_MODULES.get_or_init(DashMap::new)
 }
 
+/// The last version of each plugin that compiled, kept when [`clear_module_cache`] empties [`WASM_MODULES`]
+/// so that a plugin file saved half-way keeps its previous version enforcing (issue #566).
+static LAST_GOOD_MODULES: OnceLock<DashMap<String, Arc<Module>>> = OnceLock::new();
+
+fn last_good_modules() -> &'static DashMap<String, Arc<Module>> {
+    LAST_GOOD_MODULES.get_or_init(DashMap::new)
+}
+
+/// Forget every compiled module, so that the next request reads its file again.
+///
+/// A configuration reload calls this (issue #566): the cache is keyed by path and was never
+/// emptied, so an edited plugin took effect only after a restart. A call that is running while
+/// the cache is emptied finishes with the module it already holds, and a plugin whose edited file
+/// no longer compiles keeps its last good version.
+pub fn clear_module_cache() {
+    module_cache().clear();
+}
+
 fn get_or_compile(path: &str) -> anyhow::Result<Arc<Module>> {
     let cache = module_cache();
     if let Some(m) = cache.get(path) {
         return Ok(m.clone());
     }
+    match read_and_compile(path) {
+        Ok(arc) => {
+            cache.insert(path.to_owned(), arc.clone());
+            last_good_modules().insert(path.to_owned(), arc.clone());
+            Ok(arc)
+        }
+        // A reload emptied the cache and the file can no longer be read or compiled: the version that last
+        // compiled stays in use, so that a bad save does not switch a plugin off (issue #566).
+        Err(e) => match last_good_modules().get(path) {
+            Some(previous) => {
+                tracing::warn!(
+                    plugin = path,
+                    "WASM plugin cannot be used after a reload ({e}); the last version that compiled stays in use"
+                );
+                // Cached until the next reload: one warning per reload, and no read and compile per request.
+                cache.insert(path.to_owned(), previous.clone());
+                Ok(previous.clone())
+            }
+            None => Err(e),
+        },
+    }
+}
+
+fn read_and_compile(path: &str) -> anyhow::Result<Arc<Module>> {
     let bytes = std::fs::read(path)?;
     let module = Module::new(engine()?, &bytes)?;
-    let arc = Arc::new(module);
-    cache.insert(path.to_owned(), arc.clone());
-    Ok(arc)
+    Ok(Arc::new(module))
 }
 
 // ── Per-call state ────────────────────────────────────────────────────────────
@@ -766,6 +806,10 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
+    /// The cache tests empty the process-wide cache (`clear_module_cache`) and rely on what is cached between
+    /// two calls, so they take turns; the other tests use plugin files of their own.
+    static CACHE_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn req() -> WasmRequest {
         WasmRequest {
             method: "GET".into(),
@@ -927,6 +971,59 @@ mod tests {
         let m1 = get_or_compile(&p).unwrap();
         let m2 = get_or_compile(&p).unwrap();
         assert!(Arc::ptr_eq(&m1, &m2));
+    }
+
+    /// Issue #566: after `clear_module_cache` the same path is read again (a reload picks up an
+    /// edited plugin); the call that already holds the old module keeps it.
+    #[test]
+    fn clear_module_cache_makes_the_next_call_read_the_file_again() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (_f, p) =
+            compile_wat("(module (func (export \"on_request\") (result i32) i32.const 0))");
+        module_cache().remove(&p);
+        let before = get_or_compile(&p).unwrap();
+        assert!(Arc::ptr_eq(&before, &get_or_compile(&p).unwrap()));
+        clear_module_cache();
+        let after = get_or_compile(&p).unwrap();
+        assert!(
+            !Arc::ptr_eq(&before, &after),
+            "the module was compiled again from the file"
+        );
+        assert!(
+            Arc::strong_count(&before) >= 1,
+            "a holder of the old module keeps it"
+        );
+    }
+
+    /// Issue #566: a plugin file saved half-way after a reload keeps its last good version.
+    #[test]
+    fn a_plugin_file_that_no_longer_compiles_keeps_its_last_good_module_after_a_reload() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (_f, p) =
+            compile_wat("(module (func (export \"on_request\") (result i32) i32.const 0))");
+        module_cache().remove(&p);
+        last_good_modules().remove(&p);
+        let good = get_or_compile(&p).unwrap();
+        std::fs::write(&p, b"this is not a wasm module").unwrap();
+        clear_module_cache();
+        let kept = get_or_compile(&p).expect("the last good module stays in use");
+        assert!(Arc::ptr_eq(&good, &kept));
+        assert!(
+            module_cache().contains_key(&p),
+            "the fallback is cached until the next reload"
+        );
+        std::fs::remove_file(&p).unwrap();
+        clear_module_cache();
+        assert!(Arc::ptr_eq(&good, &get_or_compile(&p).unwrap()));
+    }
+
+    #[test]
+    fn a_plugin_that_never_compiled_still_fails() {
+        let (_f, p) = compile_wat("(module)");
+        std::fs::write(&p, b"this is not a wasm module").unwrap();
+        module_cache().remove(&p);
+        last_good_modules().remove(&p);
+        assert!(get_or_compile(&p).is_err());
     }
 
     // ── Header read ───────────────────────────────────────────────────────────
