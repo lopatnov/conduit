@@ -97,7 +97,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   host function, a WASI import), a shared memory or an exported memory declared over the 16 MiB limit, a file that is
   not a regular file or is over 64 MiB (a plugin file is now read with that cap, in validation and at run time), and,
   as warnings that say the plugin still runs, a module that calls memory-reading host functions but exports no
-  `memory` and an `on_response` of the wrong type. At run time an unusable plugin is skipped and the request passes
+  `memory`, an `on_response` of the wrong type and a missing `on_request` next to a working `on_response`. A module
+  that compiles but cannot be run (the cases above that fail to link or instantiate) no longer replaces the version
+  that last worked after a reload; before, only a file that did not read or compile fell back. At run time an unusable plugin is skipped and the request passes
   through; the server logs the same text as a warning at start-up and on reload, `conduit validate` exits non-zero.
 - **`docs/wasm.md` rewritten, and its samples are built in CI** (issue #565). The Rust sample at the top of the
   old guide did not link (the host functions were declared without `#[link(wasm_import_module = "conduit")]`, so

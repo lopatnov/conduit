@@ -187,6 +187,10 @@ fn read_and_compile(path: &str) -> anyhow::Result<Arc<Module>> {
         other => anyhow::anyhow!("plugin file {}", other.describe()),
     })?;
     let module = Module::new(engine()?, &bytes)?;
+    // A module that compiles but cannot be run (no `on_request`, an import that does not exist, a memory the
+    // host cannot give it) is treated like one that does not compile: after a reload the last version that worked
+    // stays in use, instead of the plugin failing to instantiate on every call (issue #565).
+    crate::phases::verify(&module).map_err(|why| anyhow::anyhow!("plugin {why}"))?;
     Ok(Arc::new(module))
 }
 
@@ -1083,6 +1087,25 @@ mod tests {
         std::fs::remove_file(&p).unwrap();
         clear_module_cache();
         assert!(Arc::ptr_eq(&good, &get_or_compile(&p).unwrap()));
+    }
+
+    /// Issue #565: a file that compiles but cannot be run (here: no `on_request`) must not replace the version that
+    /// worked, or the plugin would fail to instantiate on every call and the guard would be off.
+    #[test]
+    fn a_plugin_file_that_compiles_but_cannot_run_keeps_its_last_good_module_after_a_reload() {
+        let _turn = CACHE_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let (_f, p) =
+            compile_wat("(module (func (export \"on_request\") (result i32) i32.const 0))");
+        module_cache().remove(&p);
+        last_good_modules().remove(&p);
+        let good = get_or_compile(&p).unwrap();
+        let broken =
+            wat::parse_str("(module (func (export \"on_requst\") (result i32) i32.const 0))")
+                .unwrap();
+        std::fs::write(&p, broken).unwrap();
+        clear_module_cache();
+        let kept = get_or_compile(&p).expect("the last good module stays in use");
+        assert!(Arc::ptr_eq(&good, &kept));
     }
 
     #[test]
@@ -2047,9 +2070,11 @@ mod tests {
         // error text, not just "some error occurred".
         let (_f, p) = compile_wat(
             r#"(module
-              (memory (export "memory") 257)
+              (memory 257)
               (func (export "on_request") (result i32) i32.const 0))"#,
         );
+        // (The memory is not exported: a module that exports an oversized memory is refused earlier, when it is
+        // loaded, by `phases::verify`; this test is about the limiter itself.)
         match run_inner(req(), &p) {
             Ok(outcome) => {
                 panic!("instantiation must fail for oversized initial memory, got {outcome:?}")

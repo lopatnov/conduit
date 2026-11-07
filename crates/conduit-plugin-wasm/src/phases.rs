@@ -111,16 +111,18 @@ impl std::fmt::Display for ModuleProblem {
 /// What this cannot tell: whether the plugin does the right thing, or traps at run time.
 pub fn check_module(path: &str) -> Result<(), ModuleProblem> {
     let module = load_for_check(path).map_err(ModuleProblem::Unusable)?;
-    // An `on_response` of another type is not called (the host asks for `(i32) -> i32` and skips it silently), but
-    // `on_request` and the rest of the plugin work.
-    match module.get_export("on_response") {
-        Some(ExternType::Func(f)) if has_response_type(&f) => {}
-        Some(_) => {
-            return Err(ModuleProblem::Degraded(
-                "exports on_response with a type other than (i32) -> i32, so on_response is never called".to_owned(),
-            ));
-        }
-        None => {}
+    // An export of another type is not called (the host asks for one type and skips the plugin's phase with a
+    // warning), but the rest of the plugin works.
+    if !has_on_request(&module) {
+        return Err(ModuleProblem::Degraded(
+            "does not export on_request as () -> i32, so its request phase is skipped with a warning on every request              (on_request is required even in a plugin that only uses on_response)"
+                .to_owned(),
+        ));
+    }
+    if module.get_export("on_response").is_some() && !has_on_response(&module) {
+        return Err(ModuleProblem::Degraded(
+            "exports on_response with a type other than (i32) -> i32, so on_response is never called".to_owned(),
+        ));
     }
     let needs_memory = module
         .imports()
@@ -135,12 +137,21 @@ pub fn check_module(path: &str) -> Result<(), ModuleProblem> {
     Ok(())
 }
 
-/// Read, compile and link the module for [`check_module`]; the reason when it cannot run.
+/// Read, compile and verify the module for [`check_module`]; the reason when it cannot run.
 fn load_for_check(path: &str) -> Result<Module, String> {
     let bytes = read_module_file(path).map_err(|e| e.describe())?;
-    let engine = engine().map_err(|e| e.to_string())?;
-    let module = Module::new(engine, &bytes)
+    let module = Module::new(engine().map_err(|e| e.to_string())?, &bytes)
         .map_err(|e| format!("is not a valid WebAssembly module: {e:#}"))?;
+    verify(&module)?;
+    Ok(module)
+}
+
+/// What the host needs of a compiled module before it can run it: the exports, a memory it can instantiate, and
+/// imports that link in the phases it uses. The loader applies this too, so a file that compiles but cannot be
+/// run never replaces the version of the plugin that last worked (issue #565, review of #662); `check_module`
+/// reports the same reasons. Nothing in the module runs.
+pub(crate) fn verify(module: &Module) -> Result<(), String> {
+    let engine = engine().map_err(|e| e.to_string())?;
     // A memory the host cannot give the plugin is a failure to instantiate on every call (fail-open). Only an
     // exported memory can be looked at from outside, and a plugin that uses the host needs to export it.
     if let Some(ExternType::Memory(memory)) = module.get_export("memory") {
@@ -157,38 +168,47 @@ fn load_for_check(path: &str) -> Result<Module, String> {
         }
     }
 
-    match module.get_export("on_request") {
-        Some(ExternType::Func(f)) if f.params().len() == 0 && is_one(f.results(), ValType::I32) => {}
-        Some(_) => return Err("exports on_request with a type other than () -> i32".to_owned()),
-        None => return Err("does not export on_request (it is required even in a plugin that only uses on_response)".to_owned()),
+    // A plugin needs at least one export the host can call. (A module with only `on_response` still works for
+    // responses; `check_module` says that its request phase is skipped.)
+    if !has_on_request(module) && !has_on_response(module) {
+        return Err(match module.get_export("on_request") {
+            Some(_) => "exports on_request with a type other than () -> i32".to_owned(),
+            None => ON_REQUEST_MISSING.to_owned(),
+        });
     }
     // Only an `on_response` of the right type is ever called, so only that one needs the response phase to link.
-    let has_on_response = matches!(
-        module.get_export("on_response"),
-        Some(ExternType::Func(f)) if has_response_type(&f)
-    );
+    let has_on_response = has_on_response(module);
 
     let mut request = Linker::<WasmState>::new(engine);
     register_host_functions(&mut request).map_err(|e| e.to_string())?;
-    define_unavailable(&mut request, &module, RESPONSE_ONLY).map_err(|e| e.to_string())?;
+    define_unavailable(&mut request, module, RESPONSE_ONLY).map_err(|e| e.to_string())?;
     request
-        .instantiate_pre(&module)
+        .instantiate_pre(module)
         .map_err(|e| format!("cannot be linked: {e:#}"))?;
     if has_on_response {
         let mut response = Linker::<WasmResponseState>::new(engine);
         register_response_host_functions(&mut response).map_err(|e| e.to_string())?;
-        define_unavailable(&mut response, &module, REQUEST_ONLY).map_err(|e| e.to_string())?;
+        define_unavailable(&mut response, module, REQUEST_ONLY).map_err(|e| e.to_string())?;
         response
-            .instantiate_pre(&module)
+            .instantiate_pre(module)
             .map_err(|e| format!("cannot be linked: {e:#}"))?;
     }
-
-    Ok(module)
+    Ok(())
 }
 
-/// True when `f` is `(i32) -> i32`, the type the host calls `on_response` with.
-fn has_response_type(f: &wasmtime::FuncType) -> bool {
-    is_one(f.params(), ValType::I32) && is_one(f.results(), ValType::I32)
+const ON_REQUEST_MISSING: &str =
+    "does not export on_request (it is required even in a plugin that only uses on_response)";
+
+/// True when the module exports `on_request` as `() -> i32`, the type the host calls it with.
+fn has_on_request(module: &Module) -> bool {
+    matches!(module.get_export("on_request"),
+        Some(ExternType::Func(f)) if f.params().len() == 0 && is_one(f.results(), ValType::I32))
+}
+
+/// True when the module exports `on_response` as `(i32) -> i32`, the type the host calls it with.
+fn has_on_response(module: &Module) -> bool {
+    matches!(module.get_export("on_response"),
+        Some(ExternType::Func(f)) if is_one(f.params(), ValType::I32) && is_one(f.results(), ValType::I32))
 }
 
 /// True when `types` is exactly one value of type `want`.

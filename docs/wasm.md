@@ -185,8 +185,9 @@ Entries run **in the order written**, `script` and `wasm` mixed; the first one t
 and the rest do not run for that request. In the response phase every `wasm` entry's `on_response` runs.
 
 > **Changing a plugin.** `conduit reload`, `POST /reload` and a live update from the Kubernetes provider empty the
-> compiled-module cache, so the next request reads the `.wasm` file again. If the new file cannot be read or compiled
-> (a build that stopped half-way, a bad copy), the **last module that compiled stays in use** and a warning is logged
+> compiled-module cache, so the next request reads the `.wasm` file again. If the new file cannot be read, compiled or run
+> (a build that stopped half-way, a bad copy, a module without `on_request`, an import that does not exist), the
+> **last module that worked stays in use** and a warning is logged
 > once per reload, so a bad file does not switch the plugin off. Copy the new file into place atomically (write a
 > temporary file, then rename it). **To turn a plugin off, remove its `middleware` entry**: deleting the file keeps the
 > last good module running until a restart. A request that is running during the reload finishes with the module it
@@ -445,12 +446,13 @@ this entry is skipped and requests pass through it (after a reload, a version th
 stays in use)
 ```
 
-It also names a file that is not a regular file or is over 64 MiB, is not a binary module, has no `on_request` (or one of
-another type), imports a function that does not exist or has the wrong type (a misspelt `conduit_get_hedaer`, a WASI
-import), or declares a shared memory or an exported memory whose initial size is over the 16 MiB limit: all of those
-make the plugin fail to instantiate, so it is skipped. Two problems leave a plugin that still runs, and the warning says
-so: a module that imports host functions that need memory but exports none (those calls read and write nothing), and an
-`on_response` of the wrong type (it is never called; `on_request` still works). A running server only logs these at
+It also names a file that is not a regular file or is over 64 MiB, is not a binary module, exports neither `on_request` nor
+`on_response` with the type the host calls, imports a function that does not exist or has the wrong type (a misspelt
+`conduit_get_hedaer`, a WASI import), or declares a shared memory or an exported memory whose initial size is over the
+16 MiB limit: all of those make the plugin fail to load or to instantiate, so it is skipped. Three problems leave a
+plugin that still runs, and the warning says so: a module that imports host functions that need memory but exports none
+(those calls read and write nothing), an `on_response` of the wrong type (it is never called), and a missing
+`on_request` in a plugin that has an `on_response` (the request phase logs a warning on every request). A running server only logs these at
 start-up and on reload (a warning there, so that a file can be put in place after the configuration); `conduit
 validate` exits non-zero. What it cannot tell: whether the plugin decides correctly.
 
