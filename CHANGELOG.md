@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [2.2.0] — 2026-11-07
+
 ### Security
 
 - **Windows: a symlink or junction swapped in after the check is no longer followed** (issue #600,
