@@ -445,8 +445,8 @@ this entry is skipped and requests pass through it
 ```
 
 It also names a file that is not a binary module, a module without `on_request` (or with another type), an import
-that does not exist or has the wrong type (a misspelt `conduit_get_hedaer`, a WASI import), and a module that calls
-host functions that need memory but exports none. A running server only logs these at start-up and on reload (it is
+that does not exist or has the wrong type (a misspelt `conduit_get_hedaer`, a WASI import), and a module that imports
+host functions that need memory but exports none (that one still runs, but those calls read and write nothing). A running server only logs these at start-up and on reload (it is
 a warning there so that a file can be put in place after the configuration); `conduit validate` exits non-zero.
 What it cannot tell: whether the plugin decides correctly.
 

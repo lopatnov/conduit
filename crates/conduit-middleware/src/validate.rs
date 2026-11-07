@@ -88,12 +88,18 @@ fn check_runnable(entry: &MiddlewareEntry, entry_prefix: &str, errors: &mut Vec<
             // A warning, as for scripts: the file may be put in place after validation (issue #565).
             Ok(()) => {
                 if let Some(path) = entry.path.as_deref() {
-                    if let Err(why) = conduit_plugin_wasm::check_module(path) {
+                    if let Err(problem) = conduit_plugin_wasm::check_module(path) {
+                        let consequence = match problem {
+                            conduit_plugin_wasm::ModuleProblem::Unusable(_) => {
+                                "until that is fixed this entry is skipped and requests pass through it"
+                            }
+                            conduit_plugin_wasm::ModuleProblem::Degraded(_) => {
+                                "the plugin still runs, but it does not behave as written"
+                            }
+                        };
                         errors.push(ValidationError::warning(
                             format!("{entry_prefix}.path"),
-                            format!(
-                                "plugin {path:?} {why}; until that is fixed this entry is skipped and requests pass through it"
-                            ),
+                            format!("plugin {path:?} {}; {consequence}", problem.message()),
                         ));
                     }
                 }
@@ -139,6 +145,42 @@ mod tests {
         let errors = validate_one(p.to_str().unwrap());
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(conduit_plugin_wasm::check_engine(), Ok(()));
+    }
+
+    /// A plugin that imports a function reading its memory but exports none still runs (its reads come back empty),
+    /// so the warning must not say that the entry is skipped.
+    #[test]
+    fn a_plugin_without_an_exported_memory_is_a_warning_that_says_it_still_runs() {
+        let mut module = Vec::new();
+        module.extend_from_slice(&[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+        // types: (i32, i32) -> i32 and () -> i32
+        module.extend_from_slice(&[
+            0x01, 0x0b, 0x02, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x60, 0x00, 0x01, 0x7f,
+        ]);
+        // one import, `conduit.conduit_get_path`, of the first type
+        module.extend_from_slice(&[0x02, 0x1c, 0x01, 0x07]);
+        module.extend_from_slice(b"conduit");
+        module.push(0x10);
+        module.extend_from_slice(b"conduit_get_path");
+        module.extend_from_slice(&[0x00, 0x00]);
+        // one function of the second type, exported as `on_request` (function index 1: the import is 0)
+        module.extend_from_slice(&[0x03, 0x02, 0x01, 0x01, 0x07, 0x0e, 0x01, 0x0a]);
+        module.extend_from_slice(b"on_request");
+        module.extend_from_slice(&[0x00, 0x01]);
+        // body: i32.const 0
+        module.extend_from_slice(&[0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x00, 0x0b]);
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("nomem.wasm");
+        std::fs::write(&p, module).unwrap();
+        let errors = validate_one(p.to_str().unwrap());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].severity, Severity::Warning);
+        assert!(
+            errors[0].message.contains("does not export a memory"),
+            "{errors:?}"
+        );
+        assert!(errors[0].message.contains("still runs"), "{errors:?}");
+        assert!(!errors[0].message.contains("skipped"), "{errors:?}");
     }
 
     /// Issue #565: `validate` used to accept a plugin that cannot run; at run time it is skipped.

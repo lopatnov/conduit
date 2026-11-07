@@ -17,27 +17,29 @@ struct Block {
     skipped: bool,
 }
 
+/// The ```wat blocks of `markdown`, one pass: `open` holds the block being read.
 fn blocks(markdown: &str) -> Vec<Block> {
-    let mut found = Vec::new();
-    let mut lines = markdown.lines().enumerate();
-    let mut previous = "";
-    while let Some((index, line)) = lines.next() {
-        if line.trim_start().starts_with("```wat") {
-            let mut text = String::new();
-            for (_, body) in lines.by_ref() {
-                if body.trim_start().starts_with("```") {
-                    break;
-                }
-                text.push_str(body);
-                text.push('\n');
+    let (mut found, mut open, mut skip_next) = (Vec::new(), None::<Block>, false);
+    for (index, line) in markdown.lines().enumerate() {
+        let fence = line.trim_start().starts_with("```");
+        open = match open.take() {
+            Some(block) if fence => {
+                found.push(block);
+                None
             }
-            found.push(Block {
-                text,
+            Some(mut block) => {
+                block.text.push_str(line);
+                block.text.push('\n');
+                Some(block)
+            }
+            None if line.trim_start().starts_with("```wat") => Some(Block {
+                text: String::new(),
                 line: index + 1,
-                skipped: previous.contains("docs-check: skip"),
-            });
-        }
-        previous = line;
+                skipped: skip_next,
+            }),
+            None => None,
+        };
+        skip_next = line.contains("docs-check: skip");
     }
     found
 }

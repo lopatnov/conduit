@@ -74,13 +74,54 @@ pub(crate) fn define_unavailable<T: 'static>(
     Ok(())
 }
 
-/// Why the plugin file at `path` cannot serve requests, or `Ok` when it can: it reads, compiles, exports
-/// `on_request` as `() -> i32`, links in the phases it uses, and exports its memory when a function it imports
-/// needs it. Nothing in the module runs. The reason is the text a person should read: the kind of I/O error
-/// (not the operating system's own wording, which differs between platforms), or the engine's message.
+/// What is wrong with a plugin file, as the text a person should read: the kind of I/O error (not the operating
+/// system's own wording, which differs between platforms), or the engine's message.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ModuleProblem {
+    /// The plugin cannot run at all: at run time it is skipped and the request passes through.
+    Unusable(String),
+    /// The plugin runs, but a part of what it asks of the host does not work, so it does not behave as written.
+    Degraded(String),
+}
+
+impl ModuleProblem {
+    /// The text of the problem.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Unusable(why) | Self::Degraded(why) => why,
+        }
+    }
+}
+
+impl std::fmt::Display for ModuleProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+/// What can be said about the plugin file at `path` before it serves a request: it reads, compiles, exports
+/// `on_request` as `() -> i32` and links in the phases it uses ([`ModuleProblem::Unusable`] when not), and it
+/// exports its memory when a function it imports needs it ([`ModuleProblem::Degraded`] when not: such a plugin
+/// runs, but its calls that read or write memory see nothing). Nothing in the module runs.
 ///
 /// What this cannot tell: whether the plugin does the right thing, or traps at run time.
-pub fn check_module(path: &str) -> Result<(), String> {
+pub fn check_module(path: &str) -> Result<(), ModuleProblem> {
+    let module = load_for_check(path).map_err(ModuleProblem::Unusable)?;
+    let needs_memory = module
+        .imports()
+        .any(|i| i.module() == "conduit" && !WITHOUT_MEMORY.contains(&i.name()));
+    if needs_memory && !matches!(module.get_export("memory"), Some(ExternType::Memory(_))) {
+        return Err(ModuleProblem::Degraded(
+            "imports host functions that read or write its memory but does not export a memory named \"memory\", \
+             so those calls read nothing and write nothing"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Read, compile and link the module for [`check_module`]; the reason when it cannot run.
+fn load_for_check(path: &str) -> Result<Module, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot be read ({})", e.kind()))?;
     let engine = engine().map_err(|e| e.to_string())?;
     let module = Module::new(engine, &bytes)
@@ -120,13 +161,7 @@ pub fn check_module(path: &str) -> Result<(), String> {
             .map_err(|e| format!("cannot be linked: {e:#}"))?;
     }
 
-    let needs_memory = module
-        .imports()
-        .any(|i| i.module() == "conduit" && !WITHOUT_MEMORY.contains(&i.name()));
-    if needs_memory && !matches!(module.get_export("memory"), Some(ExternType::Memory(_))) {
-        return Err("imports host functions that read or write its memory but does not export a memory named \"memory\"".to_owned());
-    }
-    Ok(())
+    Ok(module)
 }
 
 /// True when `types` is exactly one value of type `want`.
@@ -221,7 +256,9 @@ mod tests {
 
     fn problem(wat_src: &str) -> String {
         let (_f, path) = wasm_file(wat_src);
-        check_module(&path).expect_err("the module should be rejected")
+        check_module(&path)
+            .expect_err("the module should be rejected")
+            .to_string()
     }
 
     #[test]
@@ -245,7 +282,9 @@ mod tests {
     fn a_missing_file_is_named_by_kind() {
         assert_eq!(
             check_module("/no/such/plugin.wasm"),
-            Err("cannot be read (entity not found)".to_owned())
+            Err(ModuleProblem::Unusable(
+                "cannot be read (entity not found)".to_owned()
+            ))
         );
     }
 
@@ -255,7 +294,7 @@ mod tests {
         f.write_all(b"(module)").unwrap();
         let path = f.path().to_string_lossy().into_owned();
         // WAT text is not accepted: the host reads binary modules only.
-        let why = check_module(&path).unwrap_err();
+        let why = check_module(&path).unwrap_err().to_string();
         assert!(
             why.starts_with("is not a valid WebAssembly module"),
             "{why}"
@@ -348,6 +387,15 @@ mod tests {
                 (func (export "on_request") (result i32) i32.const 0))"#,
         );
         assert!(why.contains("does not export a memory"), "{why}");
+        let (_f, path) = wasm_file(
+            r#"(module
+                (import "conduit" "conduit_get_path" (func (param i32 i32) (result i32)))
+                (func (export "on_request") (result i32) i32.const 0))"#,
+        );
+        assert!(
+            matches!(check_module(&path), Err(ModuleProblem::Degraded(_))),
+            "such a plugin runs, so it is not reported as unusable"
+        );
     }
 
     #[test]

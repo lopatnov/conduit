@@ -76,7 +76,7 @@
 mod phases;
 pub mod wasm;
 
-pub use phases::check_module;
+pub use phases::{check_module, ModuleProblem};
 
 pub use wasm::{
     check_engine, clear_module_cache, run_wasm, run_wasm_response, WasmOutcome, WasmRequest,
