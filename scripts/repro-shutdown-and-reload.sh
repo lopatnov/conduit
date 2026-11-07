@@ -7,7 +7,7 @@
 #   scripts/repro-shutdown-and-reload.sh [path/to/conduit]      (default: target/debug/conduit)
 #
 # Needs bash, curl, python3 and, for the HTTP/2 case, openssl (the case is skipped without it). Uses ports 4711, 4712,
-# 8717, 8718, 8716 and the Admin API on 127.0.0.1:2019; run it on a machine where they are free. It starts and stops its
+# 4713, 8716, 8717, 8718 and the Admin API on 127.0.0.1:2019; it checks that all of them are free and stops if not. It starts and stops its
 # own processes and removes its scratch directory.
 set -u
 CONDUIT=${1:-target/debug/conduit}
