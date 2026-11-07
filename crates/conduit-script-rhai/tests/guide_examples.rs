@@ -10,7 +10,7 @@
 //! The guide lives outside this crate, so when it is not there (the crate was unpacked on its own)
 //! the test says so and passes.
 
-use std::path::Path;
+mod common;
 
 /// One ```rhai block: its text, the 1-based line of its opening fence and whether it is marked as a fragment.
 struct Block {
@@ -46,9 +46,7 @@ fn blocks(markdown: &str) -> Vec<Block> {
 
 #[test]
 fn every_rhai_block_of_the_guide_compiles() {
-    let guide = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/rhai.md");
-    let Ok(markdown) = std::fs::read_to_string(&guide) else {
-        eprintln!("docs/rhai.md is not next to this crate: nothing to check");
+    let Some(markdown) = common::guide("rhai.md") else {
         return;
     };
     let found = blocks(&markdown);

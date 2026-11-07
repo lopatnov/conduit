@@ -9,8 +9,6 @@
 //! The Rust plugins of the guide are built by `scripts/check_doc_wasm.py`. The guide lives outside this crate, so
 //! when it is not there (the crate was unpacked on its own) the test says so and passes.
 
-use std::path::Path;
-
 struct Block {
     text: String,
     line: usize,
@@ -61,13 +59,27 @@ fn blocks(markdown: &str) -> Vec<Block> {
     found
 }
 
+/// The guide, or `None` when this crate was unpacked on its own. In the workspace checkout an unreadable guide
+/// fails the test: a moved file must not make it pass by checking nothing.
+fn guide() -> Option<String> {
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    let text = std::fs::read_to_string(format!("{manifest}/../../docs/wasm.md"));
+    match std::fs::read_to_string(format!("{manifest}/../../Cargo.toml")) {
+        Ok(toml) if text.is_err() && toml.contains("[workspace]") => {
+            panic!("docs/wasm.md cannot be read")
+        }
+        _ => {
+            if text.is_err() {
+                eprintln!("docs/wasm.md is not next to this crate: nothing to check");
+            }
+            text.ok()
+        }
+    }
+}
+
 #[test]
 fn every_wat_block_of_the_guide_assembles_into_a_module_the_host_accepts() {
-    let guide = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/wasm.md");
-    let Ok(markdown) = std::fs::read_to_string(&guide) else {
-        eprintln!("docs/wasm.md is not next to this crate: nothing to check");
-        return;
-    };
+    let Some(markdown) = guide() else { return };
     let found = blocks(&markdown);
     assert!(
         !found.is_empty(),

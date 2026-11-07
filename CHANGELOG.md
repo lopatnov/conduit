@@ -85,6 +85,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Rhai guide's API tables are checked against the engines** (issue #566). A test lists the functions and
+  properties the request and the response engine register (Rhai's own signature list) and compares them with the
+  marked tables of `docs/rhai.md`, in both directions, so a function added, renamed or removed without the guide
+  fails it; the check found `response.status` (readable in a response-phase script) missing from the guide. The
+  language reference keeps all its examples and gains a short list of what is specific to Conduit (only a boolean
+  `false` stops the request, absent values are `""`, `config` is `()` without a config and reading a field of it is
+  an error that lets the request through, which a new test shows).
 - **A WASM plugin may use the host functions of both phases** (issue #565). Each phase linked a module against
   only its own functions, so a plugin that read a header in `on_request` and the upstream status in `on_response`
   did not instantiate in either phase and was skipped, fail-open, on every request and every response (measured

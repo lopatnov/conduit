@@ -28,3 +28,5 @@ tracing    = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# `metadata` lets a test list the functions the engines register (the guide's API tables are checked against them).
+rhai     = { workspace = true, features = ["metadata"] }

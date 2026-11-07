@@ -140,6 +140,7 @@ Every script receives two pre-populated variables: `request` and `response`.
 
 Read-only view of the incoming HTTP request.
 
+<!-- docs-check: api request -->
 | Property / Method        | Type     | Description                                                   |
 | ------------------------ | -------- | ------------------------------------------------------------- |
 | `request.path`           | `String` | Request path, e.g. `"/api/users"`                             |
@@ -151,6 +152,7 @@ Read-only view of the incoming HTTP request.
 
 Used to build the response when aborting the pipeline.
 
+<!-- docs-check: api request -->
 | Property / Method                  | Type     | Description                               |
 | ---------------------------------- | -------- | ----------------------------------------- |
 | `response.status`                  | `int`    | HTTP status code to send (default: `200`) |
@@ -429,13 +431,18 @@ middleware:
 
 In a response-phase script, the available variables differ from request phase:
 
-| Variable   | Properties / Methods           | Description                                          |
-| ---------- | ------------------------------ | ---------------------------------------------------- |
-| `upstream` | `.status`                      | HTTP status returned by upstream (e.g. `200`, `404`) |
-|            | `.header("Name")`              | Read an upstream response header (empty if absent)   |
-| `response` | `.set_header("Name", "Value")` | Add/overwrite a header on the client response        |
-|            | `.remove_header("Name")`       | Remove a header from the client response             |
-| `config`   | same as request phase          | Per-script config object (or `()` if not set)        |
+<!-- docs-check: api response -->
+| Property / Method                  | Type     | Description                                                 |
+| ---------------------------------- | -------- | ----------------------------------------------------------- |
+| `upstream.status`                  | `int`    | HTTP status returned by upstream (e.g. `200`, `404`)        |
+| `upstream.header("Name")`          | `String` | An upstream response header (empty string if absent)        |
+| `response.status`                  | `int`    | The status the client gets: the upstream status, read-only  |
+| `response.set_header("Name", "Value")` | —    | Add or overwrite a header on the client response            |
+| `response.remove_header("Name")`   | —        | Remove a header from the client response                    |
+
+`config` is the same as in the request phase: the per-script config object, or `()` when none is set.
+
+(These tables are checked against the functions the engines register: `crates/conduit-script-rhai/src/api_doc_tests.rs`.)
 
 > **`request` is not available** in response-phase scripts.
 
@@ -553,6 +560,14 @@ Set `RUST_LOG=conduit_script_rhai=debug` to see the full error context.
 
 Rhai is a simple, Rust-like scripting language. Below are the patterns most
 useful when writing request middleware.
+
+Points that are specific to Conduit (each is checked by a test):
+
+- **Only a boolean `false` stops the request.** The value of the last expression is the result of the script; no
+  value, `true`, or any other value (a number, a string) lets the request continue.
+- **Absent values are empty strings**: `request.header("X-Key") == ""` tests for a missing header, it is not an
+  error. `config` is `()` when the entry has no `config`; test `config == ()` before reading a field, because
+  reading a field of `()` is a runtime error, and a runtime error is fail-open (the request goes on).
 
 ### Variables and strings
 
