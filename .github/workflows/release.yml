@@ -496,6 +496,9 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6
         with:
           images: ${{ env.IMAGE_NAME }}
+          # Without this the action adds a plain `latest` tag by itself (flavor latest=auto) to every image of the
+          # matrix, and the four jobs would race for it. Only the explicit raw tag below sets `latest`.
+          flavor: latest=false
           tags: |
             type=semver,pattern={{version}},suffix=${{ matrix.tag_suffix }}
             type=semver,pattern={{major}}.{{minor}},suffix=${{ matrix.tag_suffix }}

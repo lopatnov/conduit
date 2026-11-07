@@ -37,6 +37,12 @@ def matrix_entries():
     return entries
 
 
+def docker_job():
+    """The text of the `docker` job of release.yml, up to the npm job."""
+    workflow = read(".github/workflows/release.yml")
+    return workflow[workflow.index("\n  docker:\n"):workflow.index("  # ── 5. Publish to npm")]
+
+
 def npm_assets(path):
     """The asset names listed in an npm file's platform table (the values of the `"os-arch": "conduit-..."` pairs)."""
     return sorted(re.findall(r'"[a-z0-9]+-[a-z0-9]+":\s*"(conduit-[^"]+)"', read(path)))
@@ -94,13 +100,16 @@ class ReleaseMatrix(unittest.TestCase):
 
     def test_the_docker_matrix_has_the_same_four_bundles(self):
         """Full owns the plain tags; the other images carry `-standard`, `-gateway` and `-static`."""
-        workflow = read(".github/workflows/release.yml")
-        job = workflow[workflow.index("\n  docker:\n"):workflow.index("  # ── 5. Publish to npm")]
+        job = docker_job()
         self.assertEqual(re.findall(r"- bundle: (\w+)", job), ["full", "standard", "gateway", "static"])
         self.assertEqual(re.findall(r"tag_suffix: \"([^\"]*)\"", job), ["", "-standard", "-gateway", "-static"])
         self.assertEqual(
             re.findall(r"latest_tag: (\S+)", job), ["latest", "latest-standard", "latest-gateway", "latest-static"]
         )
+
+    def test_the_metadata_action_does_not_add_its_own_latest_tag(self):
+        """`flavor: latest=false`: otherwise every matrix job would also push a plain `latest` and race for it."""
+        self.assertIn("flavor: latest=false", docker_job())
 
 
 if __name__ == "__main__":
