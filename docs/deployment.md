@@ -277,7 +277,7 @@ Key parts of `contrib/conduit.service`:
 User=conduit
 Group=conduit
 WorkingDirectory=/etc/conduit
-# no -c: reads conduit.json or conduit.yaml from the working directory
+# no -c: reads conduit.json or conduit.yaml from the working directory (conduit.json if both exist)
 ExecStart=/usr/local/bin/conduit
 ExecReload=/usr/local/bin/conduit reload   # ← enables `systemctl reload`
 Restart=on-failure

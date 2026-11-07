@@ -10,7 +10,7 @@ User=conduit
 Group=conduit
 WorkingDirectory=/etc/conduit
 # No -c: Conduit reads conduit.json or conduit.yaml from the working directory (/etc/conduit), so an installation
-# that was set up with either file keeps working.
+# that was set up with either file keeps working. If both exist, conduit.json is the one it reads.
 ExecStart=/usr/local/bin/conduit
 ExecReload=/usr/local/bin/conduit reload
 Restart=on-failure
