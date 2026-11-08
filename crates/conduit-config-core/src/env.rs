@@ -160,7 +160,14 @@ fn is_block_header(line: &str) -> bool {
         None => line,
     };
     let code = code.trim_end();
-    let Some(token_start) = code.rfind(|c: char| c.is_whitespace()).map(|i| i + 1) else {
+    // the byte after the last blank: a blank may be more than one byte (NBSP, U+3000, U+2028), `i + 1` would then
+    // cut a character in two and panic on the slice
+    let Some(token_start) = code
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(i, c)| i + c.len_utf8())
+    else {
         return false;
     };
     let token = &code[token_start..];
@@ -805,6 +812,30 @@ mod yaml_tests {
             interpolate_yaml("{\"k\": \"$CONDUIT_YAML_T12\"}")
         });
         assert_eq!(out.unwrap(), "{\"k\": \"a\\\"b\"}");
+    }
+
+    /// The security review of #683: a blank of more than one byte between two words (pasted text: NBSP, the
+    /// ideographic space, U+2028) made `is_block_header` cut a character in two and panic on every YAML config.
+    #[test]
+    #[serial]
+    fn a_multi_byte_blank_in_the_text_does_not_panic() {
+        for blank in ['\u{a0}', '\u{3000}', '\u{2028}', '\u{2009}', '\u{1680}'] {
+            for line in [
+                format!("k: a{blank}b\nz: 1\n"),
+                format!("k: a{blank}b\n"),
+                format!("k: a{blank}\n"),
+                format!("k:{blank}|\n  text\n"),
+                format!("k: {blank}|{blank}\n  text\n"),
+            ] {
+                let out = interpolate_yaml(&line).expect("no reference, nothing to refuse");
+                assert_eq!(out, line, "{blank:?}");
+            }
+        }
+        // and with a reference on the line
+        let out = with_var("CONDUIT_YAML_T14", "v", || {
+            interpolate_yaml("k: a\u{a0}$CONDUIT_YAML_T14\u{3000}b\n")
+        });
+        assert_eq!(out.unwrap(), "k: a\u{a0}v\u{3000}b\n");
     }
 
     #[test]
