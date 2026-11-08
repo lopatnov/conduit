@@ -212,8 +212,8 @@ tests are in `scripts/build-deb.sh`, `scripts/test-deb.sh` and `contrib/deb/`.
 (`Replaces`/`Conflicts`) and keeps your `/etc/conduit/conduit.yaml` (if you edited it, dpkg asks which version to
 keep: answer `N`). The old package stops a running service as it goes, so run `sudo systemctl start conduit`
 afterwards. `dpkg -l` keeps listing `conduit-proxy` as `rc` (removed, configuration record left); do not purge it:
-its 2.2.0 `postrm` would delete `/var/log/conduit` and `/var/cache/conduit`, which `sudo apt install --reinstall
-conduit` recreates.
+its 2.2.0 `postrm` would delete `/var/log/conduit` and `/var/cache/conduit`. The next start of the service recreates
+them (the unit has `LogsDirectory=` and `CacheDirectory=`), but their files are gone.
 
 ### Install
 
@@ -306,10 +306,17 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/log/conduit /var/cache/conduit
+LogsDirectory=conduit
+LogsDirectoryMode=0750
+CacheDirectory=conduit
+CacheDirectoryMode=0750
 
 EnvironmentFile=-/etc/conduit/conduit.env
 ```
+
+`LogsDirectory=` and `CacheDirectory=` make systemd create `/var/log/conduit` and `/var/cache/conduit` (owned by the
+service user) at every start and keep them writable under `ProtectSystem=strict`, so a deleted directory is
+recreated by the next start.
 
 `ExecReload` wires `systemctl reload conduit` to a zero-downtime hot-reload via
 the Admin API — no connections are dropped.

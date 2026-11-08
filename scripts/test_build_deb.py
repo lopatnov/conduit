@@ -77,5 +77,18 @@ class BuildDeb(unittest.TestCase):
             self.assertIn(path, listing)
 
 
+class Unit(unittest.TestCase):
+    """The unit the package installs (contrib/conduit.service, with the binary path rewritten by build-deb.sh)."""
+
+    def test_the_unit_creates_its_log_and_cache_directories(self):
+        """With ReadWritePaths= a missing directory stops the start (status 226, checked with systemd-run); with
+        LogsDirectory=/CacheDirectory= systemd recreates it. Purging the leftover conduit-proxy 2.2.0 deletes both."""
+        with open(os.path.join(ROOT, "contrib", "conduit.service"), encoding="utf-8") as f:
+            lines = [line.strip() for line in f if not line.lstrip().startswith("#")]
+        for directive in ("LogsDirectory=conduit", "LogsDirectoryMode=0750", "CacheDirectory=conduit", "CacheDirectoryMode=0750"):
+            self.assertIn(directive, lines)
+        self.assertFalse([line for line in lines if line.startswith("ReadWritePaths=")], "a missing path would block the start")
+
+
 if __name__ == "__main__":
     unittest.main()

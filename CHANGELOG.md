@@ -35,6 +35,11 @@ changed.
   archives are about 2.5 times smaller. Build-provenance attestations now cover every archive as well (before, the
   archives were covered by the checksums only), so `gh attestation verify` works on any file of a release.
 
+- **The systemd unit creates its log and cache directories itself** (`LogsDirectory=conduit` and `CacheDirectory=conduit`
+  instead of `ReadWritePaths=`). With `ReadWritePaths=` a missing directory stopped the service from starting (status
+  226); now every start recreates `/var/log/conduit` and `/var/cache/conduit`. Applies to the `.deb` and to the unit in
+  `contrib/conduit.service` and the deployment guide.
+
 ### Fixed (tooling)
 
 - `scripts/bump-version.py` also updates `README.md`, and leaves a historical "Since 2.2.0 …" sentence alone.
