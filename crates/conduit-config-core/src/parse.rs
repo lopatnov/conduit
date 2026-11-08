@@ -32,16 +32,35 @@ pub fn from_json_str<T: DeserializeOwned>(text: &str) -> Result<T> {
         .map_err(|e| anyhow::anyhow!("Config parse error at '{}': {}", e.path(), e.inner()))
 }
 
+/// How a config is read. Duplicate keys, alias bombs and deep nesting are refused by default; two defaults are
+/// changed to keep what `serde_yaml` did before (issue #676), so that the same file means the same thing:
+/// - `yes`, `no`, `on` and `off` are not booleans (JSON and the schema say `true` / `false`);
+/// - a merge key `<<` stays an ordinary key, as it was, instead of merging.
+fn yaml_options() -> serde_saphyr::Options {
+    serde_saphyr::options! {
+        strict_booleans: true,
+        merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+    }
+}
+
 /// Parse a config YAML string of type `T`, performing env interpolation first.
 pub fn from_yaml_str<T: DeserializeOwned>(text: &str) -> Result<T> {
     let text = interpolate(text);
 
-    let probe: VersionProbe = serde_yaml::from_str(&text).unwrap_or_default();
+    let probe: VersionProbe =
+        serde_saphyr::from_str_with_options(&text, yaml_options()).unwrap_or_default();
     check_version(probe)?;
 
-    let de = serde_yaml::Deserializer::from_str(&text);
-    serde_path_to_error::deserialize(de)
-        .map_err(|e| anyhow::anyhow!("Config parse error at '{}': {}", e.path(), e.inner()))
+    // serde-saphyr hands its deserializer to a closure that must return its own error type, so the path that
+    // serde_path_to_error recorded is carried out in `path` and joined to the message afterwards.
+    let mut path = String::new();
+    serde_saphyr::with_deserializer_from_str_with_options(&text, yaml_options(), |de| {
+        serde_path_to_error::deserialize(de).map_err(|e| {
+            path = e.path().to_string();
+            e.into_inner()
+        })
+    })
+    .map_err(|e| anyhow::anyhow!("Config parse error at '{path}': {e}"))
 }
 
 /// Read `path` from disk and parse it as `T`, performing env interpolation first.
@@ -143,6 +162,137 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("999") || msg.contains("version") || msg.contains("upgrade"));
+    }
+
+    // The YAML reader's rules (issue #676): what a config may and may not contain.
+
+    #[derive(Debug, Deserialize)]
+    struct Nested {
+        a: Inner,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct Inner {
+        port: u16,
+        #[serde(default)]
+        enabled: Option<bool>,
+    }
+
+    #[test]
+    fn yaml_error_names_the_path_of_the_bad_value() {
+        let err = from_yaml_str::<Nested>("a:\n  port: \"not-a-number\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Config parse error at 'a.port'"), "{err}");
+    }
+
+    #[test]
+    fn yaml_duplicate_key_is_rejected() {
+        let err = from_yaml_str::<Toy>("port: 1\nport: 2\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("duplicate"), "{err}");
+        // also for a generic value, where serde_yaml let the last one win
+        assert!(from_yaml_str::<serde_json::Value>("port: 1\nport: 2\n").is_err());
+    }
+
+    #[test]
+    fn yaml_two_documents_are_rejected() {
+        let err = from_yaml_str::<Toy>("port: 1\n---\nport: 2\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("multiple YAML documents"), "{err}");
+    }
+
+    #[test]
+    fn yaml_yes_and_on_are_not_booleans() {
+        for word in ["yes", "no", "on", "off", "Yes", "ON"] {
+            let text = format!("a:\n  port: 1\n  enabled: {word}\n");
+            assert!(
+                from_yaml_str::<Nested>(&text).is_err(),
+                "`{word}` must not be a boolean"
+            );
+        }
+        for word in ["true", "false", "True", "FALSE"] {
+            let text = format!("a:\n  port: 1\n  enabled: {word}\n");
+            let parsed: Nested =
+                from_yaml_str(&text).unwrap_or_else(|e| panic!("`{word}` is a boolean: {e}"));
+            assert_eq!(parsed.a.port, 1);
+            assert_eq!(parsed.a.enabled, Some(word.eq_ignore_ascii_case("true")));
+        }
+    }
+
+    #[test]
+    fn yaml_merge_key_is_an_ordinary_key() {
+        let text = "base: &b {port: 1}\nm:\n  <<: *b\n  name: x\n";
+        let value: serde_json::Value = from_yaml_str(text).unwrap();
+        assert_eq!(value["m"]["name"], "x");
+        assert!(
+            value["m"].get("port").is_none(),
+            "the merge key must not be expanded: {value}"
+        );
+        assert!(
+            value["m"].get("<<").is_some(),
+            "it stays a key named <<: {value}"
+        );
+    }
+
+    #[test]
+    fn yaml_alias_bomb_is_refused() {
+        // 10 levels of 10 aliases each: 10^10 nodes if it were expanded.
+        let mut text = String::from("a0: &a0 [x,x,x,x,x,x,x,x,x,x]\n");
+        for i in 1..10 {
+            let p = i - 1;
+            text.push_str(&format!(
+                "a{i}: &a{i} [{}]\n",
+                vec![format!("*a{p}"); 10].join(",")
+            ));
+        }
+        let started = std::time::Instant::now();
+        let err = from_yaml_str::<serde_json::Value>(&text)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("budget"), "{err}");
+        assert!(started.elapsed().as_secs() < 5, "refusing it must be quick");
+    }
+
+    #[test]
+    fn yaml_deep_nesting_is_refused() {
+        let text = format!("{}1{}", "[".repeat(5000), "]".repeat(5000));
+        let err = from_yaml_str::<serde_json::Value>(&text)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("recursion limit"), "{err}");
+    }
+
+    #[test]
+    fn yaml_differences_from_serde_yaml_are_the_documented_ones() {
+        // Leniency that came with the new reader (JSON still wants a number): a quoted number, and `1_000`.
+        assert_eq!(
+            from_yaml_str::<Toy>("port: \"80\"\n").unwrap().port,
+            Some(80)
+        );
+        assert_eq!(
+            from_yaml_str::<Toy>("port: 1_000\n").unwrap().port,
+            Some(1000)
+        );
+        assert!(from_json_str::<Toy>(r#"{"port": "80"}"#).is_err());
+        // Strictness: a null key is an error (serde_yaml ignored it).
+        assert!(from_yaml_str::<Toy>("~: 1\n").is_err());
+        // Unchanged: leading zeros and exponents are not integers.
+        assert!(from_yaml_str::<Toy>("port: 017\n").is_err());
+        assert!(from_yaml_str::<Toy>("port: 1e3\n").is_err());
+    }
+
+    #[test]
+    fn yaml_empty_and_comment_only_files_are_an_empty_config() {
+        assert_eq!(from_yaml_str::<Toy>("").unwrap().port, None);
+        assert_eq!(from_yaml_str::<Toy>("# nothing here\n").unwrap().port, None);
+    }
+
+    #[test]
+    fn yaml_tab_indentation_is_rejected() {
+        assert!(from_yaml_str::<Nested>("a:\n\tport: 1\n").is_err());
     }
 
     // ── from_json_str ─────────────────────────────────────────────────────────

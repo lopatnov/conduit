@@ -67,7 +67,7 @@ lopatnov-conduit-proxy-http          = { path = "crates/conduit-proxy-http", ver
 # --- Config & parsing ---
 serde               = { version = "1", features = ["derive"] }
 serde_json          = "1"
-serde_yaml          = "0.9"
+serde-saphyr        = "2"
 serde_path_to_error = "0.1"
 indexmap            = { version = "2", features = ["serde"] }
 # humantime: only used by crates/conduit-static's `max_age` duration parsing
@@ -491,7 +491,6 @@ lopatnov-conduit-proxy-http         = { workspace = true }
 # --- Config & parsing ---
 serde.workspace      = true
 serde_json.workspace = true
-serde_yaml.workspace = true
 indexmap.workspace   = true
 
 # --- CLI ---

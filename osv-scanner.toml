@@ -9,6 +9,11 @@
 # its aws_lc_rs backend, so rsa left Cargo.lock.
 
 [[IgnoredVulns]]
+id = "RUSTSEC-2024-0449"
+ignoreUntil = 2027-02-08
+reason = "unsafe-libyaml is unmaintained (no vulnerability); a hard dependency of serde_yaml in pingora-core 0.9.1. Conduit itself parses YAML with serde-saphyr since #676; the replacement in Pingora is cloudflare/pingora#1117 (tracked in #779, #1058). Re-check at expiry or when Pingora releases."
+
+[[IgnoredVulns]]
 id = "RUSTSEC-2026-0249"
 ignoreUntil = 2027-01-10
 reason = "smartstring is unmaintained (no vulnerability); hard dependency of rhai 1.26.1 (latest). Only builds with the rhai feature. Re-check at expiry."

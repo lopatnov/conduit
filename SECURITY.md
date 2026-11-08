@@ -50,6 +50,20 @@ the key itself (the host, a NUL byte, then `scheme:path?query`).
 
 An entry here is either resolved, or accepted with a written reason and a date to re-check it.
 
+### Accepted: RUSTSEC-2024-0449 — unsafe-libyaml 0.2.11 is unmaintained
+
+| Field | Value |
+|---|---|
+| Advisory | [RUSTSEC-2024-0449](https://rustsec.org/advisories/RUSTSEC-2024-0449) (an *unmaintained* notice, not a vulnerability) |
+| Chain | `pingora-core 0.9.1` → `serde_yaml 0.9.34` (archived) → `unsafe-libyaml 0.2.11` (unconditional; Pingora reads its `ServerConf` from YAML) |
+| Fix requires | A Pingora release without `serde_yaml`: pull request [cloudflare/pingora#1117](https://github.com/cloudflare/pingora/pull/1117) (tracked in [#779](https://github.com/cloudflare/pingora/issues/779) and [#1058](https://github.com/cloudflare/pingora/issues/1058)) |
+| Status | **Accepted, suppressed in `osv-scanner.toml` until 2027-02-08** |
+
+Conduit's own YAML reader is `serde-saphyr` (safe Rust) since issue #676, so Conduit does not use the
+crate. It stays in `Cargo.lock` only because Pingora's `ServerConf::from_yaml` needs it; Conduit builds
+its `ServerConf` in code and never calls it. The suppression expires so the decision is re-checked, and
+it goes away when the Pingora change is released.
+
 ### Accepted: RUSTSEC-2026-0249 — smartstring 1.0.1 is unmaintained
 
 | Field | Value |

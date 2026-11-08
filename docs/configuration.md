@@ -10,6 +10,10 @@ conduit                          # auto-discover: conduit.json → conduit.yaml 
 conduit validate -c conduit.yaml # validate without starting
 ```
 
+**YAML rules.** A YAML file holds one document. A repeated key is an error, `yes`/`no`/`on`/`off` are strings (a
+boolean is `true` or `false`, as in JSON), and the merge key `<<` is an ordinary key (it does not merge). Anchors and
+aliases work, within a limit on how far they expand, so a file that expands to billions of nodes is refused.
+
 Fields accept **environment variable references** — `"$MY_VAR"` is replaced at
 startup. This keeps secrets out of config files.
 

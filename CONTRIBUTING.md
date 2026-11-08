@@ -409,7 +409,7 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`
 | Crate                                                                      | Role                         |
 | -------------------------------------------------------------------------- | ---------------------------- |
 | [serde](https://serde.rs) + [serde_json](https://github.com/serde-rs/json) | Serialization                |
-| [serde_yaml](https://github.com/dtolnay/serde-yaml)                        | YAML config format           |
+| [serde-saphyr](https://github.com/bourumir-wyngs/serde-saphyr)             | YAML config format (safe Rust) |
 | [serde_path_to_error](https://github.com/dtolnay/path-to-error)            | Precise parse error messages |
 | [indexmap](https://github.com/bluss/indexmap)                              | Ordered map for route config |
 

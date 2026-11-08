@@ -18,7 +18,7 @@ pub fn run(config_path: &str, write: bool) {
     let is_yaml = ext == "yaml" || ext == "yml";
 
     let formatted = if is_yaml {
-        match serde_yaml::to_string(&app) {
+        match serde_saphyr::to_string(&app) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("error serializing config: {e}");

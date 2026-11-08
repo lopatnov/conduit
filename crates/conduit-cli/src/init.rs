@@ -167,7 +167,7 @@ fn check_host(host: &str, acme: bool) -> anyhow::Result<()> {
 // ── YAML serialization ────────────────────────────────────────────────────────
 
 fn to_yaml_string(value: &Value) -> anyhow::Result<String> {
-    Ok(serde_yaml::to_string(value)?)
+    Ok(serde_saphyr::to_string(value)?)
 }
 
 // ── Per-field helpers ─────────────────────────────────────────────────────────
