@@ -138,8 +138,7 @@ proxy:
       - http://api-2:4000
       - http://api-3:4000
     strategy: least-conn               # also round-robin, p2c, least-bandwidth, ip-hash, consistent-hash …
-    healthCheck: { path: /health, intervalSecs: 10 }
-    maxConnectionsPerUpstream: 200     # 503 instead of queueing when every target is full
+    healthCheck: { path: /health, intervalSecs: 10, maxConnectionsPerUpstream: 200 }   # 503 instead of queueing when every target is full
     retry: { attempts: 2, conditions: [connection_error, 5xx] }
 outlierDetection: { consecutive5xx: 5 }   # eject a target that keeps failing real requests
 ```

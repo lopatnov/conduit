@@ -14,11 +14,7 @@ port: 3000
 # Conduit injects a tiny <script> into HTML pages that opens an SSE connection.
 # When watched files change, the script calls window.location.reload().
 hotReload:
-  # Watch these directories for file changes.
-  watch:
-    - ./src
-    - ./public
-  # Reload the browser when these file extensions change.
+  # The `static` directories are watched; the browser reloads when a file with one of these extensions changes.
   extensions: [html, css, js, ts, jsx, tsx, json, svg]
 
 # ── CORS ──────────────────────────────────────────────────────────────────────

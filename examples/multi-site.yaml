@@ -76,8 +76,8 @@ sites:
       skipPaths: [/__health__]
 
     securityHeaders:
-      hsts: "max-age=63072000"
-      frameOptions: DENY
+      hstsMaxAgeSecs: 63072000
+      xFrameOptions: DENY
 
     proxy:
       /: "http://admin-ui:3000"

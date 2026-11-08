@@ -26,9 +26,11 @@ http2:
 
 # Harden all responses with security headers.
 securityHeaders:
-  hsts: "max-age=63072000; includeSubDomains; preload"   # 2 years
-  contentSecurityPolicy: "default-src 'self'"
-  frameOptions: DENY
+  hstsMaxAgeSecs: 63072000                               # 2 years
+  hstsIncludeSubDomains: true
+  hstsPreload: true
+  csp: "default-src 'self'"
+  xFrameOptions: DENY
   referrerPolicy: "strict-origin-when-cross-origin"
 
 # Serve static assets with a 1-year cache TTL.

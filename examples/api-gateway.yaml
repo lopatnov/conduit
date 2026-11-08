@@ -38,9 +38,10 @@ sites:
 
     # ── Security headers ──────────────────────────────────────────────────────
     securityHeaders:
-      hsts: "max-age=31536000; includeSubDomains"
-      contentSecurityPolicy: "default-src 'none'"
-      frameOptions: DENY
+      hstsMaxAgeSecs: 31536000
+      hstsIncludeSubDomains: true
+      csp: "default-src 'none'"
+      xFrameOptions: DENY
       referrerPolicy: "no-referrer"
 
     # ── JWT authentication ────────────────────────────────────────────────────
