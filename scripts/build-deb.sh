@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Builds the conduit-proxy .deb from a built conduit binary (issue #669).
+# Builds the conduit .deb from a built conduit binary (issue #669).
 #
 #   scripts/build-deb.sh BINARY ARCH VERSION OUTDIR
 #     BINARY   a static conduit binary (the x86_64/aarch64 musl full build)
 #     ARCH     the Debian architecture: amd64 or arm64
 #     VERSION  the release version, 2.2.0 (a prerelease 2.2.0-rc.1 becomes 2.2.0~rc.1, which sorts before 2.2.0)
-#     OUTDIR   where conduit-proxy_<version>_<arch>.deb is written
+#     OUTDIR   where conduit_<version>_<arch>.deb is written
 #
 # Needs dpkg-deb, gzip and xz. Contents: /usr/bin/conduit; the systemd unit of contrib/conduit.service with the
 # binary path of a package; /etc/conduit/conduit.yaml (a conffile: kept on upgrade and remove, deleted on purge);
@@ -38,16 +38,16 @@ mkdir -p "$STAGE/usr/lib/systemd/system"
 sed -e 's#^ExecStart=/usr/local/bin/conduit$#ExecStart=/usr/bin/conduit -c /etc/conduit/conduit.yaml#' -e 's#/usr/local/bin/conduit#/usr/bin/conduit#g' "$HERE/contrib/conduit.service" > "$STAGE/usr/lib/systemd/system/conduit.service"
 chmod 0644 "$STAGE/usr/lib/systemd/system/conduit.service"
 install -D -m 0640 "$HERE/contrib/deb/conduit.yaml" "$STAGE/etc/conduit/conduit.yaml"
-install -D -m 0644 "$HERE/contrib/deb/copyright" "$STAGE/usr/share/doc/conduit-proxy/copyright"
-install -D -m 0644 "$HERE/contrib/deb/lintian-overrides" "$STAGE/usr/share/lintian/overrides/conduit-proxy"
+install -D -m 0644 "$HERE/contrib/deb/copyright" "$STAGE/usr/share/doc/conduit/copyright"
+install -D -m 0644 "$HERE/contrib/deb/lintian-overrides" "$STAGE/usr/share/lintian/overrides/conduit"
 # A native package needs a changelog in Debian's format; the history of the project is the release notes.
 {
-  printf 'conduit-proxy (%s) unstable; urgency=medium\n\n' "$DEB_VERSION"
+  printf 'conduit (%s) unstable; urgency=medium\n\n' "$DEB_VERSION"
   printf '  * Release %s.\n' "$VERSION"
   printf '    Notes: https://github.com/lopatnov/conduit/releases/tag/v%s\n\n' "$VERSION"
   printf ' -- Oleksandr Lopatnov <lopatniov@gmail.com>  %s\n' "$(date -u -R ${SOURCE_DATE_EPOCH:+-d "@$SOURCE_DATE_EPOCH"})"
-} | gzip -9n > "$STAGE/usr/share/doc/conduit-proxy/changelog.gz"
-chmod 0644 "$STAGE/usr/share/doc/conduit-proxy/changelog.gz"
+} | gzip -9n > "$STAGE/usr/share/doc/conduit/changelog.gz"
+chmod 0644 "$STAGE/usr/share/doc/conduit/changelog.gz"
 
 mkdir -p "$STAGE/DEBIAN"
 for script in postinst prerm postrm; do
@@ -58,6 +58,6 @@ SIZE=$(du -sk --exclude=DEBIAN "$STAGE" | cut -f1)
 sed -e "s/@VERSION@/$DEB_VERSION/" -e "s/@ARCH@/$ARCH/" -e "s/@SIZE@/$SIZE/" "$HERE/contrib/deb/control.in" > "$STAGE/DEBIAN/control"
 
 mkdir -p "$OUTDIR"
-OUT="$OUTDIR/conduit-proxy_${DEB_VERSION}_${ARCH}.deb"
+OUT="$OUTDIR/conduit_${DEB_VERSION}_${ARCH}.deb"
 dpkg-deb --root-owner-group -Zxz --build "$STAGE" "$OUT" >/dev/null
 echo "$OUT"

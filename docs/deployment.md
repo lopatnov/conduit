@@ -37,10 +37,10 @@ Four image variants are published to the GitHub Container Registry on every rele
 
 | Variant  | Tags                                                   | Includes                                                                                                                                                         |
 | -------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Full     | `:latest`, `:2.2.0`, `:2.2`                            | All 15 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` |
-| Standard | `:latest-standard`, `:2.2.0-standard`, `:2.2-standard` | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
-| Gateway  | `:latest-gateway`, `:2.2.0-gateway`, `:2.2-gateway`    | `gateway` bundle (`--no-default-features`): the proxy and the standard stack without static files and live reload                                                |
-| Static   | `:latest-static`, `:2.2.0-static`, `:2.2-static`       | `static-server` bundle (`--no-default-features`): static files, compression and live reload; it does not proxy                                                   |
+| Full     | `:latest`, `:2.2.1`, `:2.2`                            | All 15 optional features: `jwt`, `consumers`, `forward-auth`, `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` |
+| Standard | `:latest-standard`, `:2.2.1-standard`, `:2.2-standard` | `standard` feature bundle: `jwt`, `consumers`, `forward-auth`, `cache`, `acme` — covers the typical self-hosted reverse-proxy / API gateway                     |
+| Gateway  | `:latest-gateway`, `:2.2.1-gateway`, `:2.2-gateway`    | `gateway` bundle (`--no-default-features`): the proxy and the standard stack without static files and live reload                                                |
+| Static   | `:latest-static`, `:2.2.1-static`, `:2.2-static`       | `static-server` bundle (`--no-default-features`): static files, compression and live reload; it does not proxy                                                   |
 
 > **Upgrading from 2.1 and earlier:** `:latest` and `:X.Y.Z` used to be the standard image and the full image was
 > `:latest-full`. Since 2.2.0 the plain tags are the **full** image and standard is `:latest-standard`; pin
@@ -161,27 +161,27 @@ restart on failure.
 
 ### Debian and Ubuntu: the .deb package
 
-Each release has a `conduit-proxy_<version>_amd64.deb` and `conduit-proxy_<version>_arm64.deb` on the
+Each release has a `conduit_<version>_amd64.deb` and `conduit_<version>_arm64.deb` on the
 [releases page](https://github.com/lopatnov/conduit/releases): the **full** build as a static binary, so one package
 installs on Debian 12 and 13 and on any Ubuntu release (it needs no libc of a particular version, only `adduser`).
 It sets up the service for you.
 
 ```bash
 # pick the file for your machine: amd64 (x86-64) or arm64 (Raspberry Pi 4/5, AWS Graviton, ...)
-curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/conduit-proxy_2.2.0_amd64.deb
+curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.1/conduit_2.2.1_amd64.deb
 # install only if the file was built by this repository's workflow (the && stops at a failure);
 # needs the GitHub CLI, signed in once with `gh auth login`
-gh attestation verify conduit-proxy_2.2.0_amd64.deb --repo lopatnov/conduit \
-  && sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+gh attestation verify conduit_2.2.1_amd64.deb --repo lopatnov/conduit \
+  && sudo apt install ./conduit_2.2.1_amd64.deb
 ```
 
 Without the GitHub CLI, compare the checksum instead. It comes from the same release as the package, so it detects a
 damaged download but not a tampered release; the attestation above is the stronger check.
 
 ```bash
-curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.0/SHA256SUMS.txt
-grep ' conduit-proxy_2.2.0_amd64.deb$' SHA256SUMS.txt | sha256sum -c - \
-  && sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+curl -LO https://github.com/lopatnov/conduit/releases/download/v2.2.1/SHA256SUMS.txt
+grep ' conduit_2.2.1_amd64.deb$' SHA256SUMS.txt | sha256sum -c - \
+  && sudo apt install ./conduit_2.2.1_amd64.deb
 ```
 
 **The service is installed, but it is not enabled and not started**: the sample configuration forwards port 8080 to an
@@ -204,9 +204,16 @@ system user `conduit`, hardened as described [below](#unit-file)); `/etc/conduit
 `conduit` account only, kept when you upgrade or remove the package, deleted by `apt purge`); and the empty
 directories `/var/log/conduit` and `/var/cache/conduit` that the unit may write to. The service account cannot bind ports below 1024: to listen on 80 and 443 run
 `sudo systemctl edit conduit` and add `[Service]` and `AmbientCapabilities=CAP_NET_BIND_SERVICE`. An upgrade restarts the
-service if it is running and never starts one that is stopped. `sudo apt remove conduit-proxy` keeps your configuration;
-`sudo apt purge conduit-proxy` deletes it with the log and cache (the `conduit` account stays). The package and its
+service if it is running and never starts one that is stopped. `sudo apt remove conduit` keeps your configuration;
+`sudo apt purge conduit` deletes it with the log and cache (the `conduit` account stays). The package and its
 tests are in `scripts/build-deb.sh`, `scripts/test-deb.sh` and `contrib/deb/`.
+
+**Coming from 2.2.0:** the package was called `conduit-proxy` there. Installing `conduit` replaces it
+(`Replaces`/`Conflicts`) and keeps your `/etc/conduit/conduit.yaml` (if you edited it, dpkg asks which version to
+keep: answer `N`). The old package stops a running service as it goes, so run `sudo systemctl start conduit`
+afterwards. `dpkg -l` keeps listing `conduit-proxy` as `rc` (removed, configuration record left); do not purge it:
+its 2.2.0 `postrm` would delete `/var/log/conduit` and `/var/cache/conduit`. The next start of the service recreates
+them (the unit has `LogsDirectory=` and `CacheDirectory=`), but their files are gone.
 
 ### Install
 
@@ -299,10 +306,17 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/log/conduit /var/cache/conduit
+LogsDirectory=conduit
+LogsDirectoryMode=0750
+CacheDirectory=conduit
+CacheDirectoryMode=0750
 
 EnvironmentFile=-/etc/conduit/conduit.env
 ```
+
+`LogsDirectory=` and `CacheDirectory=` make systemd create `/var/log/conduit` and `/var/cache/conduit` (owned by the
+service user) at every start and keep them writable under `ProtectSystem=strict`, so a deleted directory is
+recreated by the next start.
 
 `ExecReload` wires `systemctl reload conduit` to a zero-downtime hot-reload via
 the Admin API — no connections are dropped.
@@ -732,7 +746,7 @@ sudo systemctl restart conduit
 
 ```bash
 # Update the image tag — Kubernetes handles the rolling restart
-kubectl set image deployment/myapp conduit=ghcr.io/lopatnov/conduit:2.2.0
+kubectl set image deployment/myapp conduit=ghcr.io/lopatnov/conduit:2.2.1
 kubectl rollout status deployment/myapp
 
 # Roll back if needed

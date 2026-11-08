@@ -9,6 +9,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2.2.1] — 2026-11-08
+
+2.2.0 was released without its Docker images, and the Debian package gets its final name. No code of the proxy
+changed.
+
+### Fixed
+
+- **The arm64 Docker images are published** (PR #672). In the 2.2.0 release run the four `arm64` image jobs failed
+  at the Trivy scan (`no child with platform linux/amd64 in index`: Trivy looked for an amd64 image in an arm64
+  index), so no multi-architecture manifest and none of the `2.2.0` image tags were pushed. Each job now scans its own
+  platform. Until 2.2.1 there are no Docker tags for the 2.2 line; use 2.2.1 or later.
+
+### Changed
+
+- **The Debian package is called `conduit`, not `conduit-proxy`**: `conduit_<version>_amd64.deb` and `_arm64.deb`.
+  There is no other package of that name in Debian or Ubuntu. It replaces `conduit-proxy` 2.2.0 (`Replaces` and
+  `Conflicts`): `sudo apt install ./conduit_2.2.1_amd64.deb` removes the old package and keeps your
+  `/etc/conduit/conduit.yaml`; a running service is stopped by the old package, so start it again afterwards.
+- **RISC-V 64 has every build** (`riscv64gc-unknown-linux-gnu`): full under the plain name, plus `-standard`, `-gateway`
+  and `-static`, as on the other platforms. Until now only `-standard` was published. The full build is
+  cross-compiled in CI.
+- **Fewer files in a release.** Every build is still published as an archive (`.tar.gz`, `.exe.zip`), but the bare binary
+  is attached for the **full** build only: it is what the npm package downloads and the `.deb` is made of. The
+  archives are about 2.5 times smaller. Build-provenance attestations now cover every archive as well (before, the
+  archives were covered by the checksums only), so `gh attestation verify` works on any file of a release.
+
+- **The systemd unit creates its log and cache directories itself** (`LogsDirectory=conduit` and `CacheDirectory=conduit`
+  instead of `ReadWritePaths=`). With `ReadWritePaths=` a missing directory stopped the service from starting (status
+  226); now every start recreates `/var/log/conduit` and `/var/cache/conduit`. Applies to the `.deb` and to the unit in
+  `contrib/conduit.service` and the deployment guide.
+
+### Fixed (tooling)
+
+- `scripts/bump-version.py` also updates `README.md`, and leaves a historical "Since 2.2.0 …" sentence alone.
+
+---
+
 ## [2.2.0] — 2026-11-07
 
 ### Security

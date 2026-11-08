@@ -189,18 +189,14 @@ cross build --release --target aarch64-unknown-linux-gnu
 # Linux ARM64 musl — a static binary for ARM64 containers
 cross build --release --target aarch64-unknown-linux-musl
 
-# Linux RISC-V 64 (standard feature bundle — see release.yml)
-cross build --release --target riscv64gc-unknown-linux-gnu --features standard
+# Linux RISC-V 64 (the full build, as in the release; cross compiles it from x86-64)
+cross build --release --target riscv64gc-unknown-linux-gnu --features full
 ```
 
 > **macOS targets** can only be built on macOS, and **Windows ARM64**
 > (`aarch64-pc-windows-msvc`, not in the releases yet) on Windows (an ARM64 host is simplest).
 > The [release workflow](../.github/workflows/release.yml) uses GitHub-hosted
 > macOS and Windows runners for those targets.
-
-> **RISC-V full build** (`--features wasm`) is best compiled natively on a
-> RISC-V host. wasmtime's Cranelift JIT requires additional toolchain
-> configuration for cross-compilation from x86-64 to riscv64.
 
 ### Supported targets
 
@@ -210,14 +206,11 @@ cross build --release --target riscv64gc-unknown-linux-gnu --features standard
 | `x86_64-unknown-linux-musl`     | Tier 1 | ✅       | ✅   |
 | `aarch64-unknown-linux-gnu`     | Tier 1 | ✅       | ✅   |
 | `aarch64-unknown-linux-musl`    | Tier 2 | ✅       | ✅   |
-| `riscv64gc-unknown-linux-gnu`   | Tier 2 | ✅       | ✅ ¹ |
+| `riscv64gc-unknown-linux-gnu`   | Tier 2 | ✅       | ✅   |
 | `x86_64-apple-darwin`           | Tier 1 | ✅       | ✅   |
 | `aarch64-apple-darwin`          | Tier 1 | ✅       | ✅   |
 | `x86_64-pc-windows-msvc`        | Tier 1 | ✅       | ✅   |
 | `aarch64-pc-windows-msvc`       | Tier 2 | not released yet; built and tested in CI | |
-
-> ¹ Best built natively on a riscv64 host; cross-compilation with `--features wasm`
-> requires additional wasmtime toolchain setup.
 
 ---
 

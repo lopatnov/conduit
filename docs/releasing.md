@@ -43,8 +43,8 @@ Pushing a `v*` tag starts `.github/workflows/release.yml`, which:
 | Step | Result |
 | --- | --- |
 | Build | Binaries for every supported platform and feature bundle |
-| Attest | Build-provenance attestations for the binaries |
-| GitHub Release | Release notes, binaries and `SHA256SUMS.txt` |
+| Attest | Build-provenance attestations for every archive, the bare full binaries and the `.deb` packages |
+| GitHub Release | Release notes, an archive of every build, the bare full binaries, the `.deb` packages and `SHA256SUMS.txt` |
 | crates.io | All `lopatnov-conduit-*` crates, in dependency order |
 | GHCR | Multi-architecture (amd64, arm64) Docker images (full as the plain tags; `-standard`, `-gateway`, `-static`), each architecture scanned with Trivy |
 | npm | `@lopatnov/conduit`, with a `checksums.json` for the postinstall download |

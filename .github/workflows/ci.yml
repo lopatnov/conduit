@@ -1194,7 +1194,7 @@ jobs:
       matrix:
         include:
           - target: riscv64gc-unknown-linux-gnu
-            features: standard
+            features: full
           - target: x86_64-unknown-linux-musl
             features: full
             deb: amd64
@@ -1269,9 +1269,19 @@ jobs:
           name: deb-${{ matrix.arch }}
           path: deb
 
+      # The package was called conduit-proxy in 2.2.0 (the release is immutable): the test installs it first and checks
+      # that this package replaces it and keeps the configuration.
+      - name: The 2.2.0 package, to upgrade from
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v2.2.0 --repo "${{ github.repository }}" \
+            --pattern "conduit-proxy_2.2.0_${{ matrix.arch }}.deb" --dir old
+
       - name: Install it in Debian 12 and 13
         run: |
           export EXPECT_VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+          export UPGRADE_FROM=$(ls old/conduit-proxy_2.2.0_${{ matrix.arch }}.deb)
           scripts/test-deb.sh deb/*.deb debian:12 debian:13
 
   # ── ACME integration tests (Linux only, requires Docker for Pebble) ─────────

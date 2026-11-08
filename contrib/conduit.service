@@ -22,7 +22,12 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/log/conduit /var/cache/conduit
+# systemd creates these two directories (owned by the service user) at every start and makes them writable under
+# ProtectSystem=strict; with ReadWritePaths= a missing directory stops the service from starting (status 226).
+LogsDirectory=conduit
+LogsDirectoryMode=0750
+CacheDirectory=conduit
+CacheDirectoryMode=0750
 
 # Environment
 Environment=RUST_LOG=info

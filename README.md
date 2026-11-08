@@ -469,7 +469,7 @@ Each archive holds one file, named like the archive without `.tar.gz` or `.zip`.
 | Linux x86-64 musl    | `x86_64-unknown-linux-musl`   | full, standard, gateway, static |
 | Linux ARM64          | `aarch64-unknown-linux-gnu`   | full, standard, gateway, static |
 | Linux ARM64 musl     | `aarch64-unknown-linux-musl`  | full, standard, gateway, static |
-| Linux RISC-V 64      | `riscv64gc-unknown-linux-gnu` | standard only            |
+| Linux RISC-V 64      | `riscv64gc-unknown-linux-gnu` | full, standard, gateway, static |
 | macOS Intel          | `x86_64-apple-darwin`         | full, standard, gateway, static |
 | macOS Apple Silicon  | `aarch64-apple-darwin`        | full, standard, gateway, static |
 | Windows x86-64       | `x86_64-pc-windows-msvc`      | full, standard, gateway, static |
@@ -478,14 +478,14 @@ Each archive holds one file, named like the archive without `.tar.gz` or `.zip`.
 > `-full`. Since 2.2.0 the plain name is the **full** build and the standard build ends in `-standard`; the `:latest`
 > image changed the same way. Releases up to 2.1.x keep their old file names.
 
-Every release also carries `SHA256SUMS.txt` (it lists every file attached to the release,
-archives included) and GitHub build-provenance attestations for the bare binaries, which are
-attached next to the archives (`gh attestation verify <binary> --repo lopatnov/conduit`; the
-archives themselves are covered by the checksums only). The musl builds are statically linked;
-the glibc builds link the system C library dynamically. Verify the download before you run it:
+Every release also carries `SHA256SUMS.txt` (it lists every file attached to the release) and GitHub
+build-provenance attestations for every archive and every other file (`gh attestation verify <file> --repo
+lopatnov/conduit`). The **full** build is also attached as a bare binary (`conduit-<target>`, the file the npm
+package downloads); the other builds are archives only, which are about 2.5 times smaller. The musl builds are
+statically linked; the glibc builds link the system C library dynamically. Verify the download before you run it:
 
 ```bash
-# Linux x86-64, standard: download, verify, then run
+# Linux x86-64, full build: download, verify, then run
 BASE=https://github.com/lopatnov/conduit/releases/latest/download
 curl -LO $BASE/conduit-x86_64-unknown-linux-gnu.tar.gz -O $BASE/SHA256SUMS.txt \
   && sha256sum --ignore-missing -c SHA256SUMS.txt \
@@ -513,13 +513,13 @@ For build instructions, feature bundles, cross-compilation and troubleshooting s
 
 ### Debian and Ubuntu (.deb)
 
-Each release carries `conduit-proxy_<version>_amd64.deb` and `_arm64.deb`: the full build as a static binary, with a
+Each release carries `conduit_<version>_amd64.deb` and `_arm64.deb`: the full build as a static binary, with a
 systemd unit, a sample `/etc/conduit/conduit.yaml` and a `conduit` service account. The service is installed but
 **not started**; edit the config, then `sudo systemctl enable --now conduit`
 ([the steps](docs/deployment.md#debian-and-ubuntu-the-deb-package)).
 
 ```bash
-sudo apt install ./conduit-proxy_2.2.0_amd64.deb
+sudo apt install ./conduit_2.2.1_amd64.deb
 ```
 
 ### Docker

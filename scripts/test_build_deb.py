@@ -60,19 +60,34 @@ class BuildDeb(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("dpkg-deb"), "dpkg-deb is not installed")
     def test_it_builds_the_package_and_a_prerelease_sorts_before_the_release(self):
-        """2.2.0 gives conduit-proxy_2.2.0_amd64.deb; 2.2.0-rc.1 becomes 2.2.0~rc.1, which sorts first."""
+        """2.2.0 gives conduit_2.2.0_amd64.deb; 2.2.0-rc.1 becomes 2.2.0~rc.1, which sorts first."""
         code, err, out = run(self.binary, "amd64", "2.2.0", self.out)
         self.assertEqual(code, 0, err)
-        self.assertEqual(os.path.basename(out.strip()), "conduit-proxy_2.2.0_amd64.deb")
+        self.assertEqual(os.path.basename(out.strip()), "conduit_2.2.0_amd64.deb")
         info = subprocess.run(["dpkg-deb", "-f", out.strip()], capture_output=True, text=True).stdout
-        self.assertIn("Package: conduit-proxy", info)
+        self.assertIn("\nPackage: conduit\n", "\n" + info)  # the whole line: "conduit-proxy" would also contain it
+        self.assertIn("\nReplaces: conduit-proxy\n", "\n" + info)
+        self.assertIn("\nConflicts: conduit-proxy\n", "\n" + info)
         self.assertIn("Architecture: amd64", info)
         code, err, out = run(self.binary, "arm64", "2.2.0-rc.1", self.out)
         self.assertEqual(code, 0, err)
-        self.assertEqual(os.path.basename(out.strip()), "conduit-proxy_2.2.0~rc.1_arm64.deb")
+        self.assertEqual(os.path.basename(out.strip()), "conduit_2.2.0~rc.1_arm64.deb")
         listing = subprocess.run(["dpkg-deb", "-c", out.strip()], capture_output=True, text=True).stdout
         for path in ("./usr/bin/conduit", "./etc/conduit/conduit.yaml", "./usr/lib/systemd/system/conduit.service"):
             self.assertIn(path, listing)
+
+
+class Unit(unittest.TestCase):
+    """The unit the package installs (contrib/conduit.service, with the binary path rewritten by build-deb.sh)."""
+
+    def test_the_unit_creates_its_log_and_cache_directories(self):
+        """With ReadWritePaths= a missing directory stops the start (status 226, checked with systemd-run); with
+        LogsDirectory=/CacheDirectory= systemd recreates it. Purging the leftover conduit-proxy 2.2.0 deletes both."""
+        with open(os.path.join(ROOT, "contrib", "conduit.service"), encoding="utf-8") as f:
+            lines = [line.strip() for line in f if not line.lstrip().startswith("#")]
+        for directive in ("LogsDirectory=conduit", "LogsDirectoryMode=0750", "CacheDirectory=conduit", "CacheDirectoryMode=0750"):
+            self.assertIn(directive, lines)
+        self.assertFalse([line for line in lines if line.startswith("ReadWritePaths=")], "a missing path would block the start")
 
 
 if __name__ == "__main__":
