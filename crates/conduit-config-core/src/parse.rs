@@ -32,14 +32,18 @@ pub fn from_json_str<T: DeserializeOwned>(text: &str) -> Result<T> {
         .map_err(|e| anyhow::anyhow!("Config parse error at '{}': {}", e.path(), e.inner()))
 }
 
-/// How a config is read. Duplicate keys, alias bombs and deep nesting are refused by default; two defaults are
-/// changed to keep what `serde_yaml` did before (issue #676), so that the same file means the same thing:
+/// How a config is read. Duplicate keys, alias bombs and deep nesting are refused by default; three defaults are
+/// changed (issue #676), so that the same file means the same thing and a mistake does not leak a secret:
 /// - `yes`, `no`, `on` and `off` are not booleans (JSON and the schema say `true` / `false`);
-/// - a merge key `<<` stays an ordinary key, as it was, instead of merging.
+/// - a merge key `<<` stays an ordinary key, as it was, instead of merging;
+/// - an error does not quote the source. By default serde-saphyr prints the offending line and the lines around it,
+///   and this text is read after `$VAR` interpolation, so a typo in a port would print a JWT secret on the next
+///   line into the log, `conduit validate` output and the `/reload` reply. The error keeps its line and column.
 fn yaml_options() -> serde_saphyr::Options {
     serde_saphyr::options! {
         strict_booleans: true,
         merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+        with_snippet: false,
     }
 }
 
@@ -184,6 +188,25 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("Config parse error at 'a.port'"), "{err}");
+    }
+
+    #[test]
+    fn yaml_errors_do_not_quote_the_neighbouring_lines() {
+        // The text is read after `$VAR` interpolation, so a neighbouring line may hold a secret.
+        let secret = "S3CRET-neighbour-TOKEN-value";
+        let cases = [
+            // a type error on line 3, the secret on line 1 and 2
+            format!("token: {secret}\na:\n  port: abc\n"),
+            // a syntax error (bad indentation) right after the secret
+            format!("token: {secret}\na:\n  port: 1\n bad: indent\n"),
+            // a repeated key right after the secret
+            format!("token: {secret}\nport: 1\nport: 2\n"),
+        ];
+        for text in cases {
+            let err = from_yaml_str::<Nested>(&text).unwrap_err().to_string();
+            assert!(!err.contains(secret), "the error quotes the source: {err}");
+            assert!(err.contains("line"), "the error keeps its position: {err}");
+        }
     }
 
     #[test]
