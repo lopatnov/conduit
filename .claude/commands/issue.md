@@ -142,6 +142,10 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
 - Log a short summary wherever this session's state lives (a PR/issue comment, or
   `CLAUDE.md`'s session log for anything future sessions will need) — what changed, what's
   next.
+- **Read the ledger, `.claude/logs/open-items.md`** (and `gh issue list --label fast-follow --search "created:>=<the day the
+  session began>"` to catch what was filed and not entered): every item that is still open is fixed now, or put to the owner as
+  "do we do #N?" with a one-line recommendation. A session does not end with an unmentioned ledger item
+  (`.claude/rules/workflow.md`, "The ledger").
 
 ## Escalation (stop and ask, don't guess)
 
