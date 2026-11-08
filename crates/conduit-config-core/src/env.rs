@@ -183,129 +183,171 @@ fn scan_line(
     flow: &mut usize,
     out: &mut String,
 ) -> Result<(), String> {
-    // the last character of the line that is not a blank, and whether a blank came after it
-    let mut prev: Option<char> = None;
-    let mut blank_after = true;
-    // the last blank-separated token before the current one was an anchor (`&a`) or a tag (`!!str`): a quote that
-    // follows it opens a quoted scalar
-    let mut token_is_property = false;
-    let mut last_token_was_property = false;
-    let mut in_token = false;
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        match *ctx {
-            Ctx::Comment => {
-                out.push(c);
-                i += 1;
-                continue;
-            }
-            Ctx::Double => {
-                if c == '\\' && i + 1 < chars.len() {
-                    out.push(c);
-                    out.push(chars[i + 1]);
-                    i += 2;
-                    continue;
-                }
-                if c == '"' {
-                    *ctx = Ctx::Plain;
-                    prev = Some('"');
-                    blank_after = false;
-                    out.push(c);
-                    i += 1;
-                    continue;
-                }
-            }
-            Ctx::Single => {
-                if c == '\'' {
-                    if chars.get(i + 1) == Some(&'\'') {
-                        out.push_str("''");
-                        i += 2;
-                        continue;
-                    }
-                    *ctx = Ctx::Plain;
-                    prev = Some('\'');
-                    blank_after = false;
-                    out.push(c);
-                    i += 1;
-                    continue;
-                }
-            }
-            Ctx::Plain | Ctx::Block => {}
+    let mut scan = LineScanner {
+        chars,
+        i: 0,
+        ctx,
+        flow,
+        out,
+        prev: None,
+        blank_after: true,
+        token_is_property: false,
+        last_token_was_property: false,
+        in_token: false,
+    };
+    while scan.i < chars.len() {
+        let c = chars[scan.i];
+        if scan.quoted_or_comment(c) || (c == '$' && scan.reference()?) {
+            continue;
         }
-
-        if c == '$' {
-            if let Some((name, end)) = reference_at(chars, i) {
-                if let Ok(value) = env::var(&name) {
-                    let next = chars.get(end).copied();
-                    let at_start = matches!(
-                        (prev, blank_after),
-                        (None, _) | (Some(':' | '-' | '?'), true) | (Some('[' | '{' | ','), _)
-                    );
-                    // a blank right before the reference: a value that starts with `#` would turn into a comment
-                    let after_blank = blank_after && prev.is_some();
-                    let place = Place {
-                        at_start,
-                        after_blank,
-                        in_flow: *flow > 0,
-                        next,
-                    };
-                    let written = write_value(&name, &value, *ctx, place)?;
-                    out.push_str(&written);
-                    prev = value.chars().last().or(prev);
-                    blank_after = false;
-                    i = end;
-                    continue;
-                }
-                // unset: the reference stays as written
-                out.extend(chars[i..end].iter());
-                prev = Some('x');
-                blank_after = false;
-                i = end;
-                continue;
-            }
+        if *scan.ctx == Ctx::Plain && scan.plain_special(c) {
+            continue;
         }
-
-        if *ctx == Ctx::Plain {
-            match c {
-                '#' if prev.is_none() || blank_after => {
-                    *ctx = Ctx::Comment;
-                    out.push(c);
-                    i += 1;
-                    continue;
-                }
-                '"' | '\''
-                    if starts_scalar(prev, blank_after)
-                        || (blank_after && last_token_was_property) =>
-                {
-                    *ctx = if c == '"' { Ctx::Double } else { Ctx::Single };
-                    out.push(c);
-                    i += 1;
-                    continue;
-                }
-                '[' | '{' => *flow += 1,
-                ']' | '}' => *flow = flow.saturating_sub(1),
-                _ => {}
-            }
-        }
-        if c.is_whitespace() {
-            if in_token {
-                last_token_was_property = token_is_property;
-                in_token = false;
-            }
-            blank_after = true;
-        } else {
-            if !in_token {
-                token_is_property = c == '&' || c == '!';
-                in_token = true;
-            }
-            prev = Some(c);
-            blank_after = false;
-        }
-        out.push(c);
-        i += 1;
+        scan.plain_char(c);
     }
     Ok(())
+}
+
+/// The state of the scan of one line.
+struct LineScanner<'a> {
+    chars: &'a [char],
+    /// The next character to read.
+    i: usize,
+    ctx: &'a mut Ctx,
+    flow: &'a mut usize,
+    out: &'a mut String,
+    /// The last character of the line that is not a blank, and whether a blank came after it.
+    prev: Option<char>,
+    blank_after: bool,
+    /// The current blank-separated token starts like an anchor (`&a`) or a tag (`!!str`); the last token before the
+    /// current one did, which makes a quote that follows it open a quoted scalar.
+    token_is_property: bool,
+    last_token_was_property: bool,
+    in_token: bool,
+}
+
+impl LineScanner<'_> {
+    /// Copy the next `n` characters as they are.
+    fn take(&mut self, n: usize) {
+        self.out.extend(self.chars[self.i..self.i + n].iter());
+        self.i += n;
+    }
+
+    /// Inside a comment, a `"..."` or a `'...'`: copy what is not a reference, end the scalar at its closing quote.
+    /// `true` when the character was consumed.
+    fn quoted_or_comment(&mut self, c: char) -> bool {
+        match *self.ctx {
+            Ctx::Comment => {
+                self.take(1);
+                true
+            }
+            Ctx::Double if c == '\\' && self.i + 1 < self.chars.len() => {
+                self.take(2);
+                true
+            }
+            Ctx::Double if c == '"' => {
+                self.close_quote(c);
+                true
+            }
+            Ctx::Single if c == '\'' => {
+                if self.chars.get(self.i + 1) == Some(&'\'') {
+                    self.take(2);
+                } else {
+                    self.close_quote(c);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn close_quote(&mut self, quote: char) {
+        *self.ctx = Ctx::Plain;
+        self.prev = Some(quote);
+        self.blank_after = false;
+        self.take(1);
+    }
+
+    /// A `$NAME` at the current position: replaced when the variable is set, left as written when it is not.
+    /// `Ok(false)` when there is no reference here.
+    fn reference(&mut self) -> Result<bool, String> {
+        let Some((name, end)) = reference_at(self.chars, self.i) else {
+            return Ok(false);
+        };
+        match env::var(&name) {
+            Ok(value) => {
+                let place = Place {
+                    at_start: matches!(
+                        (self.prev, self.blank_after),
+                        (None, _) | (Some(':' | '-' | '?'), true) | (Some('[' | '{' | ','), _)
+                    ),
+                    // a blank right before it: a value that starts with `#` would turn into a comment
+                    after_blank: self.blank_after && self.prev.is_some(),
+                    in_flow: *self.flow > 0,
+                    next: self.chars.get(end).copied(),
+                };
+                let written = write_value(&name, &value, *self.ctx, place)?;
+                self.out.push_str(&written);
+                self.prev = value.chars().last().or(self.prev);
+            }
+            Err(_) => {
+                self.out.extend(self.chars[self.i..end].iter());
+                self.prev = Some('x');
+            }
+        }
+        self.blank_after = false;
+        self.i = end;
+        Ok(true)
+    }
+
+    /// In an unquoted place: the start of a comment or of a quoted scalar, and the flow brackets. `true` when the
+    /// character was consumed.
+    fn plain_special(&mut self, c: char) -> bool {
+        match c {
+            '#' if self.prev.is_none() || self.blank_after => {
+                *self.ctx = Ctx::Comment;
+                self.take(1);
+                true
+            }
+            '"' | '\''
+                if starts_scalar(self.prev, self.blank_after)
+                    || (self.blank_after && self.last_token_was_property) =>
+            {
+                *self.ctx = if c == '"' { Ctx::Double } else { Ctx::Single };
+                self.take(1);
+                true
+            }
+            '[' | '{' => {
+                *self.flow += 1;
+                false
+            }
+            ']' | '}' => {
+                *self.flow = self.flow.saturating_sub(1);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// An ordinary character: keep track of blanks and of anchor and tag tokens, and copy it.
+    fn plain_char(&mut self, c: char) {
+        if c.is_whitespace() {
+            if self.in_token {
+                self.last_token_was_property = self.token_is_property;
+                self.in_token = false;
+            }
+            self.blank_after = true;
+        } else {
+            if !self.in_token {
+                self.token_is_property = c == '&' || c == '!';
+                self.in_token = true;
+            }
+            self.prev = Some(c);
+            self.blank_after = false;
+        }
+        self.out.push(c);
+        self.i += 1;
+    }
 }
 
 /// Whether a quote at this point opens a quoted scalar (and not an apostrophe inside a plain one).
