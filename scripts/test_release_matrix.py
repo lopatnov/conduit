@@ -191,6 +191,18 @@ class ReleaseMatrix(unittest.TestCase):
         self.assertIn("enable=${{ !contains(github.ref_name, '-') }}", manifest_job())
 
 
+    def test_trivy_scans_the_platform_of_the_leg(self):
+        """An arm64 leg must scan its own child of the index, not Trivy's default linux/amd64 (it failed v2.2.0)."""
+        body = step_body(docker_job(), "Scan the image (Trivy)")
+        # Only real lines count: a comment that mentions the setting must not satisfy the check.
+        code = [line for line in body.splitlines() if not line.lstrip().startswith("#")]
+        entries = []
+        for line in code[code.index("        env:") + 1 :]:
+            if not line.startswith("          "):  # the mapping ends at the next key of the step (`with:`)
+                break
+            entries.append(line.strip())
+        self.assertIn("TRIVY_PLATFORM: linux/${{ matrix.arch }}", entries)
+
     def test_the_deb_is_built_from_the_two_static_full_builds(self):
         """amd64 and arm64 packages, from the full musl builds, uploaded as `binary-*` so they are attested and attached."""
         text = workflow()
