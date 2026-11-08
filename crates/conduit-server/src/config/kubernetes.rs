@@ -251,6 +251,163 @@ mod tests {
         assert!(spec_to_site_config(&spec).is_err());
     }
 
+    // ── a guard for the deny-list (issue #587) ──────────────────────────────────
+
+    /// The paths of a site that `reject_host_paths` refuses (`*` is any key of a map).
+    const DENIED: &[&str] = &[
+        "static",
+        "upload",
+        "middleware",
+        "tls.cert",
+        "tls.key",
+        "tls.ca",
+        "tls.clientAuth",
+        "tls.acme.storage",
+        "logging.file",
+        "fallback.file",
+        "fallback.byAccept.*.file",
+    ];
+
+    /// Fields named like a path that are URL paths, not host paths: they may be set from a `ConduitSite`.
+    const URL_PATHS: &[&str] = &[
+        "healthCheck.path",
+        "proxy.*.healthCheck.path",
+        "proxy.healthCheck.path",
+        "match.path",
+        "metrics.path",
+    ];
+
+    /// Every property name of the JSON schema, as a dotted path (`sites.*.tls.cert`), following `$ref`.
+    fn schema_paths(
+        node: &serde_json::Value,
+        defs: &serde_json::Value,
+        path: &[String],
+        seen: &[String],
+        out: &mut Vec<String>,
+    ) {
+        if let Some(props) = node.get("properties").and_then(|p| p.as_object()) {
+            for (name, child) in props {
+                let mut here = path.to_vec();
+                here.push(name.clone());
+                out.push(here.join("."));
+                schema_paths(child, defs, &here, seen, out);
+            }
+        }
+        for key in ["items", "additionalProperties"] {
+            if node.get(key).is_some_and(|c| c.is_object()) {
+                let mut here = path.to_vec();
+                here.push("*".to_owned());
+                schema_paths(&node[key], defs, &here, seen, out);
+            }
+        }
+        for key in ["oneOf", "anyOf", "allOf"] {
+            for child in node
+                .get(key)
+                .and_then(|c| c.as_array())
+                .into_iter()
+                .flatten()
+            {
+                schema_paths(child, defs, path, seen, out);
+            }
+        }
+        if let Some(reference) = node.get("$ref").and_then(|r| r.as_str()) {
+            let name = reference.rsplit('/').next().unwrap_or(reference).to_owned();
+            if !seen.contains(&name) {
+                let mut seen = seen.to_vec();
+                seen.push(name.clone());
+                schema_paths(&defs[&name], defs, path, &seen, out);
+            }
+        }
+    }
+
+    fn is_path_like(name: &str) -> bool {
+        matches!(
+            name,
+            "file"
+                | "dir"
+                | "path"
+                | "cert"
+                | "key"
+                | "ca"
+                | "root"
+                | "storage"
+                | "static"
+                | "upload"
+                | "middleware"
+                | "clientAuth"
+        ) || name.ends_with("File")
+            || name.ends_with("Dir")
+            || name.ends_with("Path")
+    }
+
+    fn covered(path: &str, list: &[&str]) -> bool {
+        list.iter()
+            .any(|d| path == *d || path.starts_with(&format!("{d}.")))
+    }
+
+    /// `reject_host_paths` is a deny-list: a new path-valued field of a site must be added to it by hand. This test
+    /// walks the JSON schema and fails for a field that is named like a path (file, dir, cert, key, ca, storage, root,
+    /// `...File`, `...Dir`, `...Path`) and is neither refused nor listed as a URL path, so that a field added to
+    /// the schema cannot slip through.
+    #[test]
+    fn every_path_like_field_of_the_schema_is_refused_or_known_to_be_a_url_path() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../schema/conduit.schema.json")).unwrap();
+        let mut all = Vec::new();
+        schema_paths(&schema, &schema["$defs"], &[], &[], &mut all);
+
+        let mut uncovered = Vec::new();
+        let mut checked = 0;
+        for full in &all {
+            // relative to a site, and a route is a site for this purpose
+            let rel = full
+                .strip_prefix("sites.*.")
+                .or_else(|| full.strip_prefix("*."))
+                .unwrap_or(full);
+            let rel = rel.strip_prefix("routes.*.").unwrap_or(rel);
+            let name = rel.rsplit('.').next().unwrap_or(rel);
+            if !is_path_like(name) {
+                continue;
+            }
+            checked += 1;
+            if !covered(rel, DENIED) && !URL_PATHS.contains(&rel) {
+                uncovered.push(full.clone());
+            }
+        }
+        assert!(
+            checked >= 15,
+            "the walk found only {checked} path-like fields: is the schema read right?"
+        );
+        uncovered.sort();
+        uncovered.dedup();
+        assert!(
+            uncovered.is_empty(),
+            "path-like fields neither refused by reject_host_paths nor listed as URL paths: {uncovered:?}. \
+             If a ConduitSite must not set the field, add it to reject_host_paths and to DENIED; if it is a URL path, \
+             add it to URL_PATHS."
+        );
+    }
+
+    /// The `DENIED` list of the guard is what `reject_host_paths` really refuses.
+    #[test]
+    fn the_guard_list_matches_reject_host_paths() {
+        for path in DENIED {
+            let mut spec = serde_json::Value::String("/etc/x".to_owned());
+            for key in path.rsplit('.') {
+                let key = if key == "*" { "any" } else { key };
+                spec = serde_json::json!({ key: spec });
+            }
+            assert!(
+                reject_host_paths(&spec).is_err(),
+                "{path} must be refused: {spec}"
+            );
+        }
+        // and a URL path is not
+        let spec =
+            serde_json::json!({ "healthCheck": { "path": "/health" }, "match": { "path": "/x" } });
+        assert!(reject_host_paths(&spec).is_ok());
+    }
+
     #[test]
     fn crd_acme_without_storage_is_allowed() {
         let mut spec = make_spec(8080, Some("a.example.com"));
