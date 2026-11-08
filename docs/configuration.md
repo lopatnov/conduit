@@ -15,8 +15,9 @@ startup. This keeps secrets out of config files. The reference works wherever a 
 a number included (`port: $PORT` in YAML), and the value arrives **unchanged**: in JSON and in a
 YAML `"..."` it is written as a JSON string, in a YAML `'...'` a quote is doubled, in an
 unquoted YAML value it is written as it is. A value that an unquoted YAML value cannot carry
-without changing it (a line break, a space at the start or end, a start such as `*`, `&`, `!`,
-`|`, `- `, a `: ` or ` #` inside it, a comma or bracket inside `[ ]`) makes the load fail with a
+without changing it (a line break of any kind, a space at the start or end, a start such as `*`, `&`,
+`!`, `|`, `- `, a `: ` or ` #` inside it, a `#` right after a space, a comma or bracket inside `[ ]`, an empty
+value or one that YAML reads as null: `null`, `~`) makes the load fail with a
 message that names the variable and never shows the value: put the reference in double quotes
 (`"$MY_VAR"`). A variable that is not set leaves `$MY_VAR` as written. A reference in a YAML comment is
 not replaced.

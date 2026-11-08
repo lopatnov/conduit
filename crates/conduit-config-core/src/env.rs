@@ -112,9 +112,11 @@ enum Ctx {
 /// - in `"..."`: JSON escapes (YAML double-quoted scalars use the same ones);
 /// - in `'...'`: a quote is doubled (`''`); a control character is refused, there is no way to write it;
 /// - in a plain value: written as it is when that reads back unchanged, otherwise refused, with the advice to put the
-///   reference in double quotes. Refused are a line break or other control character, a value that starts or ends
-///   with a space, one that starts with a YAML indicator (`*`, `&`, `!`, `|`, `>`, `%`, `@`, a quote, a bracket, `#`,
-///   `- `, `? `, `: `), one that contains `: ` or ` #`, and, inside `[...]` or `{...}`, a comma or a bracket;
+///   reference in double quotes. Refused are a control character or a line break of any kind (LF, CR, NEL,
+///   U+2028, U+2029: libyaml reads them all as line ends), a value that starts or ends with a space, one that starts
+///   with a YAML indicator (`*`, `&`, `!`, `|`, `>`, `%`, `@`, a quote, a bracket, `#`, `- `, `? `, `: `), one that
+///   contains `: ` or ` #` or starts with `#` after a blank, an empty value or `null`/`~` as the whole value (a secret
+///   that reads as "not set"), and, inside `[...]` or `{...}`, a comma, a bracket or a leading `?`;
 /// - in a block scalar: as it is, except a line break (it would end the block);
 /// - in a comment: not replaced.
 ///
@@ -184,6 +186,11 @@ fn scan_line(
     // the last character of the line that is not a blank, and whether a blank came after it
     let mut prev: Option<char> = None;
     let mut blank_after = true;
+    // the last blank-separated token before the current one was an anchor (`&a`) or a tag (`!!str`): a quote that
+    // follows it opens a quoted scalar
+    let mut token_is_property = false;
+    let mut last_token_was_property = false;
+    let mut in_token = false;
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -235,7 +242,15 @@ fn scan_line(
                         (prev, blank_after),
                         (None, _) | (Some(':' | '-' | '?'), true) | (Some('[' | '{' | ','), _)
                     );
-                    let written = write_value(&name, &value, *ctx, at_start, *flow > 0, next)?;
+                    // a blank right before the reference: a value that starts with `#` would turn into a comment
+                    let after_blank = blank_after && prev.is_some();
+                    let place = Place {
+                        at_start,
+                        after_blank,
+                        in_flow: *flow > 0,
+                        next,
+                    };
+                    let written = write_value(&name, &value, *ctx, place)?;
                     out.push_str(&written);
                     prev = value.chars().last().or(prev);
                     blank_after = false;
@@ -259,7 +274,10 @@ fn scan_line(
                     i += 1;
                     continue;
                 }
-                '"' | '\'' if starts_scalar(prev, blank_after) => {
+                '"' | '\''
+                    if starts_scalar(prev, blank_after)
+                        || (blank_after && last_token_was_property) =>
+                {
                     *ctx = if c == '"' { Ctx::Double } else { Ctx::Single };
                     out.push(c);
                     i += 1;
@@ -271,8 +289,16 @@ fn scan_line(
             }
         }
         if c.is_whitespace() {
+            if in_token {
+                last_token_was_property = token_is_property;
+                in_token = false;
+            }
             blank_after = true;
         } else {
+            if !in_token {
+                token_is_property = c == '&' || c == '!';
+                in_token = true;
+            }
             prev = Some(c);
             blank_after = false;
         }
@@ -292,22 +318,53 @@ fn starts_scalar(prev: Option<char>, blank_after: bool) -> bool {
     }
 }
 
-/// The text to put in place of `$name` (whose value is `value`) in context `ctx`.
-fn write_value(
-    name: &str,
-    value: &str,
-    ctx: Ctx,
+/// Where in a plain scalar a reference stands.
+#[derive(Clone, Copy)]
+struct Place {
+    /// It starts the scalar.
     at_start: bool,
+    /// A blank comes right before it (after other text), so a `#` at the start of the value would open a comment.
+    after_blank: bool,
+    /// It is inside `[ ]` or `{ }`.
     in_flow: bool,
+    /// The character after it.
     next: Option<char>,
-) -> Result<String, String> {
+}
+
+/// A character that libyaml (the reader of this build) takes for the end of a line: LF, CR, NEL (U+0085) and the
+/// Unicode line and paragraph separators (U+2028, U+2029). `char::is_control` knows NEL and not the other two.
+fn is_line_break(c: char) -> bool {
+    matches!(c, '\n' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+/// A character that must not be written as it is anywhere but in a double-quoted scalar: a control character or a
+/// line break of any kind.
+fn is_unwritable(c: char) -> bool {
+    c.is_control() || is_line_break(c)
+}
+
+/// `value` as the inside of a YAML double-quoted scalar: the JSON escapes, and `\uXXXX` for the characters JSON leaves
+/// alone and YAML folds or reads as a line break (DEL and C1 controls such as NEL, U+2028, U+2029).
+fn double_quoted(value: &str) -> String {
+    let json = serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\""));
+    let mut out = String::with_capacity(json.len());
+    for c in json[1..json.len() - 1].chars() {
+        if is_unwritable(c) {
+            out.push_str(&format!("\\u{:04X}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The text to put in place of `$name` (whose value is `value`) in context `ctx`.
+fn write_value(name: &str, value: &str, ctx: Ctx, place: Place) -> Result<String, String> {
     match ctx {
         Ctx::Comment => Ok(format!("${name}")),
-        Ctx::Double => Ok(serde_json::to_string(value)
-            .map(|s| s[1..s.len() - 1].to_owned())
-            .unwrap_or_else(|_| value.to_owned())),
+        Ctx::Double => Ok(double_quoted(value)),
         Ctx::Single => {
-            if value.chars().any(char::is_control) {
+            if value.chars().any(is_unwritable) {
                 return Err(refusal(
                     name,
                     "a control character such as a line break",
@@ -317,12 +374,12 @@ fn write_value(
             Ok(value.replace('\'', "''"))
         }
         Ctx::Block => {
-            if value.contains(['\n', '\r']) {
+            if value.chars().any(is_line_break) {
                 return Err(refusal(name, "a line break", "block scalar"));
             }
             Ok(value.to_owned())
         }
-        Ctx::Plain => match plain_problem(value, at_start, in_flow, next) {
+        Ctx::Plain => match plain_problem(value, place) {
             Some(why) => Err(refusal(name, why, "plain")),
             None => Ok(value.to_owned()),
         },
@@ -337,18 +394,24 @@ fn refusal(name: &str, why: &str, place: &str) -> String {
 }
 
 /// What stops `value` from being written as it is into a plain YAML scalar, `None` if nothing does.
-fn plain_problem(
-    value: &str,
-    at_start: bool,
-    in_flow: bool,
-    next: Option<char>,
-) -> Option<&'static str> {
-    if value.chars().any(char::is_control) {
+fn plain_problem(value: &str, place: Place) -> Option<&'static str> {
+    let Place {
+        at_start,
+        after_blank,
+        in_flow,
+        next,
+    } = place;
+    if value.chars().any(is_unwritable) {
         return Some("a line break or another control character");
     }
     // the value is the last thing of the scalar: a line end, a blank or comment, or (in a list) a separator
     let at_end = matches!(next, None | Some('\n' | '\r' | ' ' | '#'))
         || (in_flow && matches!(next, Some(',' | ']' | '}')));
+    // a scalar that is the whole value and reads as null (or is empty) means "not set": for a secret that is a
+    // silent fail-open, so it must be said in quotes
+    if at_start && at_end && (value.is_empty() || matches!(value, "null" | "Null" | "NULL" | "~")) {
+        return Some("an empty value, or one that YAML reads as null");
+    }
     if (at_start && value.starts_with(char::is_whitespace))
         || (at_end && value.ends_with(char::is_whitespace))
     {
@@ -357,7 +420,7 @@ fn plain_problem(
     if value.contains(": ") || (at_end && value.ends_with(':')) {
         return Some("a colon followed by a space");
     }
-    if value.contains(" #") {
+    if value.contains(" #") || (after_blank && value.starts_with('#')) {
         return Some("a space followed by #");
     }
     if at_start {
@@ -386,6 +449,10 @@ fn plain_problem(
         }
         if matches!(value, "-" | "?" | ":") || value.starts_with("- ") || value.starts_with("? ") {
             return Some("an indicator at its start");
+        }
+        // inside a list `[?x]` is a mapping with the key x (libyaml), not the text `?x`
+        if in_flow && value.starts_with('?') {
+            return Some("a question mark at its start inside a [ ] or { } list");
         }
     }
     if in_flow && value.contains([',', '[', ']', '{', '}']) {
@@ -557,6 +624,27 @@ mod yaml_tests {
             );
             assert!(err.contains("double quotes"), "{err}");
         }
+    }
+
+    /// Gitar on #683: after text and a blank, a value that starts with `#` would turn into a comment and the rest of
+    /// the value would be lost without an error.
+    #[test]
+    #[serial]
+    fn a_value_starting_with_a_hash_after_a_blank_is_refused() {
+        let err = with_var("CONDUIT_YAML_T13", "#x", || {
+            interpolate_yaml("note: a $CONDUIT_YAML_T13\n")
+        })
+        .unwrap_err();
+        assert!(err.contains("CONDUIT_YAML_T13"), "{err}");
+        // glued to the text there is no comment, so it is fine; and it is fine in quotes
+        let glued = with_var("CONDUIT_YAML_T13", "#x", || {
+            interpolate_yaml("note: a$CONDUIT_YAML_T13\n")
+        });
+        assert_eq!(glued.unwrap(), "note: a#x\n");
+        let quoted = with_var("CONDUIT_YAML_T13", "#x", || {
+            interpolate_yaml("note: \"a $CONDUIT_YAML_T13\"\n")
+        });
+        assert_eq!(quoted.unwrap(), "note: \"a #x\"\n");
     }
 
     #[test]
@@ -732,15 +820,42 @@ mod yaml_tests {
             "a\\nb",
             "$HOME",
             "${X}",
+            // the security review of #683: the line breaks libyaml knows besides LF and CR, a question mark in a
+            // list, the spellings of null, a `#` after a blank, and escapes that a double-quoted scalar would read
+            "\u{2028}",
+            "\u{2029}",
+            "\u{85}",
+            "a\u{2028}evil:\u{2028} x",
+            "b\u{2028}?",
+            "\r`#\t\u{85}",
+            "\u{2028} >",
+            "?evil",
+            "?",
+            "~",
+            "Null",
+            "NULL",
+            "# c",
+            "\\a'.1>",
+            "\\b",
+            "\\x41",
+            "\\u0041",
+            "\u{7f}",
         ];
-        let templates: [(&str, &str); 4] = [
-            ("k: $V\nz: 1\n", "plain"),
-            ("k: \"$V\"\nz: 1\n", "double"),
-            ("k: '$V'\nz: 1\n", "single"),
-            ("k: [$V, 2]\nz: 1\n", "flow"),
+        // (text, label, what stands before the reference inside the scalar, and after it)
+        let templates: [(&str, &str, &str, &str); 10] = [
+            ("k: $V\nz: 1\n", "plain", "", ""),
+            ("k: a $V\nz: 1\n", "plain after a blank", "a ", ""),
+            ("k: a$V\nz: 1\n", "plain after text", "a", ""),
+            ("k: a $V b\nz: 1\n", "plain in the middle", "a ", " b"),
+            ("k: \"$V\"\nz: 1\n", "double", "", ""),
+            ("k: &a \"x$V\"\nz: 1\n", "double after an anchor", "x", ""),
+            ("k: !!str \"x$V\"\nz: 1\n", "double after a tag", "x", ""),
+            ("k: '$V'\nz: 1\n", "single", "", ""),
+            ("k: [$V, 2]\nz: 1\n", "flow", "", ""),
+            ("k: [a, $V]\nz: 1\n", "flow second", "", ""),
         ];
         for value in values {
-            for (template, label) in templates {
+            for (template, label, before, after) in templates {
                 let text = template.replace("$V", "$CONDUIT_YAML_PROP");
                 let result = with_var("CONDUIT_YAML_PROP", value, || interpolate_yaml(&text));
                 let Ok(out) = result else { continue };
@@ -755,17 +870,30 @@ mod yaml_tests {
                     .unwrap_or_default();
                 assert_eq!(keys, ["k", "z"], "{label} {value:?} -> {out:?}");
                 let read = match &doc["k"] {
-                    serde_json::Value::Array(items) => items.first().cloned().unwrap_or_default(),
+                    serde_json::Value::Array(items) => {
+                        let item = if label == "flow second" { 1 } else { 0 };
+                        items.get(item).cloned().unwrap_or_default()
+                    }
                     other => other.clone(),
                 };
                 // a plain scalar may be read as a number, a bool or null; when it is a string it is the value
                 if let Some(s) = read.as_str() {
-                    assert_eq!(s, value, "{label} {value:?} -> {out:?}");
+                    // an unquoted scalar loses blanks at its end, whatever put them there: an empty value after
+                    // `a ` gives `a` (the value itself never starts or ends with a blank here: those are refused)
+                    let expected = format!("{before}{value}{after}");
+                    let expected = if label.starts_with("plain") {
+                        expected.trim_end().to_owned()
+                    } else {
+                        expected
+                    };
+                    assert_eq!(s, expected, "{label} {value:?} -> {out:?}");
                 } else {
-                    // only an unquoted value may become a number, a bool or null (`0x1F`, `true`, `null`)
+                    // only an unquoted value may become a number or a bool (`0x1F`, `true`), and never a null (an
+                    // empty or `null` secret would mean "not set"), a mapping or a list (`[?x]`)
                     assert!(
-                        label == "plain" || label == "flow",
-                        "{label} {value:?} gave a non-string {read:?}"
+                        (label.starts_with("plain") || label.starts_with("flow"))
+                            && (read.is_number() || read.is_boolean()),
+                        "{label} {value:?} gave {read:?}"
                     );
                 }
             }
