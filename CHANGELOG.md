@@ -49,8 +49,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A health probe reads at most 8 KiB of the status line (a hostile upstream could stream bytes for the whole
   `timeoutMs`).
 
+### Internal
+
+- `ConfigFile::Full` of the (internal, decision #32) crate `lopatnov-conduit-config` now holds a `Box<AppConfig>`:
+  `AppConfig` grew the maps of unknown keys and the enum became large (clippy `large_enum_variant`). Code that
+  builds `ConfigFile::Full(app)` by hand needs `Box::new(app)`; `normalize()` and the parse functions are unchanged.
+
 ### Tests
 
+- The integration-test harness keeps the spawned server's stderr and prints its tail when a test cannot start the
+  server or its redirect listener, and retries once, on the same ports, when the server could not bind them (issue
+  #677: a listener that failed to bind under load was invisible).
 - A guard (`every_path_like_field_of_the_schema_is_refused_or_known_to_be_a_url_path`, issue #587) walks the JSON
   schema and fails when a field named like a path (file, dir, cert, key, ca, storage, ...) is neither refused in a
   `ConduitSite` nor listed as a URL path.
