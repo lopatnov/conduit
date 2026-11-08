@@ -1,9 +1,11 @@
-Package: conduit-proxy
+Package: conduit
 Version: @VERSION@
 Architecture: @ARCH@
 Maintainer: Oleksandr Lopatnov <lopatniov@gmail.com>
 Installed-Size: @SIZE@
 Depends: adduser
+Conflicts: conduit-proxy
+Replaces: conduit-proxy
 Section: net
 Priority: optional
 Homepage: https://github.com/lopatnov/conduit

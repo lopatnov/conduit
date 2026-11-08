@@ -1,4 +1,4 @@
-# Conduit configuration, installed by the conduit-proxy package.
+# Conduit configuration, installed by the conduit package.
 #
 # The service is installed but not started. Edit this file for your site, check it, then start it:
 #

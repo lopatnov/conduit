@@ -15,8 +15,17 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 BUNDLES = ("full", "standard", "gateway", "static")
-# Builds that exist only as the standard bundle: no other build is published for them.
-STANDARD_ONLY = {"riscv64gc-unknown-linux-gnu"}
+# The platforms of a release: every bundle is built for each of them.
+TARGETS = (
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "riscv64gc-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+)
 # npm's `process.platform-process.arch` keys and the release target each one downloads.
 NPM_PLATFORMS = {
     "linux-x64": "x86_64-unknown-linux-gnu",
@@ -95,15 +104,12 @@ class ReleaseMatrix(unittest.TestCase):
     """The matrix, the npm tables, the bundles and the Docker images agree."""
 
     def test_the_builds_are_the_expected_set_and_every_asset_name_is_unique(self):
-        """full, gateway and static on the seven main targets; standard on those and on RISC-V."""
+        """Every bundle on every platform (RISC-V included), and no file name twice."""
         entries = matrix_entries()
         names = [e["asset_name"] for e in entries]
         self.assertEqual(len(names), len(set(names)), "two builds would publish the same file")
-        counts = {b: sum(1 for e in entries if e["bundle"] == b) for b in BUNDLES}
-        self.assertEqual(counts, {"full": 7, "standard": 8, "gateway": 7, "static": 7})
-        for e in entries:
-            if e["bundle"] != "standard":
-                self.assertNotIn(e["target"], STANDARD_ONLY, f"{e['asset_name']} has no other build than standard")
+        built = sorted((e["bundle"], e["target"]) for e in entries)
+        self.assertEqual(built, sorted((b, t) for b in BUNDLES for t in TARGETS))
 
     def test_every_asset_is_named_by_its_target_and_bundle(self):
         """The complete name, not only its ending: `conduit-<target>[-<bundle>][.exe]`."""
@@ -190,6 +196,21 @@ class ReleaseMatrix(unittest.TestCase):
         """The raw `latest*` tag is enabled only when the git tag has no `-` (a stable version)."""
         self.assertIn("enable=${{ !contains(github.ref_name, '-') }}", manifest_job())
 
+
+    def test_the_bare_binary_is_uploaded_for_full_only(self):
+        """Only the full build is also a bare file (npm and the .deb use it); the others are archives."""
+        body = step_body(workflow(), "Upload binary artifact")
+        self.assertIn("if: matrix.bundle == 'full'", body)
+        self.assertIn("name: binary-${{ matrix.bundle }}-${{ matrix.target }}", body)
+        archive = step_body(workflow(), "Upload archive artifact")
+        self.assertNotIn("if:", archive, "every build is published as an archive")
+
+    def test_the_attestations_cover_the_archives_and_the_bare_files(self):
+        """The attest job downloads both kinds of artifact and attests everything in dist/."""
+        job = job_text("attest", "  # ── 2. Create GitHub Release")
+        self.assertIn("pattern: binary-*", job)
+        self.assertIn("pattern: archive-*", job)
+        self.assertIn('subject-path: "dist/*"', job)
 
     def test_trivy_scans_the_platform_of_the_leg(self):
         """An arm64 leg must scan its own child of the index, not Trivy's default linux/amd64 (it failed v2.2.0)."""

@@ -60,16 +60,18 @@ class BuildDeb(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("dpkg-deb"), "dpkg-deb is not installed")
     def test_it_builds_the_package_and_a_prerelease_sorts_before_the_release(self):
-        """2.2.0 gives conduit-proxy_2.2.0_amd64.deb; 2.2.0-rc.1 becomes 2.2.0~rc.1, which sorts first."""
+        """2.2.0 gives conduit_2.2.0_amd64.deb; 2.2.0-rc.1 becomes 2.2.0~rc.1, which sorts first."""
         code, err, out = run(self.binary, "amd64", "2.2.0", self.out)
         self.assertEqual(code, 0, err)
-        self.assertEqual(os.path.basename(out.strip()), "conduit-proxy_2.2.0_amd64.deb")
+        self.assertEqual(os.path.basename(out.strip()), "conduit_2.2.0_amd64.deb")
         info = subprocess.run(["dpkg-deb", "-f", out.strip()], capture_output=True, text=True).stdout
-        self.assertIn("Package: conduit-proxy", info)
+        self.assertIn("\nPackage: conduit\n", "\n" + info)  # the whole line: "conduit-proxy" would also contain it
+        self.assertIn("\nReplaces: conduit-proxy\n", "\n" + info)
+        self.assertIn("\nConflicts: conduit-proxy\n", "\n" + info)
         self.assertIn("Architecture: amd64", info)
         code, err, out = run(self.binary, "arm64", "2.2.0-rc.1", self.out)
         self.assertEqual(code, 0, err)
-        self.assertEqual(os.path.basename(out.strip()), "conduit-proxy_2.2.0~rc.1_arm64.deb")
+        self.assertEqual(os.path.basename(out.strip()), "conduit_2.2.0~rc.1_arm64.deb")
         listing = subprocess.run(["dpkg-deb", "-c", out.strip()], capture_output=True, text=True).stdout
         for path in ("./usr/bin/conduit", "./etc/conduit/conduit.yaml", "./usr/lib/systemd/system/conduit.service"):
             self.assertIn(path, listing)
