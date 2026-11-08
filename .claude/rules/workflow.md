@@ -64,6 +64,12 @@ the clippy matrix or CI do not.
   before the security pass. **Bugs found *while* working are not spun off at discovery** (owner, 2026-10-03): keep a "Found while
   here" list in a comment on the issue, finish the feature, put the list to the owner before the PR opens (one line each, with a
   recommendation); agreed ones become commits in the same PR; the PR description lists *every* item with its disposition.
+  **The default is to fix it, on my own initiative, not to file it (owner, 2026-11-09: "ты плодишь задачи вместо того, чтобы
+  решать"; naming a problem is half of the solution, solving it is the other half).** Identify, then fix in this PR: the defect
+  itself, every other instance of the same kind (grep for the class, not for the one spot), and the open issues of the same area
+  (`gh issue list`), widening the PR as far as it stays one reviewable theme. An issue is for what truly cannot be done now
+  (hardware, an owner decision, a different crate's release), and the PR says why in one plain sentence. Filing a ticket instead
+  of a fix that fits in the PR is a process failure, however well the ticket is written.
   **Every deferred item gets an issue, linked in the PR table, before the PR is merged** (owner, 2026-10-10: a deferral written
   only in a PR comment or a note was silently dropped) — whoever defers it: the owner, a review round, a security finding.
   "Deferred" with no issue number is a dropped item. Not covered: bugs in code the PR does not touch, and performance
