@@ -345,7 +345,7 @@ conduit status --upstream
 <!-- docs-check: skip (command output (JSON), not a config) -->
 ```json
 {
-  "version": "2.2.0",
+  "version": "2.2.1",
   "uptime_secs": 3600,
   "inflight": 42,
   "sites": 2

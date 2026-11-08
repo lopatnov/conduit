@@ -9,7 +9,8 @@ Touches, together (see .claude/rules/conventions.md "Versioning"):
     in [workspace.dependencies] (cargo publish resolves inter-crate deps through those literals)
   * Cargo.lock (`cargo update --workspace --offline`, skipped with --no-lock)
   * npm/package.json
-  * docs/cli.md, docs/deployment.md: the old full version, and the
+  * docs/cli.md, docs/deployment.md, README.md: the old full version (not after the word "Since": that is
+    history, as in "Since 2.2.0 the plain name is the full build"), and the
     `:MAJOR.MINOR` Docker tag aliases in docs/deployment.md
 
 It does not touch CHANGELOG.md (move [Unreleased] by hand), commit, tag or push. It ends by running
@@ -26,7 +27,7 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 _NUM = r"(0|[1-9]\d*)"
 _PRE = r"(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"  # SemVer 2.0.0 item 9: no leading zeroes, no empty identifier
 SEMVER = re.compile(rf"^{_NUM}\.{_NUM}\.{_NUM}(-{_PRE}(?:\.{_PRE})*)?$")
-DOC_FILES = ["docs/cli.md", "docs/deployment.md"]
+DOC_FILES = ["docs/cli.md", "docs/deployment.md", "README.md"]
 
 
 def parse(version):
@@ -84,7 +85,7 @@ def bump_doc(text, old, new, with_tag_aliases=False):
 
     The aliases move only for a stable target: the release workflow publishes `{{major}}.{{minor}}` tags
     for stable versions only, so an rc bump must not point the docs at tags that do not exist."""
-    text = re.sub(r"(?<![\d.])" + re.escape(old) + r"(?!\d|\.\d)", new, text)
+    text = re.sub(r"(?<![\d.])(?<!Since )" + re.escape(old) + r"(?!\d|\.\d)", new, text)
     if with_tag_aliases and not parse(new)[3]:
         # Whatever alias is in the docs now (it stays on the previous stable line after an rc bump), not one derived from `old`.
         n_major, n_minor = parse(new)[:2]

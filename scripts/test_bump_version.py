@@ -85,6 +85,14 @@ class Docs(unittest.TestCase):
         text = "Conduit 2.0.0 and 12.0.0 and 2.0.01 and 2.0.0.1"
         self.assertEqual(bv.bump_doc(text, "2.0.0", "2.1.0"), "Conduit 2.1.0 and 12.0.0 and 2.0.01 and 2.0.0.1")
 
+    def test_history_after_the_word_since_is_not_bumped(self):
+        """"Since 2.0.0 the plain name is the full build" says when something changed; a bump must keep it true."""
+        text = "Since 2.0.0 the plain name is full; install 2.0.0 now"
+        self.assertEqual(bv.bump_doc(text, "2.0.0", "2.0.1"), "Since 2.0.0 the plain name is full; install 2.0.1 now")
+
+    def test_the_readme_is_bumped_too(self):
+        self.assertIn("README.md", bv.DOC_FILES)
+
     def test_image_tag_aliases(self):
         text = "`:latest`, `:2.0.0`, `:2.0` / `:2.0.0-standard`, `:2.0-standard`, `:2.0-gateway`, `:2.0-static`"
         out = bv.bump_doc(text, "2.0.0", "3.4.0", with_tag_aliases=True)
