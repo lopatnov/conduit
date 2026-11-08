@@ -1312,6 +1312,16 @@ fn a_mistyped_top_level_key_of_a_full_config_is_reported() {
 }
 
 #[test]
+fn the_version_key_is_not_reported_at_the_top_of_a_full_config() {
+    // `version` is a documented key of the top level (the parser checks it) although it has no field
+    let w = warns(r#"{ "version": 1, "global": { "workers": 2 }, "sites": [{ "port": 8080 }] }"#);
+    assert!(w.is_empty(), "{w:?}");
+    // but not under `global`, where it is not a key
+    let w = warns(r#"{ "global": { "version": 1 }, "sites": [{ "port": 8080 }] }"#);
+    assert_eq!(w.len(), 1, "{w:?}");
+}
+
+#[test]
 fn the_schema_hint_is_not_reported_at_the_top_of_a_full_config() {
     let w = warns(
         r#"{ "$schema": "https://example.com/conduit.schema.json",
@@ -1341,6 +1351,30 @@ fn every_documented_global_key_is_known() {
              "sites": [{ "port": 8080 }] }"#,
     );
     assert!(w.is_empty(), "{w:?}");
+}
+
+// Issue #682: a mistyped key inside a nested object, found by comparing the document with what was read.
+
+#[test]
+fn a_mistyped_key_in_a_nested_object_is_reported_with_its_path() {
+    let w = warns(r#"{ "port": 8080, "cors": { "origns": ["https://a.example"] } }"#);
+    assert_eq!(
+        w,
+        ["sites[0].cors.origns is not a recognized configuration key and will be ignored — check for a typo."]
+    );
+}
+
+#[test]
+fn a_nested_key_is_escaped_in_the_warning() {
+    // the key holds a real line feed (JSON escape \n)
+    let w = warns(r#"{ "port": 8080, "cors": { "bad\nkey": 1 } }"#);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(
+        !w[0].contains('\n'),
+        "a raw line feed reached the warning: {}",
+        w[0]
+    );
+    assert!(w[0].contains("bad\\nkey"), "{}", w[0]);
 }
 
 #[test]

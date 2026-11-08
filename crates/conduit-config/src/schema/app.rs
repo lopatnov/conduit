@@ -30,6 +30,11 @@ pub struct AppConfig {
     /// setting of `global`, the admin token included). Reported by `validate::feature_warnings()` (issue #681).
     #[serde(flatten)]
     pub extra: IndexMap<String, serde_json::Value>,
+    /// Paths of keys the document has and the structures above do not read (`sites[0].cors.origns`), found by
+    /// `parse::from_str` / `parse::from_yaml` and reported by `validate::feature_warnings()` (issue #682). Not
+    /// part of the configuration: never read from or written to a file.
+    #[serde(skip)]
+    pub ignored_keys: Vec<String>,
 }
 
 // ── Global config ──────────────────────────────────────────────────────────

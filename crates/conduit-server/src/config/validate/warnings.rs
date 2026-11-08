@@ -53,6 +53,8 @@ pub(super) fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<St
     // The top of a full configuration, `global` and `global.admin` (issue #681): a typo there (`globl`,
     // `workerz`, `tokn`) used to be dropped without a word, with the default silently in force.
     warn_unknown_keys("", config.extra.keys(), warnings);
+    // Keys inside any other object (`sites[0].cors.origns`) that the parser did not read (issue #682).
+    warn_unknown_keys("", config.ignored_keys.iter(), warnings);
     if let Some(global) = &config.global {
         warn_unknown_keys("global.", global.extra.keys(), warnings);
         if let Some(admin) = &global.admin {
@@ -82,14 +84,15 @@ pub(super) fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<St
 }
 
 /// The warning for each of `keys` (the keys of one object that no field names), named `scope` + key.
-/// `$schema` at the top is the editor hint the docs tell users to add (#569) and is not reported there.
+/// `$schema` (the editor hint the docs tell users to add, #569) and `version` (the schema version the parser
+/// checks, `CONFIG_VERSION`) are known keys at the top and are not reported there.
 fn warn_unknown_keys<'a>(
     scope: &str,
     keys: impl Iterator<Item = &'a String>,
     warnings: &mut Vec<String>,
 ) {
     for key in keys {
-        if scope.is_empty() && key == "$schema" {
+        if scope.is_empty() && (key == "$schema" || key == "version") {
             continue;
         }
         warnings.push(format!(
