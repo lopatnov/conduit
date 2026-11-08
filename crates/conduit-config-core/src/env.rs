@@ -339,7 +339,10 @@ impl LineScanner<'_> {
             self.blank_after = true;
         } else {
             if !self.in_token {
-                self.token_is_property = c == '&' || c == '!';
+                // `&` and `!` start an anchor or a tag only where a node can begin, or right after another one
+                // (`&a !!str "x"`): inside plain text (`Tom & '$NAME'`) they are just characters
+                self.token_is_property = (c == '&' || c == '!')
+                    && (starts_scalar(self.prev, self.blank_after) || self.last_token_was_property);
                 self.in_token = true;
             }
             self.prev = Some(c);
@@ -884,7 +887,20 @@ mod yaml_tests {
             "\u{7f}",
         ];
         // (text, label, what stands before the reference inside the scalar, and after it)
-        let templates: [(&str, &str, &str, &str); 10] = [
+        let templates: [(&str, &str, &str, &str); 12] = [
+            // Gitar on #683: an `&` or `!` inside plain text is not an anchor or a tag, so the quote is plain too
+            (
+                "k: Tom & '$V'\nz: 1\n",
+                "plain after an ampersand",
+                "Tom & '",
+                "'",
+            ),
+            (
+                "k: hi !x '$V'\nz: 1\n",
+                "plain after a bang",
+                "hi !x '",
+                "'",
+            ),
             ("k: $V\nz: 1\n", "plain", "", ""),
             ("k: a $V\nz: 1\n", "plain after a blank", "a ", ""),
             ("k: a$V\nz: 1\n", "plain after text", "a", ""),
