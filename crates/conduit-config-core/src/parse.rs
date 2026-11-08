@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
-use crate::env::interpolate;
+use crate::env::{interpolate, interpolate_yaml};
 use crate::format::ConfigFormat;
 
 /// Highest config schema version this binary understands.
@@ -22,19 +22,29 @@ struct VersionProbe {
 
 /// Parse a config JSON string of type `T`, performing env interpolation first.
 pub fn from_json_str<T: DeserializeOwned>(text: &str) -> Result<T> {
-    let text = interpolate(text);
+    from_json_str_verbatim(&interpolate(text))
+}
 
-    let probe: VersionProbe = serde_json::from_str(&text).unwrap_or_default();
+/// Parse a config JSON string of type `T` exactly as written, **without** env interpolation.
+///
+/// For text that is already interpolated, such as a diagnostic re-parse of a value that was read from a
+/// document: interpolating it a second time would expand a `$NAME` that an environment value contains (issue #586).
+pub fn from_json_str_verbatim<T: DeserializeOwned>(text: &str) -> Result<T> {
+    let probe: VersionProbe = serde_json::from_str(text).unwrap_or_default();
     check_version(probe)?;
 
-    let jd = &mut serde_json::Deserializer::from_str(&text);
+    let jd = &mut serde_json::Deserializer::from_str(text);
     serde_path_to_error::deserialize(jd)
         .map_err(|e| anyhow::anyhow!("Config parse error at '{}': {}", e.path(), e.inner()))
 }
 
 /// Parse a config YAML string of type `T`, performing env interpolation first.
+///
+/// The references are written by [`interpolate_yaml`], which knows where a value stands (plain, `"..."`, `'...'`), so
+/// a value arrives unchanged; a value that cannot be written where its reference stands is an error naming the
+/// variable (issue #680).
 pub fn from_yaml_str<T: DeserializeOwned>(text: &str) -> Result<T> {
-    let text = interpolate(text);
+    let text = interpolate_yaml(text).map_err(|e| anyhow::anyhow!("Config parse error: {e}"))?;
 
     let probe: VersionProbe = serde_yaml::from_str(&text).unwrap_or_default();
     check_version(probe)?;
@@ -77,6 +87,47 @@ fn check_version(probe: VersionProbe) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #586: the verbatim parse does not expand a reference that the text contains; `from_json_str` does.
+    #[test]
+    #[serial_test::serial]
+    fn the_verbatim_json_parse_does_not_interpolate() {
+        std::env::set_var("CONDUIT_PARSE_586", "expanded");
+        let text = r#"{ "name": "$CONDUIT_PARSE_586" }"#;
+        let expanded: serde_json::Value = from_json_str(text).unwrap();
+        let verbatim: serde_json::Value = from_json_str_verbatim(text).unwrap();
+        std::env::remove_var("CONDUIT_PARSE_586");
+        assert_eq!(expanded["name"], "expanded");
+        assert_eq!(verbatim["name"], "$CONDUIT_PARSE_586");
+    }
+
+    /// Issue #680: a value arrives in a YAML file as it is, or the load fails naming the variable.
+    #[test]
+    #[serial_test::serial]
+    fn a_yaml_value_with_a_backslash_or_a_quote_arrives_unchanged() {
+        let value = r#"pa\ss"word'x"#;
+        std::env::set_var("CONDUIT_PARSE_680", value);
+        for text in [
+            "name: $CONDUIT_PARSE_680\n",
+            "name: \"$CONDUIT_PARSE_680\"\n",
+        ] {
+            let got: serde_json::Value = from_yaml_str(text).unwrap();
+            assert_eq!(got["name"], value, "{text}");
+        }
+        // a value a plain scalar cannot carry is refused, naming the variable and never the value
+        std::env::set_var("CONDUIT_PARSE_680", "a: b #c");
+        let e = from_yaml_str::<serde_json::Value>("name: $CONDUIT_PARSE_680\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("CONDUIT_PARSE_680") && !e.contains("a: b #c"),
+            "{e}"
+        );
+        // and is fine in double quotes
+        let got: serde_json::Value = from_yaml_str("name: \"$CONDUIT_PARSE_680\"\n").unwrap();
+        assert_eq!(got["name"], "a: b #c");
+        std::env::remove_var("CONDUIT_PARSE_680");
+    }
 
     #[derive(Debug, Deserialize, PartialEq)]
     struct Toy {

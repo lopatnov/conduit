@@ -11,7 +11,15 @@ conduit validate -c conduit.yaml # validate without starting
 ```
 
 Fields accept **environment variable references** — `"$MY_VAR"` is replaced at
-startup. This keeps secrets out of config files.
+startup. This keeps secrets out of config files. The reference works wherever a value stands,
+a number included (`port: $PORT` in YAML), and the value arrives **unchanged**: in JSON and in a
+YAML `"..."` it is written as a JSON string, in a YAML `'...'` a quote is doubled, in an
+unquoted YAML value it is written as it is. A value that an unquoted YAML value cannot carry
+without changing it (a line break, a space at the start or end, a start such as `*`, `&`, `!`,
+`|`, `- `, a `: ` or ` #` inside it, a comma or bracket inside `[ ]`) makes the load fail with a
+message that names the variable and never shows the value: put the reference in double quotes
+(`"$MY_VAR"`). A variable that is not set leaves `$MY_VAR` as written. A reference in a YAML comment is
+not replaced.
 
 ### Optional build features
 

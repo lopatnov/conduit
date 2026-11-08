@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use conduit_config_core::format::ConfigFormat;
-use conduit_config_core::parse::{from_json_str, from_yaml_str};
+use conduit_config_core::parse::{from_json_str, from_json_str_verbatim, from_yaml_str};
 
 use crate::schema::{AppConfig, ConfigFile, SiteConfig};
 
@@ -121,17 +121,20 @@ fn diagnose(text: &str, yaml: bool, original: anyhow::Error) -> anyhow::Error {
     let Ok(value) = value else {
         return original;
     };
+    // `value` is already interpolated: the re-parse must not expand a `$NAME` that an environment value contains
+    // (issue #586).
     let json = value.to_string();
     let refined = if value.is_array() {
-        from_json_str::<Vec<SiteConfig>>(&json).err()
+        from_json_str_verbatim::<Vec<SiteConfig>>(&json).err()
     } else if value.get("sites").is_some() {
-        from_json_str::<AppConfig>(&json).err()
+        from_json_str_verbatim::<AppConfig>(&json).err()
     } else {
-        from_json_str::<SiteConfig>(&json).err()
+        from_json_str_verbatim::<SiteConfig>(&json).err()
     };
     match refined {
         Some(e) => anyhow::anyhow!(redact_value(&e.to_string())),
-        None => original,
+        // the first error quotes the rejected value as well; keep it out of the message here too
+        None => anyhow::anyhow!(redact_value(&original.to_string())),
     }
 }
 
@@ -145,6 +148,13 @@ fn redact_value(msg: &str) -> String {
             let tail = rest.find(", expected ").map(|j| &rest[j..]).unwrap_or("");
             let kind = rest.split([' ', ',']).next().unwrap_or("value");
             return format!("{head}{kind}{tail}");
+        }
+    }
+    // `unknown variant `value`, expected one of ...` quotes the rejected value too
+    if let Some(i) = msg.find("unknown variant `") {
+        let start = i + "unknown variant `".len();
+        if let Some(len) = msg[start..].find("`, expected ") {
+            return format!("{}unknown variant{}", &msg[..i], &msg[start + len + 1..]);
         }
     }
     msg.to_owned()
@@ -162,7 +172,7 @@ fn reject_failed_full(file: &ConfigFile, text: &str, yaml: bool) -> Result<()> {
                 from_json_str(text)
             };
             value
-                .and_then(|v| from_json_str::<AppConfig>(&v.to_string()))
+                .and_then(|v| from_json_str_verbatim::<AppConfig>(&v.to_string()))
                 .map_err(|e| anyhow::anyhow!(redact_value(&e.to_string())))?;
         }
     }
@@ -284,6 +294,24 @@ securityHeaders:
             .unwrap_err()
             .to_string();
         assert!(!e.contains("hunter2"), "{e}");
+    }
+
+    /// Issue #586: the rejected value of an enum field is not echoed either (serde quotes it in backticks).
+    #[test]
+    fn an_unknown_variant_is_redacted_without_its_value() {
+        let msg = "Config parse error at 'sites[0].tls.versions[0]': unknown variant `hunter2-secret`, expected one of `1.2`, `1.3` at line 1 column 9";
+        let out = redact_value(msg);
+        assert!(!out.contains("hunter2"), "{out}");
+        assert!(
+            out.contains("unknown variant, expected one of `1.2`, `1.3`")
+                && out.contains("tls.versions[0]"),
+            "{out}"
+        );
+        // a message without a quoted value is left alone
+        assert_eq!(
+            redact_value("missing field `sites`"),
+            "missing field `sites`"
+        );
     }
 
     #[test]

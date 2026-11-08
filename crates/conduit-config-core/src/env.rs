@@ -54,6 +54,346 @@ pub fn interpolate(text: &str) -> String {
     result
 }
 
+/// The names of the environment variables that `text` refers to (`$NAME`) and that are set, in order of first
+/// appearance: the references [`interpolate`] and [`interpolate_yaml`] would replace by their values.
+pub fn resolved_references(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut names: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' {
+            if let Some((name, end)) = reference_at(&chars, i) {
+                if env::var(&name).is_ok() && !names.contains(&name) {
+                    names.push(name);
+                }
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    names
+}
+
+/// `$NAME` starting at `chars[at]`: the name and the index after it.
+fn reference_at(chars: &[char], at: usize) -> Option<(String, usize)> {
+    let first = *chars.get(at + 1)?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    let mut end = at + 1;
+    while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+        end += 1;
+    }
+    Some((chars[at + 1..end].iter().collect(), end))
+}
+
+/// Where a `$NAME` stands in a YAML document, which decides how its value must be written.
+#[derive(Clone, Copy, PartialEq)]
+enum Ctx {
+    /// An unquoted value (or key).
+    Plain,
+    /// Inside `"..."`.
+    Double,
+    /// Inside `'...'`.
+    Single,
+    /// After a `#` comment mark.
+    Comment,
+    /// The content lines of a `|` or `>` block scalar.
+    Block,
+}
+
+/// Replace `$VAR_NAME` in YAML text with environment variable values, writing each value so that it reads back
+/// **unchanged** and can never add or change a key (issue #680).
+///
+/// [`interpolate`] escapes a value as a JSON string, which is right inside `"..."` and wrong anywhere else in a
+/// YAML file: a backslash or a quote in a plain value came out doubled or escaped. This function looks at where the
+/// reference stands:
+/// - in `"..."`: JSON escapes (YAML double-quoted scalars use the same ones);
+/// - in `'...'`: a quote is doubled (`''`); a control character is refused, there is no way to write it;
+/// - in a plain value: written as it is when that reads back unchanged, otherwise refused, with the advice to put the
+///   reference in double quotes. Refused are a line break or other control character, a value that starts or ends
+///   with a space, one that starts with a YAML indicator (`*`, `&`, `!`, `|`, `>`, `%`, `@`, a quote, a bracket, `#`,
+///   `- `, `? `, `: `), one that contains `: ` or ` #`, and, inside `[...]` or `{...}`, a comma or a bracket;
+/// - in a block scalar: as it is, except a line break (it would end the block);
+/// - in a comment: not replaced.
+///
+/// The position is found with a small scanner (quotes, comments, flow brackets, block scalar headers). When it
+/// is wrong the worst outcome is an error or JSON escaping (what [`interpolate`] always did), not a changed key.
+/// An unset variable keeps its `$NAME`, as in [`interpolate`].
+pub fn interpolate_yaml(text: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut ctx = Ctx::Plain;
+    let mut flow = 0usize;
+    let mut block_indent = 0usize;
+    for line in text.split_inclusive('\n') {
+        let chars: Vec<char> = line.chars().collect();
+        if ctx == Ctx::Block {
+            let blank = line.trim().is_empty();
+            let indent = chars.iter().take_while(|c| **c == ' ').count();
+            if !blank && indent <= block_indent {
+                ctx = Ctx::Plain;
+            }
+        }
+        if ctx == Ctx::Comment {
+            ctx = Ctx::Plain;
+        }
+        let started_plain = ctx == Ctx::Plain;
+        scan_line(&chars, &mut ctx, &mut flow, &mut out)?;
+        if ctx == Ctx::Comment {
+            ctx = Ctx::Plain;
+        }
+        if started_plain && ctx == Ctx::Plain && is_block_header(line) {
+            ctx = Ctx::Block;
+            block_indent = chars.iter().take_while(|c| **c == ' ').count();
+        }
+    }
+    Ok(out)
+}
+
+/// Whether a (complete) line ends in a block scalar header: `key: |`, `- >-`, `key: |2+ # comment`.
+fn is_block_header(line: &str) -> bool {
+    let code = match line.find(" #") {
+        Some(i) => &line[..i],
+        None => line,
+    };
+    let code = code.trim_end();
+    let Some(token_start) = code.rfind(|c: char| c.is_whitespace()).map(|i| i + 1) else {
+        return false;
+    };
+    let token = &code[token_start..];
+    let header = token.starts_with('|') || token.starts_with('>');
+    header
+        && token.len() <= 3
+        && token[1..]
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '+' || c == '-')
+        && matches!(
+            code[..token_start].trim_end().chars().last(),
+            Some(':' | '-')
+        )
+}
+
+/// Scan one line, appending it (references replaced) to `out`.
+fn scan_line(
+    chars: &[char],
+    ctx: &mut Ctx,
+    flow: &mut usize,
+    out: &mut String,
+) -> Result<(), String> {
+    // the last character of the line that is not a blank, and whether a blank came after it
+    let mut prev: Option<char> = None;
+    let mut blank_after = true;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match *ctx {
+            Ctx::Comment => {
+                out.push(c);
+                i += 1;
+                continue;
+            }
+            Ctx::Double => {
+                if c == '\\' && i + 1 < chars.len() {
+                    out.push(c);
+                    out.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if c == '"' {
+                    *ctx = Ctx::Plain;
+                    prev = Some('"');
+                    blank_after = false;
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+            }
+            Ctx::Single => {
+                if c == '\'' {
+                    if chars.get(i + 1) == Some(&'\'') {
+                        out.push_str("''");
+                        i += 2;
+                        continue;
+                    }
+                    *ctx = Ctx::Plain;
+                    prev = Some('\'');
+                    blank_after = false;
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+            }
+            Ctx::Plain | Ctx::Block => {}
+        }
+
+        if c == '$' {
+            if let Some((name, end)) = reference_at(chars, i) {
+                if let Ok(value) = env::var(&name) {
+                    let next = chars.get(end).copied();
+                    let at_start = matches!(
+                        (prev, blank_after),
+                        (None, _) | (Some(':' | '-' | '?'), true) | (Some('[' | '{' | ','), _)
+                    );
+                    let written = write_value(&name, &value, *ctx, at_start, *flow > 0, next)?;
+                    out.push_str(&written);
+                    prev = value.chars().last().or(prev);
+                    blank_after = false;
+                    i = end;
+                    continue;
+                }
+                // unset: the reference stays as written
+                out.extend(chars[i..end].iter());
+                prev = Some('x');
+                blank_after = false;
+                i = end;
+                continue;
+            }
+        }
+
+        if *ctx == Ctx::Plain {
+            match c {
+                '#' if prev.is_none() || blank_after => {
+                    *ctx = Ctx::Comment;
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                '"' | '\'' if starts_scalar(prev, blank_after) => {
+                    *ctx = if c == '"' { Ctx::Double } else { Ctx::Single };
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                '[' | '{' => *flow += 1,
+                ']' | '}' => *flow = flow.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if c.is_whitespace() {
+            blank_after = true;
+        } else {
+            prev = Some(c);
+            blank_after = false;
+        }
+        out.push(c);
+        i += 1;
+    }
+    Ok(())
+}
+
+/// Whether a quote at this point opens a quoted scalar (and not an apostrophe inside a plain one).
+fn starts_scalar(prev: Option<char>, blank_after: bool) -> bool {
+    match prev {
+        None => true,
+        Some(':' | '-' | '?') => blank_after,
+        Some('[' | '{' | ',') => true,
+        Some(_) => false,
+    }
+}
+
+/// The text to put in place of `$name` (whose value is `value`) in context `ctx`.
+fn write_value(
+    name: &str,
+    value: &str,
+    ctx: Ctx,
+    at_start: bool,
+    in_flow: bool,
+    next: Option<char>,
+) -> Result<String, String> {
+    match ctx {
+        Ctx::Comment => Ok(format!("${name}")),
+        Ctx::Double => Ok(serde_json::to_string(value)
+            .map(|s| s[1..s.len() - 1].to_owned())
+            .unwrap_or_else(|_| value.to_owned())),
+        Ctx::Single => {
+            if value.chars().any(char::is_control) {
+                return Err(refusal(
+                    name,
+                    "a control character such as a line break",
+                    "single-quoted",
+                ));
+            }
+            Ok(value.replace('\'', "''"))
+        }
+        Ctx::Block => {
+            if value.contains(['\n', '\r']) {
+                return Err(refusal(name, "a line break", "block scalar"));
+            }
+            Ok(value.to_owned())
+        }
+        Ctx::Plain => match plain_problem(value, at_start, in_flow, next) {
+            Some(why) => Err(refusal(name, why, "plain")),
+            None => Ok(value.to_owned()),
+        },
+    }
+}
+
+fn refusal(name: &str, why: &str, place: &str) -> String {
+    format!(
+        "the environment variable ${name} contains {why}, which cannot be written into a {place} YAML value \
+         without changing it; put the reference in double quotes (\"${name}\") instead"
+    )
+}
+
+/// What stops `value` from being written as it is into a plain YAML scalar, `None` if nothing does.
+fn plain_problem(
+    value: &str,
+    at_start: bool,
+    in_flow: bool,
+    next: Option<char>,
+) -> Option<&'static str> {
+    if value.chars().any(char::is_control) {
+        return Some("a line break or another control character");
+    }
+    // the value is the last thing of the scalar: a line end, a blank or comment, or (in a list) a separator
+    let at_end = matches!(next, None | Some('\n' | '\r' | ' ' | '#'))
+        || (in_flow && matches!(next, Some(',' | ']' | '}')));
+    if (at_start && value.starts_with(char::is_whitespace))
+        || (at_end && value.ends_with(char::is_whitespace))
+    {
+        return Some("a space at its start or end");
+    }
+    if value.contains(": ") || (at_end && value.ends_with(':')) {
+        return Some("a colon followed by a space");
+    }
+    if value.contains(" #") {
+        return Some("a space followed by #");
+    }
+    if at_start {
+        let first = value.chars().next();
+        if matches!(
+            first,
+            Some(
+                '&' | '*'
+                    | '!'
+                    | '|'
+                    | '>'
+                    | '%'
+                    | '@'
+                    | '`'
+                    | '\''
+                    | '"'
+                    | '#'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | ','
+            )
+        ) {
+            return Some("a character at its start that YAML reads as an indicator");
+        }
+        if matches!(value, "-" | "?" | ":") || value.starts_with("- ") || value.starts_with("? ") {
+            return Some("an indicator at its start");
+        }
+    }
+    if in_flow && value.contains([',', '[', ']', '{', '}']) {
+        return Some("a comma or a bracket inside a [ ] or { } list");
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +480,312 @@ mod tests {
         std::env::set_var("CONDUIT_TEST_B", "world");
         let out = interpolate("$CONDUIT_TEST_A $CONDUIT_TEST_B");
         assert_eq!(out, "hello world");
+    }
+}
+
+/// Issue #680: values in YAML files arrive unchanged, in every place a reference can stand.
+#[cfg(test)]
+mod yaml_tests {
+    use super::*;
+    use serial_test::serial;
+
+    fn with_var<T>(name: &str, value: &str, f: impl FnOnce() -> T) -> T {
+        std::env::set_var(name, value);
+        let out = f();
+        std::env::remove_var(name);
+        out
+    }
+
+    #[test]
+    #[serial]
+    fn a_plain_value_keeps_its_backslash_and_quote() {
+        let out = with_var("CONDUIT_YAML_T1", r#"a\b"c"#, || {
+            interpolate_yaml("host: $CONDUIT_YAML_T1\n")
+        });
+        assert_eq!(out.unwrap(), "host: a\\b\"c\n");
+    }
+
+    #[test]
+    #[serial]
+    fn a_double_quoted_value_is_json_escaped() {
+        let out = with_var("CONDUIT_YAML_T2", "a\\b\"c\nd", || {
+            interpolate_yaml("key: \"$CONDUIT_YAML_T2\"\n")
+        });
+        assert_eq!(out.unwrap(), "key: \"a\\\\b\\\"c\\nd\"\n");
+    }
+
+    #[test]
+    #[serial]
+    fn a_single_quoted_value_doubles_its_quote_and_keeps_backslashes() {
+        let out = with_var("CONDUIT_YAML_T3", "it's a\\b", || {
+            interpolate_yaml("key: '$CONDUIT_YAML_T3'\n")
+        });
+        assert_eq!(out.unwrap(), "key: 'it''s a\\b'\n");
+        let err = with_var("CONDUIT_YAML_T3", "x\ny", || {
+            interpolate_yaml("key: '$CONDUIT_YAML_T3'\n")
+        });
+        assert!(err.unwrap_err().contains("CONDUIT_YAML_T3"));
+    }
+
+    #[test]
+    #[serial]
+    fn a_plain_value_that_would_not_read_back_is_refused_and_the_message_names_only_the_variable() {
+        for (value, why) in [
+            ("x: y", "colon"),
+            ("x #y", "#"),
+            ("x\ninjected: 1", "line break"),
+            ("*alias", "indicator"),
+            ("&anchor", "indicator"),
+            ("!tag", "indicator"),
+            ("- item", "indicator"),
+            ("|", "indicator"),
+            (" lead", "space"),
+            ("trail ", "space"),
+            ("'q", "indicator"),
+        ] {
+            let err = with_var("CONDUIT_YAML_T4", value, || {
+                interpolate_yaml("key: $CONDUIT_YAML_T4\n")
+            })
+            .unwrap_err();
+            assert!(
+                err.contains("CONDUIT_YAML_T4") && err.contains(why),
+                "{value:?}: {err}"
+            );
+            assert!(
+                !err.contains(value),
+                "the message must not carry the value: {err}"
+            );
+            assert!(err.contains("double quotes"), "{err}");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn the_same_values_are_fine_in_double_quotes() {
+        for value in [
+            "x: y",
+            "x #y",
+            "x\ninjected: 1",
+            "*alias",
+            " lead",
+            "trail ",
+        ] {
+            let out = with_var("CONDUIT_YAML_T5", value, || {
+                interpolate_yaml("key: \"$CONDUIT_YAML_T5\"\n")
+            });
+            assert!(out.is_ok(), "{value:?}");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn an_indicator_in_the_middle_of_a_plain_value_is_fine() {
+        // only the start is special: `a*b`, `a&b`, `http://x/?q=1#frag`, `a-b`
+        for value in [
+            "a*b",
+            "a&b",
+            "http://h/p?q=1#frag",
+            "a-b",
+            "p@ss",
+            "50%",
+            "a!b",
+            "a|b",
+            "a>b",
+        ] {
+            let out = with_var("CONDUIT_YAML_T6", value, || {
+                interpolate_yaml("key: x$CONDUIT_YAML_T6\n")
+            });
+            assert_eq!(out.unwrap(), format!("key: x{value}\n"), "{value:?}");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn inside_a_flow_list_a_comma_or_bracket_is_refused() {
+        let ok = with_var("CONDUIT_YAML_T7", "plain", || {
+            interpolate_yaml("keys: [$CONDUIT_YAML_T7, b]\n")
+        });
+        assert_eq!(ok.unwrap(), "keys: [plain, b]\n");
+        for value in ["a,b", "a]", "{a"] {
+            let err = with_var("CONDUIT_YAML_T7", value, || {
+                interpolate_yaml("keys: [$CONDUIT_YAML_T7, b]\n")
+            });
+            assert!(err.is_err(), "{value:?}");
+        }
+        // the same commas are fine in a block value
+        let ok = with_var("CONDUIT_YAML_T7", "a,b", || {
+            interpolate_yaml("keys: $CONDUIT_YAML_T7\n")
+        });
+        assert_eq!(ok.unwrap(), "keys: a,b\n");
+    }
+
+    #[test]
+    #[serial]
+    fn a_reference_in_a_comment_is_left_alone() {
+        let out = with_var("CONDUIT_YAML_T8", "v", || {
+            interpolate_yaml(
+                "# uses $CONDUIT_YAML_T8\nkey: $CONDUIT_YAML_T8 # and $CONDUIT_YAML_T8\n",
+            )
+        });
+        assert_eq!(
+            out.unwrap(),
+            "# uses $CONDUIT_YAML_T8\nkey: v # and $CONDUIT_YAML_T8\n"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn an_apostrophe_in_a_plain_value_does_not_open_a_quote() {
+        // `it's` is a plain scalar: the reference after it is plain too (a backslash stays single)
+        let out = with_var("CONDUIT_YAML_T9", "a\\b", || {
+            interpolate_yaml("note: it's $CONDUIT_YAML_T9\n")
+        });
+        assert_eq!(out.unwrap(), "note: it's a\\b\n");
+    }
+
+    #[test]
+    #[serial]
+    fn a_quoted_scalar_over_several_lines_stays_quoted() {
+        let out = with_var("CONDUIT_YAML_T10", "q\"x", || {
+            interpolate_yaml("key: \"first line\n  $CONDUIT_YAML_T10 end\"\nnext: 1\n")
+        });
+        assert_eq!(out.unwrap(), "key: \"first line\n  q\\\"x end\"\nnext: 1\n");
+    }
+
+    #[test]
+    #[serial]
+    fn a_block_scalar_takes_the_value_as_it_is_unless_it_has_a_line_break() {
+        let text = "script: |\n  echo $CONDUIT_YAML_T11\nafter: $CONDUIT_YAML_T11\n";
+        let ok = with_var("CONDUIT_YAML_T11", "a\\b'c\"d", || interpolate_yaml(text));
+        assert_eq!(
+            ok.unwrap(),
+            "script: |\n  echo a\\b'c\"d\nafter: a\\b'c\"d\n"
+        );
+        let err = with_var("CONDUIT_YAML_T11", "a\nb: 1", || interpolate_yaml(text));
+        assert!(err.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn json_looking_yaml_uses_the_quotes() {
+        let out = with_var("CONDUIT_YAML_T12", "a\"b", || {
+            interpolate_yaml("{\"k\": \"$CONDUIT_YAML_T12\"}")
+        });
+        assert_eq!(out.unwrap(), "{\"k\": \"a\\\"b\"}");
+    }
+
+    #[test]
+    #[serial]
+    fn an_unset_reference_and_a_bare_dollar_stay() {
+        let out =
+            interpolate_yaml("a: $CONDUIT_YAML_UNSET\nb: $\nc: $$x\nd: \"$CONDUIT_YAML_UNSET\"\n");
+        assert_eq!(
+            out.unwrap(),
+            "a: $CONDUIT_YAML_UNSET\nb: $\nc: $$x\nd: \"$CONDUIT_YAML_UNSET\"\n"
+        );
+    }
+
+    /// The property that matters: for whatever the value, either the YAML reads back the value, or the
+    /// interpolation refuses; it never yields a different value or an extra key.
+    #[test]
+    #[serial]
+    fn whatever_the_value_it_reads_back_unchanged_or_is_refused() {
+        let values = [
+            "plain",
+            "a b",
+            "a\\b",
+            "a\"b",
+            "a'b",
+            "a: b",
+            "a #b",
+            "#x",
+            "*x",
+            "&x",
+            "!x",
+            "|x",
+            ">x",
+            "%x",
+            "@x",
+            "- x",
+            "? x",
+            "[x]",
+            "{x}",
+            "a,b",
+            " x",
+            "x ",
+            "x\ny: 1",
+            "x\r\ny",
+            "tab\there",
+            "ünï",
+            "",
+            "0x1F",
+            "null",
+            "true",
+            "a: b: c",
+            "-",
+            "?",
+            ":",
+            "---",
+            "...",
+            "x:",
+            ":x",
+            "a\\nb",
+            "$HOME",
+            "${X}",
+        ];
+        let templates: [(&str, &str); 4] = [
+            ("k: $V\nz: 1\n", "plain"),
+            ("k: \"$V\"\nz: 1\n", "double"),
+            ("k: '$V'\nz: 1\n", "single"),
+            ("k: [$V, 2]\nz: 1\n", "flow"),
+        ];
+        for value in values {
+            for (template, label) in templates {
+                let text = template.replace("$V", "$CONDUIT_YAML_PROP");
+                let result = with_var("CONDUIT_YAML_PROP", value, || interpolate_yaml(&text));
+                let Ok(out) = result else { continue };
+                // the keys of the result are exactly `k` and `z`
+                let doc: serde_json::Value = match serde_yaml_check(&out) {
+                    Some(d) => d,
+                    None => continue, // YAML that does not parse is an error at load, never a changed value
+                };
+                let keys: Vec<&String> = doc
+                    .as_object()
+                    .map(|m| m.keys().collect())
+                    .unwrap_or_default();
+                assert_eq!(keys, ["k", "z"], "{label} {value:?} -> {out:?}");
+                let read = match &doc["k"] {
+                    serde_json::Value::Array(items) => items.first().cloned().unwrap_or_default(),
+                    other => other.clone(),
+                };
+                // a plain scalar may be read as a number, a bool or null; when it is a string it is the value
+                if let Some(s) = read.as_str() {
+                    assert_eq!(s, value, "{label} {value:?} -> {out:?}");
+                } else {
+                    // only an unquoted value may become a number, a bool or null (`0x1F`, `true`, `null`)
+                    assert!(
+                        label == "plain" || label == "flow",
+                        "{label} {value:?} gave a non-string {read:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A parse with the reader the loader uses, as a JSON value.
+    fn serde_yaml_check(text: &str) -> Option<serde_json::Value> {
+        serde_yaml::from_str(text).ok()
+    }
+
+    #[test]
+    #[serial]
+    fn resolved_references_lists_the_set_variables_once() {
+        std::env::set_var("CONDUIT_YAML_R1", "x");
+        let names = resolved_references(
+            "a: $CONDUIT_YAML_R1\nb: \"$CONDUIT_YAML_R1\" $CONDUIT_YAML_UNSET2 $ $$",
+        );
+        std::env::remove_var("CONDUIT_YAML_R1");
+        assert_eq!(names, ["CONDUIT_YAML_R1"]);
+        assert!(resolved_references("no references here").is_empty());
     }
 }
