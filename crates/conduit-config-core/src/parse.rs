@@ -192,8 +192,9 @@ mod tests {
 
     #[test]
     fn yaml_errors_do_not_quote_the_neighbouring_lines() {
-        // The text is read after `$VAR` interpolation, so a neighbouring line may hold a secret.
-        let secret = "S3CRET-neighbour-TOKEN-value";
+        // The text is read after `$VAR` interpolation, so a neighbouring line may hold a secret. A plain marker word
+        // stands in for it: a realistic-looking key in a test is a hard-coded-secret finding of its own.
+        let secret = "marker-on-the-line-before";
         let cases = [
             // a type error on line 3, the secret on line 1 and 2
             format!("token: {secret}\na:\n  port: abc\n"),
