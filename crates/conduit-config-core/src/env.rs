@@ -304,6 +304,11 @@ impl LineScanner<'_> {
         }
         self.blank_after = false;
         self.i = end;
+        // a reference is an ordinary token: after `&a $X` a quote does not follow an anchor (Gitar on #683)
+        if !self.in_token {
+            self.token_is_property = false;
+            self.in_token = true;
+        }
         Ok(true)
     }
 
@@ -836,6 +841,20 @@ mod yaml_tests {
             interpolate_yaml("k: a\u{a0}$CONDUIT_YAML_T14\u{3000}b\n")
         });
         assert_eq!(out.unwrap(), "k: a\u{a0}v\u{3000}b\n");
+    }
+
+    /// Gitar on #683: after `&a $V` the quote is not the start of a quoted scalar (the anchor belongs to the plain
+    /// scalar `$V '$V'`), so the value is written plain and a quote in it is not doubled.
+    #[test]
+    #[serial]
+    fn a_reference_after_an_anchor_ends_the_anchor_for_the_next_quote() {
+        let out = with_var("CONDUIT_YAML_T15", "it's", || {
+            interpolate_yaml("k: &a $CONDUIT_YAML_T15 '$CONDUIT_YAML_T15'\nz: 1\n")
+        });
+        let out = out.unwrap();
+        assert_eq!(out, "k: &a it's 'it's'\nz: 1\n");
+        let doc: serde_json::Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(doc["k"], "it's 'it's'");
     }
 
     #[test]
