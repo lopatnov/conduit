@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::config::UpstreamHealthCheck;
 use crate::health::{now_secs, UpstreamEntry, UpstreamRegistry};
@@ -176,6 +176,9 @@ pub(crate) fn probe_timeout(hc: &UpstreamHealthCheck) -> Duration {
 /// The probe timeout when `healthCheck.timeoutMs` is not set.
 pub(crate) const DEFAULT_PROBE_TIMEOUT_MS: u64 = 5000;
 
+/// How much of an answer a probe reads while it looks for the end of the status line.
+const MAX_STATUS_LINE: u64 = 8 * 1024;
+
 /// Spawn a single background health-check task for a set of upstream URLs.
 fn spawn_health_task(
     registry: Arc<UpstreamRegistry>,
@@ -251,8 +254,14 @@ async fn probe_status(host_port: &str, path: &str) -> Option<u16> {
     let mut reader = BufReader::new(stream);
     reader.get_mut().write_all(req.as_bytes()).await.ok()?;
 
+    // The first line only, and at most 8 KiB of it: an upstream that streams bytes without a newline must not
+    // be read for as long as the probe's deadline allows (and `timeoutMs` is now tunable).
     let mut line = String::new();
-    reader.read_line(&mut line).await.ok()?;
+    (&mut reader)
+        .take(MAX_STATUS_LINE)
+        .read_line(&mut line)
+        .await
+        .ok()?;
     if line.is_empty() {
         return None;
     }

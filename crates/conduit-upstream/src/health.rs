@@ -846,6 +846,42 @@ mod tests {
         let _ = latency_ms;
     }
 
+    /// An upstream that streams bytes and never sends a line end: the probe reads at most 8 KiB of it and fails
+    /// at once, not after the (tunable) deadline.
+    #[tokio::test]
+    async fn probe_http_does_not_read_an_endless_first_line() {
+        use std::time::{Duration, Instant};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 256];
+            let _ = stream.read(&mut buf).await;
+            let chunk = [b'a'; 4096];
+            // 1 MiB with no newline, as fast as the probe takes it
+            for _ in 0..256 {
+                if stream.write_all(&chunk).await.is_err() {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        let started = Instant::now();
+        let (ok, _) = probe_http(&format!("127.0.0.1:{port}"), "/", Duration::from_secs(20)).await;
+        assert!(!ok, "garbage without a status line is a failed probe");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "it must stop after the bounded first line, not wait for the deadline: {:?}",
+            started.elapsed()
+        );
+    }
+
     /// An upstream that accepts the connection and never answers: the probe gives up after `timeoutMs`
     /// (issue #652), not after a fixed 5 seconds.
     #[tokio::test]
