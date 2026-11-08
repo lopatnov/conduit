@@ -65,6 +65,7 @@ mod redaction_tests {
         let cfg = AdminConfig {
             bind: Some("0.0.0.0:2019".to_string()),
             token: Some("super-secret-admin-token".to_string()),
+            ..Default::default()
         };
         let debug = format!("{cfg:?}");
         assert!(
@@ -83,6 +84,7 @@ mod redaction_tests {
         let cfg = AdminConfig {
             bind: None,
             token: None,
+            ..Default::default()
         };
         let debug = format!("{cfg:?}");
         assert!(

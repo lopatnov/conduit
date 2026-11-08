@@ -1280,6 +1280,69 @@ fn unrecognized_key_produces_typo_warning() {
     );
 }
 
+// Issue #681: a mistyped key outside a site used to be dropped without a word.
+
+#[test]
+fn a_mistyped_key_under_global_is_reported() {
+    let w = warns(
+        r#"{ "global": { "workerz": 2, "shutdownTimeoutSecs": 5 },
+             "sites": [{ "port": 8080 }] }"#,
+    );
+    assert_eq!(w, ["global.workerz is not a recognized configuration key and will be ignored — check for a typo."]);
+}
+
+#[test]
+fn a_mistyped_key_under_global_admin_is_reported() {
+    // `tokn` would leave the Admin API without a token
+    let w = warns(
+        r#"{ "global": { "admin": { "bind": "127.0.0.1:2019", "tokn": "secret" } },
+             "sites": [{ "port": 8080 }] }"#,
+    );
+    assert_eq!(w, ["global.admin.tokn is not a recognized configuration key and will be ignored — check for a typo."]);
+}
+
+#[test]
+fn a_mistyped_top_level_key_of_a_full_config_is_reported() {
+    // `globl` would drop every setting of `global`
+    let w = warns(r#"{ "globl": { "workers": 2 }, "sites": [{ "port": 8080 }] }"#);
+    assert_eq!(
+        w,
+        ["globl is not a recognized configuration key and will be ignored — check for a typo."]
+    );
+}
+
+#[test]
+fn the_schema_hint_is_not_reported_at_the_top_of_a_full_config() {
+    let w = warns(
+        r#"{ "$schema": "https://example.com/conduit.schema.json",
+             "global": { "workers": 2 }, "sites": [{ "port": 8080 }] }"#,
+    );
+    assert!(w.is_empty(), "{w:?}");
+}
+
+#[test]
+fn a_control_character_in_a_global_key_is_escaped() {
+    // the key holds a real line feed (JSON escape \n)
+    let w = warns(r#"{ "global": { "bad\nkey": 1 }, "sites": [{ "port": 8080 }] }"#);
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert!(
+        !w[0].contains('\n'),
+        "a raw line feed reached the warning: {}",
+        w[0]
+    );
+    assert!(w[0].contains("bad\\nkey"), "{}", w[0]);
+}
+
+#[test]
+fn every_documented_global_key_is_known() {
+    let w = warns(
+        r#"{ "global": { "workers": 2, "backlog": 1024, "shutdownTimeoutSecs": 5,
+                         "admin": { "bind": "127.0.0.1:2019", "token": "x" } },
+             "sites": [{ "port": 8080 }] }"#,
+    );
+    assert!(w.is_empty(), "{w:?}");
+}
+
 #[test]
 fn known_field_key_never_lands_in_extra() {
     // Well-known keys always deserialize into their named field today —

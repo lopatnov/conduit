@@ -101,14 +101,16 @@ fn reject_failed_full(file: &ConfigFile, text: &str, yaml: bool) -> Result<()> {
 /// Normalize all ConfigFile variants into a canonical AppConfig.
 pub fn normalize(file: ConfigFile) -> AppConfig {
     match file {
-        ConfigFile::Full(app) => app,
+        ConfigFile::Full(app) => *app,
         ConfigFile::Sites(sites) => AppConfig {
             global: None,
             sites,
+            ..Default::default()
         },
         ConfigFile::Single(site) => AppConfig {
             global: None,
             sites: vec![*site],
+            ..Default::default()
         },
     }
 }
@@ -269,8 +271,9 @@ mod tests {
                 ..Default::default()
             }),
             sites: vec![SiteConfig::default()],
+            ..Default::default()
         };
-        let out = normalize(ConfigFile::Full(app.clone()));
+        let out = normalize(ConfigFile::Full(Box::new(app.clone())));
         assert_eq!(out.sites.len(), 1);
         assert!(out.global.is_some());
     }

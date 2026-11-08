@@ -71,10 +71,12 @@ impl CrdConfigBuilder for ConduitSchema {
                 admin: Some(AdminConfig {
                     bind: Some(admin_bind.to_owned()),
                     token: None,
+                    ..Default::default()
                 }),
                 ..Default::default()
             }),
             sites,
+            ..Default::default()
         }
     }
 }

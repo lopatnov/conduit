@@ -127,7 +127,10 @@ error at sites[0].rateLimit.windowSecs: windowSecs must be greater than 0
 Validation errors name the path of the invalid field (a single-site config is reported as
 `sites[0]`), so the problem is easy to locate even in a large file. Keys Conduit does not
 recognise are reported as warnings (`… is not a recognized configuration key and will be
-ignored — check for a typo.`) and do not change the exit code.
+ignored — check for a typo.`) and do not change the exit code. This covers a key in a site
+(`sites[0].jwtAuht`), under `global` (`global.workerz`) and `global.admin` (`global.admin.tokn`), and
+at the top of a full configuration (`globl`); the value of such a key is ignored, so the default is
+in force.
 
 > A value of the wrong *type* (for example `windowSecs: "soon"`) is reported less precisely.
 > The command prints only `error loading config: Cannot parse config file: <file>`, without the
