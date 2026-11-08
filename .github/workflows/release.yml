@@ -605,6 +605,10 @@ jobs:
 
       - name: Scan the image (Trivy)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        env:
+          # The digest is an index; without this Trivy looks for a linux/amd64 child, which an arm64 build does not
+          # have ("no child with platform linux/amd64 in index"), so the arm64 legs failed the v2.2.0 release.
+          TRIVY_PLATFORM: linux/${{ matrix.arch }}
         with:
           image-ref: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           version: 'v0.71.0'
