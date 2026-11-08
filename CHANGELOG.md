@@ -7,6 +7,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`healthCheck.timeoutMs`** (issue #652): the timeout of an active probe, one deadline for the whole probe
+  (connect, send and the first line of the answer), default 5000, minimum 1 (`validate` refuses 0). The docs had
+  listed an option that did not exist; the probe used a fixed 5 seconds for each of the three steps, so an upstream
+  that hangs took up to 15 seconds to count as failed, and now takes `timeoutMs` at most (5 seconds by default).
+
+### Changed
+
+- **`conduit validate` warns about a mistyped key outside a site** (issue #681): under `global`
+  (`global.workerz`), under `global.admin` (`global.admin.tokn`, which would leave the Admin API without a token)
+  and at the top of a full configuration (`globl`). Until now only keys inside a site were reported and the rest
+  were dropped silently, with the default in force. The value is still ignored; it is a warning, not an error.
+  This also reports a leftover `global.providers` (removed in 2.1.0, issue #582).
+- **`conduit validate` warns that `phase` has no effect on a `wasm` middleware entry** (issue #660): the plugin's
+  `on_request` always runs in the request phase and its `on_response` in the response phase.
+
 ---
 
 ## [2.2.1] — 2026-11-08
