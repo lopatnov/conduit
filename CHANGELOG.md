@@ -15,8 +15,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   configuration it already was); a `~` key is an error. Kept as before: `yes`/`no`/`on`/`off` are strings, not
   booleans, `<<` is not expanded, and an alias bomb or extreme nesting is refused quickly (`serde_yaml` did too).
   New leniency: in YAML a quoted number such as `port: "80"`, and `1_000`, are accepted where a number is expected
-  (JSON still requires a number). Error messages read `error: line N column M: ...` after the path. `conduit fmt`
-  and `conduit init` write YAML with the new serializer, so the layout of their output can differ from before.
+  (JSON still requires a number). Error messages are worded by the new parser, still with the path and the line and
+  column, and never quote the source text. `conduit fmt` and `conduit init` write YAML with the new serializer, so
+  the layout of their output can differ from before.
   `unsafe-libyaml` remains in the dependency tree through `pingora-core` until Pingora's replacement
   (cloudflare/pingora#1117) is released; see `SECURITY.md`.
 
