@@ -51,8 +51,12 @@ fn yaml_options() -> serde_saphyr::Options {
 pub fn from_yaml_str<T: DeserializeOwned>(text: &str) -> Result<T> {
     let text = interpolate(text);
 
+    // The probe only looks for `version`: a key repeated elsewhere must not hide the upgrade message of a newer
+    // version (the full parse below still rejects it), as serde_yaml's probe, which skipped unknown keys, did.
+    let mut probe_options = yaml_options();
+    probe_options.duplicate_keys = serde_saphyr::DuplicateKeyPolicy::LastWins;
     let probe: VersionProbe =
-        serde_saphyr::from_str_with_options(&text, yaml_options()).unwrap_or_default();
+        serde_saphyr::from_str_with_options(&text, probe_options).unwrap_or_default();
     check_version(probe)?;
 
     // serde-saphyr hands its deserializer to a closure that must return its own error type, so the path that
@@ -64,7 +68,14 @@ pub fn from_yaml_str<T: DeserializeOwned>(text: &str) -> Result<T> {
             e.into_inner()
         })
     })
-    .map_err(|e| anyhow::anyhow!("Config parse error at '{path}': {e}"))
+    .map_err(|e| {
+        // An error found outside the value (a second document, junk after the first) has no path to show.
+        if path.is_empty() {
+            anyhow::anyhow!("Config parse error: {e}")
+        } else {
+            anyhow::anyhow!("Config parse error at '{path}': {e}")
+        }
+    })
 }
 
 /// Read `path` from disk and parse it as `T`, performing env interpolation first.
@@ -226,6 +237,18 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("multiple YAML documents"), "{err}");
+        // found outside the value, so there is no path to name (not `at ''`)
+        assert!(err.starts_with("Config parse error: "), "{err}");
+    }
+
+    #[test]
+    fn yaml_a_newer_version_is_reported_even_with_a_repeated_key() {
+        let err = from_yaml_str::<Toy>("version: 999\nport: 1\nport: 2\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("999") && err.contains("upgrade"), "{err}");
+        // and the repeated key alone is still an error
+        assert!(from_yaml_str::<Toy>("port: 1\nport: 2\n").is_err());
     }
 
     #[test]
