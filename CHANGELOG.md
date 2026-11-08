@@ -23,6 +23,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   This also reports a leftover `global.providers` (removed in 2.1.0, issue #582).
 - **`conduit validate` warns that `phase` has no effect on a `wasm` middleware entry** (issue #660): the plugin's
   `on_request` always runs in the request phase and its `on_response` in the response phase.
+- **`conduit validate` reports a mistyped key in any nested object** (issue #682), such as `sites[0].cors.origns`
+  or `sites[0].securityHeaders.frameOptions`, by comparing the document with what was read. Until now such a key was
+  dropped without a word and the default stayed in force (only `rateLimit` refused unknown keys). It is a warning,
+  and the top-level `version` and `$schema` are known keys.
+- **Environment variables in a YAML file arrive unchanged** (issue #680). `$VAR` was replaced by its value written as
+  a JSON string, which is right inside `"..."` and wrong anywhere else: a backslash or a quote in a password came
+  out doubled or escaped in an unquoted or `'...'` value, and ` #` or `: ` in a value truncated or broke it. The
+  value is now written for the place where the reference stands (see `docs/configuration.md`); a value that cannot be
+  written there without changing it is a load error that names the variable. This can turn a value that was silently
+  corrupted into an error, and a reference inside a YAML comment is no longer replaced. JSON files are unchanged.
+
+### Fixed
+
+- **Six examples and the README used option names that were silently ignored**, found by the new key check: the
+  `security-hardened`, `tls-h2`, `multi-site` and `api-gateway` examples set `hsts`, `contentSecurityPolicy` and
+  `frameOptions` (the options are `hstsMaxAgeSecs`, `hstsIncludeSubDomains`, `hstsPreload`, `csp`, `xFrameOptions`),
+  `cors.headers` is `allowedHeaders`, `hotReload.watch` does not exist, and the README's load-balancing example put
+  `maxConnectionsPerUpstream` next to `healthCheck` instead of inside it, so its circuit breaker was off.
+- **`conduit fmt` no longer writes secrets from the environment** (issue #679). It wrote the configuration with each
+  `$VAR` replaced by its value, into the file with `--write`. It now refuses a file that refers to a variable that is
+  set, naming the variable and not the value.
+- **A diagnostic re-parse no longer expands a `$NAME` inside an environment value** (issue #586), and the rejected value
+  of an enum field is not echoed in the error message.
+- A health probe reads at most 8 KiB of the status line (a hostile upstream could stream bytes for the whole
+  `timeoutMs`).
+
+### Tests
+
+- A guard (`every_path_like_field_of_the_schema_is_refused_or_known_to_be_a_url_path`, issue #587) walks the JSON
+  schema and fails when a field named like a path (file, dir, cert, key, ca, storage, ...) is neither refused in a
+  `ConduitSite` nor listed as a URL path.
 
 ---
 
