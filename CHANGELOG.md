@@ -12,8 +12,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **YAML configuration is read with `serde-saphyr`** (issue #676), a maintained parser in safe Rust, instead of the
   archived `serde_yaml` (RUSTSEC-2024-0449, `unsafe-libyaml`). A file that worked keeps its meaning; what differs,
   all covered by tests: a repeated key is an error also where `serde_yaml` let the last one win (for a typed
-  configuration it already was); a `~` key is an error; aliases expand within a limit, so an alias bomb is refused
-  quickly. Kept as before on purpose: `yes`/`no`/`on`/`off` are strings, not booleans, and `<<` is not expanded.
+  configuration it already was); a `~` key is an error. Kept as before: `yes`/`no`/`on`/`off` are strings, not
+  booleans, `<<` is not expanded, and an alias bomb or extreme nesting is refused quickly (`serde_yaml` did too).
   New leniency: in YAML a quoted number such as `port: "80"`, and `1_000`, are accepted where a number is expected
   (JSON still requires a number). Error messages read `error: line N column M: ...` after the path. `conduit fmt`
   and `conduit init` write YAML with the new serializer, so the layout of their output can differ from before.
