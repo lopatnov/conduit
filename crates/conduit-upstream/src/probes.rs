@@ -83,6 +83,7 @@ where
             hc.interval_secs.unwrap_or(10).max(1),
             hc.healthy_threshold.unwrap_or(1),
             hc.unhealthy_threshold.unwrap_or(3),
+            probe_timeout(hc),
         );
     }
 }
@@ -166,6 +167,15 @@ async fn warmup_url(url: String, path: String, n: usize) {
     tracing::info!(url, n, "connection warmup complete");
 }
 
+/// The probe timeout of a route: `healthCheck.timeoutMs`, 5 seconds when it is not set (a value of 0, which
+/// `validate` refuses, is read as 1 ms rather than as "no timeout").
+pub(crate) fn probe_timeout(hc: &UpstreamHealthCheck) -> Duration {
+    Duration::from_millis(hc.timeout_ms.unwrap_or(DEFAULT_PROBE_TIMEOUT_MS).max(1))
+}
+
+/// The probe timeout when `healthCheck.timeoutMs` is not set.
+pub(crate) const DEFAULT_PROBE_TIMEOUT_MS: u64 = 5000;
+
 /// Spawn a single background health-check task for a set of upstream URLs.
 fn spawn_health_task(
     registry: Arc<UpstreamRegistry>,
@@ -174,6 +184,7 @@ fn spawn_health_task(
     interval_secs: u64,
     healthy_threshold: u32,
     unhealthy_threshold: u32,
+    timeout: Duration,
 ) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
@@ -184,7 +195,7 @@ fn spawn_health_task(
                 let Some(host_port) = targets::url_to_host_port(url) else {
                     continue;
                 };
-                let (ok, latency_ms) = probe_http(&host_port, &path).await;
+                let (ok, latency_ms) = probe_http(&host_port, &path, timeout).await;
                 let mut entry = registry.statuses.entry(url.clone()).or_default();
                 let was_healthy = entry.healthy;
                 apply_probe_result(
@@ -219,40 +230,38 @@ fn spawn_health_task(
 /// responds with any HTTP status below 500.  Connection or I/O errors return
 /// `(false, 0)`.
 ///
-/// A 5-second timeout is applied to both the TCP connect and the read.
-pub(crate) async fn probe_http(host_port: &str, path: &str) -> (bool, u64) {
+/// `timeout` is one deadline for the whole probe: the TCP connect, the request and the first line of the response
+/// together (issue #652; it used to be 5 seconds for each of the three steps).
+pub(crate) async fn probe_http(host_port: &str, path: &str, timeout: Duration) -> (bool, u64) {
     let start = tokio::time::Instant::now();
-    let timeout = Duration::from_secs(5);
+    match tokio::time::timeout(timeout, probe_status(host_port, path)).await {
+        Ok(Some(status)) => {
+            let latency_ms = start.elapsed().as_millis() as u64;
+            (status > 0 && status < 500, latency_ms)
+        }
+        _ => (false, 0),
+    }
+}
 
-    let stream =
-        match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(host_port)).await {
-            Ok(Ok(s)) => s,
-            _ => return (false, 0),
-        };
+/// The status code of the answer to a `HEAD` request, `None` when the connection or the exchange fails.
+async fn probe_status(host_port: &str, path: &str) -> Option<u16> {
+    let stream = tokio::net::TcpStream::connect(host_port).await.ok()?;
 
     let req = format!("HEAD {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n");
-
     let mut reader = BufReader::new(stream);
-
-    let write_result =
-        tokio::time::timeout(timeout, reader.get_mut().write_all(req.as_bytes())).await;
-    if write_result.is_err() || write_result.unwrap().is_err() {
-        return (false, 0);
-    }
+    reader.get_mut().write_all(req.as_bytes()).await.ok()?;
 
     let mut line = String::new();
-    let read_result = tokio::time::timeout(timeout, reader.read_line(&mut line)).await;
-    if read_result.is_err() || line.is_empty() {
-        return (false, 0);
+    reader.read_line(&mut line).await.ok()?;
+    if line.is_empty() {
+        return None;
     }
 
     // Status line: "HTTP/1.1 200 OK" — parse the code.
-    let status: u16 = line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    let latency_ms = start.elapsed().as_millis() as u64;
-    (status > 0 && status < 500, latency_ms)
+    Some(
+        line.split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
+    )
 }

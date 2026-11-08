@@ -1868,8 +1868,9 @@ So there is always a window in which some requests still go to the dead upstream
 it is about (`unhealthyThreshold` − 1) to `unhealthyThreshold` times `intervalSecs` (it depends on
 where the failure falls between two probe ticks), plus the time the probes take. The measurement
 above used an upstream that refuses connections, which fails at once; one that hangs takes up to
-5 seconds per phase (connect, write, read): the probe timeout is fixed, `healthCheck` has no
-`timeoutMs` (#652). Passive ejection closes it after
+`timeoutMs` (default 5000, one deadline for the whole probe) before the probe counts as failed, so
+the window grows by that much per failed probe: lower it for upstreams that answer in a few
+milliseconds. Passive ejection closes it after
 `consecutive5xx` failed requests, as long as the ejection cap below allows another ejection,
 and it reacts only to real requests (an upstream that gets none is never examined). To lose
 fewer requests during that window add [`retry`](#retry), which repeats a failed request on
@@ -1968,6 +1969,7 @@ healthCheck:
 | `intervalSecs`              | number   | `10`          | Seconds between probes of each upstream (minimum 1)                                                                                                  |
 | `unhealthyThreshold`        | number   | `3`           | Consecutive failed probes before the upstream is left out                                                                                            |
 | `healthyThreshold`          | number   | `1`           | Consecutive passed probes before it is brought back                                                                                                  |
+| `timeoutMs`                 | number   | `5000`        | Probe timeout in milliseconds (minimum 1): **one deadline for the whole probe**, connecting, sending the request and receiving the first line of the answer together. A probe that does not finish in time fails like one that is refused |
 | `unhealthyStatus`           | number[] | none          | **Real responses, not probes** (passive): a response from the upstream with one of these status codes counts as a failure of that upstream; enough of them in a row eject it when [`outlierDetection`](#outlier-detection) is configured. Example: `[429, 500, 502, 503, 504]` |
 | `unhealthyLatencyMs`        | number   | —             | **Real responses, not probes** (passive): a response slower than this (ms) counts as a failure of that upstream, even if its status is 2xx; ejects it only with [`outlierDetection`](#outlier-detection) |
 | `slowStartSecs`             | number   | `0`           | [Traffic ramp-up period](#slow-start) after recovery. Ignored for `ipHash`/`consistentHash` and sticky routes.                     |
