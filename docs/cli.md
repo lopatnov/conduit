@@ -164,6 +164,11 @@ conduit fmt --write -c conduit.yaml
 `--write` rewrites the config file in place. Useful for normalizing key order
 and whitespace after manual edits.
 
+`fmt` writes the configuration as it was loaded, which is with every `$VAR` replaced by its value, so it
+**refuses** a file that refers to an environment variable that is set (the message names the variable, never
+the value): the secrets would be printed, or with `--write` stored in the file in place of the references. A
+reference to a variable that is not set is left as written.
+
 ---
 
 ### init
