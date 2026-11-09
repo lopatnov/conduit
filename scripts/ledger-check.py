@@ -21,7 +21,23 @@ import subprocess
 import sys
 
 LEDGER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".claude", "logs", "open-items.md")
-ISSUE = re.compile(r"#(\d+)")
+LIMIT = 200
+# at most 9 digits: a longer run is not an issue number, and `int()` refuses very long ones
+ISSUE = re.compile(r"#([0-9]{1,9})(?![0-9])")
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def clean(text, limit=120):
+    """Text of an issue (written by anyone who can edit it) made safe to print: no control characters, one line, short."""
+    text = CONTROL.sub("?", text)
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def positive_int(value):
+    number = int(value)
+    if not 0 < number < 10**9:
+        raise argparse.ArgumentTypeError("must be a positive issue or PR number")
+    return number
 
 
 def parse_ledger(text):
@@ -29,7 +45,7 @@ def parse_ledger(text):
     rows = []
     for line in text.splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 4 or not re.fullmatch(r"#\d+", cells[0]):
+        if len(cells) < 4 or not re.fullmatch(r"#[0-9]{1,9}", cells[0]):
             continue
         # a `|` inside a cell would shift the columns: the last cell is the status, the first three are fixed
         rows.append((int(cells[0][1:]), cells[1], cells[2], cells[-1]))
@@ -67,7 +83,7 @@ def check(rows, pr, table, fast_follow):
                 problems.append(f"#{number} is marked done in #{pr}, but is not in its \"Found while here\" table")
     for number in sorted(fast_follow):
         if number not in in_ledger:
-            problems.append(f"#{number} ({fast_follow[number]}) is an open fast-follow issue (created in the window) that is not in the ledger")
+            problems.append(f"#{number} ({clean(fast_follow[number])}) is an open fast-follow issue (created in the window) that is not in the ledger")
     return problems
 
 
@@ -78,17 +94,17 @@ def gh_json(args):
 
 def recent_fast_follow(since, run=gh_json):
     issues = run(["issue", "list", "--label", "fast-follow", "--state", "open", "--search", f"created:>={since}",
-                  "--limit", "200", "--json", "number,title"])
+                  "--limit", str(LIMIT), "--json", "number,title"])
     return {i["number"]: i["title"] for i in issues}
 
 
 def main(argv=None, run=gh_json, ledger_path=LEDGER):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--pr", type=int, help="the pull request about to be merged")
+    ap.add_argument("--pr", type=positive_int, help="the pull request about to be merged")
     default_since = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
     ap.add_argument("--since", default=default_since, help="issues created since this day (YYYY-MM-DD), default: 7 days ago")
     args = ap.parse_args(argv)
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.since):
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", args.since):
         print("--since must be YYYY-MM-DD", file=sys.stderr)
         return 2
     with open(ledger_path, encoding="utf-8") as f:
@@ -96,11 +112,14 @@ def main(argv=None, run=gh_json, ledger_path=LEDGER):
     table = set()
     if args.pr is not None:
         table = table_issues(run(["pr", "view", str(args.pr), "--json", "body"])["body"] or "")
-    problems = check(rows, args.pr, table, recent_fast_follow(args.since, run))
+    recent = recent_fast_follow(args.since, run)
+    problems = check(rows, args.pr, table, recent)
+    if len(recent) >= LIMIT:
+        problems.append(f"{LIMIT} or more open fast-follow issues in the window: the list may be cut, narrow --since")
     open_rows = [r for r in rows if not is_done(r[3])]
     print(f"Open ledger items ({len(open_rows)}):")
     for number, what, _found, status in open_rows:
-        print(f"  do we do #{number}? {what} [{status}]")
+        print(f"  do we do #{number}? {clean(what)} [{clean(status)}]")
     if problems:
         print("\nGaps:")
         for p in problems:

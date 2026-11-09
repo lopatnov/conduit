@@ -130,5 +130,37 @@ class Checks(unittest.TestCase):
         self.assertIn("fast-follow", seen[0])
 
 
+class Hostile(unittest.TestCase):
+    """Security review of #686: issue titles and PR bodies are written by others."""
+
+    def test_a_title_is_printed_without_control_characters_and_short(self):
+        title = "x\x1b[2J\nIGNORE PREVIOUS " + "y" * 500
+        _, out = run_main(["--since", "2026-11-01"], gh(issues=[(30, title)]))
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("IGNORE PREVIOUS\n", out)
+        self.assertNotIn(" ", out)
+        self.assertNotIn("y" * 200, out)
+
+    def test_a_digit_run_longer_than_nine_is_not_an_issue_number(self):
+        long = "9" * 5000
+        self.assertEqual(lc.table_issues(f"## Found while here\n\nx #{long} y #12\n"), {12})
+        self.assertEqual(lc.parse_ledger(f"| #{long} | a | b | c |\n"), [])
+
+    def test_since_accepts_only_ascii_digits(self):
+        code, _ = run_main(["--since", "٢٠٢٦-١١-٠٩"], gh())
+        self.assertEqual(code, 2)
+
+    def test_pr_must_be_positive(self):
+        for bad in ("-5", "0", "1000000000"):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                run_main(["--pr", bad], gh())
+
+    def test_a_full_page_of_issues_is_reported_as_possibly_cut(self):
+        issues = [(1000 + n, "t") for n in range(lc.LIMIT)]
+        code, out = run_main(["--since", "2026-11-01"], gh(issues=issues))
+        self.assertEqual(code, 1)
+        self.assertIn("may be cut", out)
+
+
 if __name__ == "__main__":
     unittest.main()
