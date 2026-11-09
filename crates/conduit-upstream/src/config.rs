@@ -97,6 +97,12 @@ pub struct UpstreamHealthCheck {
     pub unhealthy_threshold: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub healthy_threshold: Option<u32>,
+    /// Probe timeout in milliseconds: one deadline for the whole probe (connect, send, and the first
+    /// line of the response). Default 5000 (issue #652). Before this option the probe waited up to
+    /// 5 seconds for each of those three steps, so an upstream that hangs could take 15 seconds.
+    /// Must be at least 1.
+    #[serde(rename = "timeoutMs", skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
     /// Slow-start ramp-up window in seconds.  After an upstream recovers from
     /// an unhealthy state, its participation probability in each pick rises
     /// linearly from 0 to 100% over this window (issue #157).  Set to 0

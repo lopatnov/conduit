@@ -41,7 +41,7 @@ fn no_redirect_client() -> reqwest::blocking::Client {
 /// `wait_ready()` on the TestServer only waits for the TLS port and the admin
 /// API; the HTTP-redirect listener is spawned separately and may bind slightly
 /// later. This probe avoids the fixed 200 ms sleep that was prone to CI races.
-fn wait_for_redirect_port(http_port: u16) {
+fn wait_for_redirect_port(server: &common::TestServer, http_port: u16) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         match no_redirect_client()
@@ -52,7 +52,10 @@ fn wait_for_redirect_port(http_port: u16) {
             Err(_) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
-            Err(e) => panic!("redirect listener on port {http_port} did not become ready: {e}"),
+            Err(e) => panic!(
+                "redirect listener on port {http_port} did not become ready: {e}\n--- server stderr (tail) ---\n{}",
+                server.stderr_tail()
+            ),
         }
     }
 }
@@ -84,7 +87,7 @@ fn http_redirect_returns_308() {
         }),
     );
 
-    wait_for_redirect_port(http_port);
+    wait_for_redirect_port(&_srv, http_port);
 
     let resp = no_redirect_client()
         .get(format!("http://127.0.0.1:{http_port}/hello"))
@@ -123,7 +126,7 @@ fn http_redirect_location_is_https() {
         }),
     );
 
-    wait_for_redirect_port(http_port);
+    wait_for_redirect_port(&_srv, http_port);
 
     let resp = no_redirect_client()
         .get(format!("http://127.0.0.1:{http_port}/some/path?q=1"))
@@ -171,7 +174,7 @@ fn http_redirect_preserves_query_string() {
         }),
     );
 
-    wait_for_redirect_port(http_port);
+    wait_for_redirect_port(&_srv, http_port);
 
     let resp = no_redirect_client()
         .get(format!("http://127.0.0.1:{http_port}/page?foo=bar&baz=1"))
@@ -221,7 +224,7 @@ fn acme_challenge_path_returns_404_not_redirect() {
         }),
     );
 
-    wait_for_redirect_port(http_port);
+    wait_for_redirect_port(&_srv, http_port);
 
     let resp = no_redirect_client()
         .get(format!(
@@ -265,7 +268,7 @@ fn http_redirect_answers_421_for_hosts_no_site_serves() {
         }),
     );
 
-    wait_for_redirect_port(http_port);
+    wait_for_redirect_port(&_srv, http_port);
     let client = no_redirect_client();
     let get = |host: &str| {
         client

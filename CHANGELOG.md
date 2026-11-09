@@ -7,6 +7,63 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`healthCheck.timeoutMs`** (issue #652): the timeout of an active probe, one deadline for the whole probe
+  (connect, send and the first line of the answer), default 5000, minimum 1 (`validate` refuses 0). The docs had
+  listed an option that did not exist; the probe used a fixed 5 seconds for each of the three steps, so an upstream
+  that hangs took up to 15 seconds to count as failed, and now takes `timeoutMs` at most (5 seconds by default).
+
+### Changed
+
+- **`conduit validate` warns about a mistyped key outside a site** (issue #681): under `global`
+  (`global.workerz`), under `global.admin` (`global.admin.tokn`, which would leave the Admin API without a token)
+  and at the top of a full configuration (`globl`). Until now only keys inside a site were reported and the rest
+  were dropped silently, with the default in force. The value is still ignored; it is a warning, not an error.
+  This also reports a leftover `global.providers` (removed in 2.1.0, issue #582).
+- **`conduit validate` warns that `phase` has no effect on a `wasm` middleware entry** (issue #660): the plugin's
+  `on_request` always runs in the request phase and its `on_response` in the response phase.
+- **`conduit validate` reports a mistyped key in any nested object** (issue #682), such as `sites[0].cors.origns`
+  or `sites[0].securityHeaders.frameOptions`, by comparing the document with what was read. Until now such a key was
+  dropped without a word and the default stayed in force (only `rateLimit` refused unknown keys). It is a warning,
+  and the top-level `version` and `$schema` are known keys.
+- **Environment variables in a YAML file arrive unchanged** (issue #680). `$VAR` was replaced by its value written as
+  a JSON string, which is right inside `"..."` and wrong anywhere else: a backslash or a quote in a password came
+  out doubled or escaped in an unquoted or `'...'` value, and ` #` or `: ` in a value truncated or broke it. The
+  value is now written for the place where the reference stands (see `docs/configuration.md`); a value that cannot be
+  written there without changing it is a load error that names the variable. This can turn a value that was silently
+  corrupted into an error, and a reference inside a YAML comment is no longer replaced. JSON files are unchanged.
+
+### Fixed
+
+- **Six examples and the README used option names that were silently ignored**, found by the new key check: the
+  `security-hardened`, `tls-h2`, `multi-site` and `api-gateway` examples set `hsts`, `contentSecurityPolicy` and
+  `frameOptions` (the options are `hstsMaxAgeSecs`, `hstsIncludeSubDomains`, `hstsPreload`, `csp`, `xFrameOptions`),
+  `cors.headers` is `allowedHeaders`, `hotReload.watch` does not exist, and the README's load-balancing example put
+  `maxConnectionsPerUpstream` next to `healthCheck` instead of inside it, so its circuit breaker was off.
+- **`conduit fmt` no longer writes secrets from the environment** (issue #679). It wrote the configuration with each
+  `$VAR` replaced by its value, into the file with `--write`. It now refuses a file that refers to a variable that is
+  set, naming the variable and not the value.
+- **A diagnostic re-parse no longer expands a `$NAME` inside an environment value** (issue #586), and the rejected value
+  of an enum field is not echoed in the error message.
+- A health probe reads at most 8 KiB of the status line (a hostile upstream could stream bytes for the whole
+  `timeoutMs`).
+
+### Internal
+
+- `ConfigFile::Full` of the (internal, decision #32) crate `lopatnov-conduit-config` now holds a `Box<AppConfig>`:
+  `AppConfig` grew the maps of unknown keys and the enum became large (clippy `large_enum_variant`). Code that
+  builds `ConfigFile::Full(app)` by hand needs `Box::new(app)`; `normalize()` and the parse functions are unchanged.
+
+### Tests
+
+- The integration-test harness keeps the spawned server's stderr and prints its tail when a test cannot start the
+  server or its redirect listener, and retries once, on the same ports, when the server could not bind them (issue
+  #677: a listener that failed to bind under load was invisible).
+- A guard (`every_path_like_field_of_the_schema_is_refused_or_known_to_be_a_url_path`, issue #587) walks the JSON
+  schema and fails when a field named like a path (file, dir, cert, key, ca, storage, ...) is neither refused in a
+  `ConduitSite` nor listed as a URL path.
+
 ---
 
 ## [2.2.1] — 2026-11-08

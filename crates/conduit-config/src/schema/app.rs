@@ -1,5 +1,6 @@
 //! Top-level and global config: `ConfigFile`, `AppConfig`, `GlobalConfig`, `AdminConfig`.
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -9,11 +10,12 @@ use super::{Redacted, SiteConfig};
 
 /// Serde tries variants top-to-bottom. Order is critical — do not reorder.
 /// Single is a catch-all because all SiteConfig fields are Option.
-/// SiteConfig is large (~1.7 KiB), so Single is boxed to keep the enum small.
+/// SiteConfig is large (~1.7 KiB), so Single is boxed to keep the enum small; Full is boxed too since
+/// `AppConfig` grew the `extra` maps (issue #681).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ConfigFile {
-    Full(AppConfig),         // { "global": {...}, "sites": [...] }
+    Full(Box<AppConfig>),    // { "global": {...}, "sites": [...] }
     Sites(Vec<SiteConfig>),  // [{...}, {...}]
     Single(Box<SiteConfig>), // { "port": 8080, ... }
 }
@@ -24,6 +26,15 @@ pub struct AppConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global: Option<GlobalConfig>,
     pub sites: Vec<SiteConfig>,
+    /// Keys at the top of a full configuration that no field above names: a typo (`globl:` would drop every
+    /// setting of `global`, the admin token included). Reported by `validate::feature_warnings()` (issue #681).
+    #[serde(flatten)]
+    pub extra: IndexMap<String, serde_json::Value>,
+    /// Paths of keys the document has and the structures above do not read (`sites[0].cors.origns`), found by
+    /// `parse::from_str` / `parse::from_yaml` and reported by `validate::feature_warnings()` (issue #682). Not
+    /// part of the configuration: never read from or written to a file.
+    #[serde(skip)]
+    pub ignored_keys: Vec<String>,
 }
 
 // ── Global config ──────────────────────────────────────────────────────────
@@ -51,6 +62,10 @@ pub struct GlobalConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub otlp: Option<OtlpConfig>,
+    /// Keys under `global` that no field names (`workerz`, `shutdownTimeoutSec`): ignored, and reported by
+    /// `validate::feature_warnings()` (issue #681).
+    #[serde(flatten)]
+    pub extra: IndexMap<String, serde_json::Value>,
 }
 
 /// OpenTelemetry OTLP exporter configuration.
@@ -82,6 +97,10 @@ pub struct AdminConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Keys under `global.admin` that no field names (`tokn`: the Admin API would run without a token): ignored,
+    /// and reported by `validate::feature_warnings()` (issue #681).
+    #[serde(flatten)]
+    pub extra: IndexMap<String, serde_json::Value>,
 }
 
 impl fmt::Debug for AdminConfig {

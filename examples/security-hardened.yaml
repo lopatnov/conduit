@@ -38,9 +38,11 @@ sites:
 
     # ── Security headers ──────────────────────────────────────────────────────
     securityHeaders:
-      hsts: "max-age=63072000; includeSubDomains; preload"
-      contentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
-      frameOptions: DENY
+      hstsMaxAgeSecs: 63072000
+      hstsIncludeSubDomains: true
+      hstsPreload: true
+      csp: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+      xFrameOptions: DENY
       referrerPolicy: "strict-origin-when-cross-origin"
 
     # ── CORS ──────────────────────────────────────────────────────────────────
@@ -49,7 +51,7 @@ sites:
       origins: ["https://app.example.com", "https://admin.example.com"]
       credentials: true
       methods: [GET, POST, PUT, DELETE, OPTIONS]
-      headers: [Authorization, Content-Type, X-Request-ID]
+      allowedHeaders: [Authorization, Content-Type, X-Request-ID]
 
     # ── IP filter ─────────────────────────────────────────────────────────────
     # Allow only internal and office networks; deny everything else.

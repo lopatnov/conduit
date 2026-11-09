@@ -109,6 +109,18 @@ pub fn validate_route_config(
             );
         }
     }
+    // A probe timeout of 0 would fail every probe (it is read as 1 ms), taking the upstream out for good (#652).
+    if cfg
+        .health_check
+        .as_ref()
+        .and_then(|h| h.timeout_ms)
+        .is_some_and(|ms| ms == 0)
+    {
+        errors.push(ValidationError::new(
+            format!("{prefix}.healthCheck.timeoutMs"),
+            "timeoutMs must be at least 1 (milliseconds)",
+        ));
+    }
     warn_slow_start_ignored(cfg, prefix);
     warn_group_strategy_cannot_see_load(cfg, prefix);
     if let Some(cache) = &cfg.cache {
@@ -342,6 +354,30 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    /// Issue #652: `healthCheck.timeoutMs` of 0 is an error naming the field; a positive value and no value pass.
+    #[test]
+    fn a_zero_probe_timeout_is_refused() {
+        let with = |timeout_ms: Option<u64>| ProxyRouteConfig {
+            targets: vec![ProxyTarget::Simple("http://a:1".to_owned())],
+            health_check: Some(UpstreamHealthCheck {
+                timeout_ms,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let errors_of = |cfg: &ProxyRouteConfig| {
+            let mut errors = Vec::new();
+            validate_route_config(cfg, "sites[0].proxy", &mut errors);
+            errors
+        };
+        let errors = errors_of(&with(Some(0)));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "sites[0].proxy.healthCheck.timeoutMs");
+        assert!(errors_of(&with(Some(1))).is_empty());
+        assert!(errors_of(&with(Some(2500))).is_empty());
+        assert!(errors_of(&with(None)).is_empty());
     }
 
     fn grouped_route(group_strategy: Option<LoadBalanceStrategy>) -> ProxyRouteConfig {

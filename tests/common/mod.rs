@@ -8,7 +8,7 @@
 
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 /// A running conduit server process managed for a test.
@@ -18,6 +18,8 @@ pub struct TestServer {
     pub admin_port: u16,
     /// Path to the config file — used by `rewrite_config` + `reload`.
     pub cfg_path: PathBuf,
+    /// Where the server's stderr goes (a panic of one of its services, a failed bind): shown when a test fails.
+    log_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -39,14 +41,25 @@ impl TestServer {
     }
 
     pub fn start_with_config(port: u16, admin_port: u16, config: serde_json::Value) -> Self {
+        Self::start_attempt(port, admin_port, config, 1)
+    }
+
+    /// One start. The ports come from the caller (they are inside its config), so when the server cannot bind one of
+    /// them, which happens when a port that was free a moment ago was taken in between, or a previous server is
+    /// still closing it, the only thing to do is to try the same ports once more after a short wait (issue #677).
+    /// Any other failure panics at once with the server's own stderr, so that the next flake explains itself.
+    fn start_attempt(port: u16, admin_port: u16, config: serde_json::Value, attempt: u32) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let cfg_path = dir.path().join("conduit.json");
         std::fs::write(&cfg_path, config.to_string()).expect("write config");
+        let log_path = dir.path().join("stderr.log");
+        let log = std::fs::File::create(&log_path).expect("stderr log");
 
         let binary = env!("CARGO_BIN_EXE_conduit");
         let child = Command::new(binary)
             .arg("--config")
             .arg(&cfg_path)
+            .stderr(Stdio::from(log))
             .spawn()
             .expect("spawn conduit");
 
@@ -55,13 +68,43 @@ impl TestServer {
             port,
             admin_port,
             cfg_path: cfg_path.clone(),
+            log_path,
             _dir: dir,
         };
-        server.wait_ready(requires_mtls(&config), requires_raw_tcp(&config, port));
-        server
+        match server.wait_ready(requires_mtls(&config), requires_raw_tcp(&config, port)) {
+            Ok(()) => server,
+            Err(why) => {
+                let log = server.stderr_tail();
+                let bind_failure = [
+                    "Failed to build listeners",
+                    "Address already in use",
+                    "os error 10048",
+                    "os error 10013",
+                ]
+                .iter()
+                .any(|marker| log.contains(marker));
+                if bind_failure && attempt == 1 {
+                    drop(server);
+                    std::thread::sleep(Duration::from_millis(500));
+                    return Self::start_attempt(port, admin_port, config, attempt + 1);
+                }
+                panic!("{why}\n--- server stderr (tail) ---\n{log}");
+            }
+        }
     }
 
-    /// Block until both the proxy and admin API respond or panic after timeout.
+    /// The last part of what the server wrote to stderr: the panic of one of its services, a failed bind.
+    pub fn stderr_tail(&self) -> String {
+        let text = std::fs::read_to_string(&self.log_path).unwrap_or_default();
+        let start = text.len().saturating_sub(3000);
+        let start = (start..=text.len())
+            .find(|i| text.is_char_boundary(*i))
+            .unwrap_or(text.len());
+        text[start..].to_owned()
+    }
+
+    /// Block until both the proxy and admin API respond; `Err` (with the reason) when the server exits or the
+    /// deadline passes.
     ///
     /// Tries both `http://` and `https://` (with cert validation disabled) on
     /// the proxy port so TLS and non-TLS sites are handled transparently.
@@ -81,7 +124,7 @@ impl TestServer {
     /// Also polls `child.try_wait()` on every iteration so that a server that
     /// exits prematurely (e.g. due to a port-bind failure) is detected
     /// immediately rather than after the full 15-second deadline.
-    fn wait_ready(&mut self, mtls_required: bool, raw_tcp: bool) {
+    fn wait_ready(&mut self, mtls_required: bool, raw_tcp: bool) -> Result<(), String> {
         let health_http = format!("http://127.0.0.1:{}/__health__", self.port);
         let health_https = format!("https://127.0.0.1:{}/__health__", self.port);
         let admin_url = format!("http://127.0.0.1:{}/status", self.admin_port);
@@ -100,10 +143,11 @@ impl TestServer {
             // deadline so we get a clear message rather than a timeout or a
             // misleading "Connection refused" in the test body.
             match self.child.try_wait() {
-                Ok(Some(status)) => panic!(
-                    "conduit server exited prematurely with {status} \
-                     (proxy_ok={proxy_ok}, admin_ok={admin_ok})"
-                ),
+                Ok(Some(status)) => {
+                    return Err(format!(
+                        "conduit server exited prematurely with {status} (proxy_ok={proxy_ok}, admin_ok={admin_ok})"
+                    ))
+                }
                 Ok(None) => {} // still running — continue polling
                 Err(e) => panic!("could not check server liveness: {e}"),
             }
@@ -124,12 +168,12 @@ impl TestServer {
                 admin_ok = true;
             }
             if proxy_ok && admin_ok {
-                return;
+                return Ok(());
             }
             if std::time::Instant::now() >= deadline {
-                panic!(
+                return Err(format!(
                     "server did not become ready within 30 seconds (proxy={proxy_ok}, admin={admin_ok})"
-                );
+                ));
             }
             std::thread::sleep(Duration::from_millis(100));
         }

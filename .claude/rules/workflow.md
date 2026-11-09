@@ -64,6 +64,14 @@ the clippy matrix or CI do not.
   before the security pass. **Bugs found *while* working are not spun off at discovery** (owner, 2026-10-03): keep a "Found while
   here" list in a comment on the issue, finish the feature, put the list to the owner before the PR opens (one line each, with a
   recommendation); agreed ones become commits in the same PR; the PR description lists *every* item with its disposition.
+  **The ledger (owner, 2026-11-09).** The rules above exist to offset what a model does badly: it forgets what it was doing when it
+  switches task, and it forgets what it noticed on the side. So: (1) **finish the task in hand without chasing**: the stray
+  finding is *noted at once as an issue* (a ticket is the memory aid, never the fix) and its number goes into the ledger,
+  `.claude/logs/open-items.md` (one line: number, what, found in which PR, status); (2) **when the task is done, work through the
+  ledger**: each item is fixed (in this PR when it is the same defect, the same class or the same area and it keeps one reviewable
+  theme; otherwise next) or, when the budget left is short, **asked as a question: "do we do #N?"**: the owner answers yes and the
+  item gets a fresh budget; an item is never silently left; (3) the PR table lists every item with its disposition. A ticket filed
+  and then neither fixed nor asked about is the failure; so is a stray finding fixed on the spot at the cost of the task in hand.
   **Every deferred item gets an issue, linked in the PR table, before the PR is merged** (owner, 2026-10-10: a deferral written
   only in a PR comment or a note was silently dropped) — whoever defers it: the owner, a review round, a security finding.
   "Deferred" with no issue number is a dropped item. Not covered: bugs in code the PR does not touch, and performance

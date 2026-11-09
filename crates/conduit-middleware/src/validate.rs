@@ -46,6 +46,15 @@ pub fn validate_middleware(
                     format!("{entry_prefix}.phase"),
                     format!("invalid phase \"{phase}\" — must be \"request\" or \"response\""),
                 ));
+            } else if entry.r#type == "wasm" {
+                // A plugin is not placed in one phase: `on_request` runs in the request phase and, if the module
+                // exports it, `on_response` in the response phase, whatever `phase` says (issue #660).
+                errors.push(ValidationError::warning(
+                    format!("{entry_prefix}.phase"),
+                    format!(
+                        "phase \"{phase}\" has no effect on a wasm entry: on_request always runs in the request phase and on_response (if the plugin exports it) in the response phase"
+                    ),
+                ));
             }
         }
     }
@@ -261,5 +270,54 @@ mod rhai_tests {
             errors[0].message.contains("requests pass through"),
             "{errors:?}"
         );
+    }
+}
+
+/// Issue #660: `phase` on a `wasm` entry.
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+    use conduit_config_core::validation::Severity;
+
+    fn phase_problems(kind: &str, phase: &str) -> Vec<ValidationError> {
+        let entry: MiddlewareEntry = serde_json::from_value(
+            serde_json::json!({ "type": kind, "path": "./none.bin", "phase": phase }),
+        )
+        .unwrap();
+        let mut errors = Vec::new();
+        validate_middleware(&[entry], "sites[0]", &mut errors);
+        errors
+            .into_iter()
+            .filter(|e| e.path.ends_with(".phase"))
+            .collect()
+    }
+
+    #[test]
+    fn a_phase_on_a_wasm_entry_is_a_warning_that_it_has_no_effect() {
+        for phase in ["request", "response"] {
+            let problems = phase_problems("wasm", phase);
+            assert_eq!(problems.len(), 1, "{phase}: {problems:?}");
+            assert_eq!(problems[0].path, "sites[0].middleware[0].phase");
+            assert!(matches!(problems[0].severity, Severity::Warning));
+            assert!(
+                problems[0].message.contains("no effect"),
+                "{}",
+                problems[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn a_phase_on_a_script_entry_is_not_warned_about() {
+        // for a script `phase` does decide where it runs
+        assert!(phase_problems("script", "response").is_empty());
+        assert!(phase_problems("script", "request").is_empty());
+    }
+
+    #[test]
+    fn a_misspelt_phase_is_still_an_error_and_not_also_a_warning() {
+        let problems = phase_problems("wasm", "resposne");
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(matches!(problems[0].severity, Severity::Error));
     }
 }

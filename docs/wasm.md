@@ -179,7 +179,7 @@ middleware:
 | `type` | `"wasm"`. |
 | `path` | The `.wasm` file: a **binary** core module. The text format (`.wat`), component-model binaries and WASI imports are not accepted. Relative paths are resolved from the directory Conduit is started in. |
 | `config` | Optional JSON, handed to the plugin by `conduit_get_plugin_config` as compact JSON bytes. The plugin parses it itself. |
-| `phase` | Has no effect on a `wasm` entry: the plugin's `on_request` runs in the request phase and its `on_response` (if it has one) in the response phase. (It does apply to `script` entries.) |
+| `phase` | Has no effect on a `wasm` entry: the plugin's `on_request` runs in the request phase and its `on_response` (if it has one) in the response phase. `conduit validate` warns when you set it. (It does apply to `script` entries.) |
 
 Entries run **in the order written**, `script` and `wasm` mixed; the first one that answers the request ends the chain,
 and the rest do not run for that request. In the response phase every `wasm` entry's `on_response` runs.

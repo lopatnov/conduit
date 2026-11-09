@@ -50,6 +50,17 @@ const DISABLED_KEY_OWNING_FEATURE: &[(&str, &str)] = &[
 /// `sanitize_for_log()` for the same reason `check_proxy_loop_warnings`'s
 /// `target` is (issue #185, CWE-117-style log injection).
 pub(super) fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
+    // The top of a full configuration, `global` and `global.admin` (issue #681): a typo there (`globl`,
+    // `workerz`, `tokn`) used to be dropped without a word, with the default silently in force.
+    warn_unknown_keys("", config.extra.keys(), warnings);
+    // Keys inside any other object (`sites[0].cors.origns`) that the parser did not read (issue #682).
+    warn_unknown_keys("", config.ignored_keys.iter(), warnings);
+    if let Some(global) = &config.global {
+        warn_unknown_keys("global.", global.extra.keys(), warnings);
+        if let Some(admin) = &global.admin {
+            warn_unknown_keys("global.admin.", admin.extra.keys(), warnings);
+        }
+    }
     for (i, site) in config.sites.iter().enumerate() {
         for key in site.extra.keys() {
             // `$schema` is the editor-completion hint the docs tell users to add (#569).
@@ -69,6 +80,25 @@ pub(super) fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<St
                 )),
             }
         }
+    }
+}
+
+/// The warning for each of `keys` (the keys of one object that no field names), named `scope` + key.
+/// `$schema` (the editor hint the docs tell users to add, #569) and `version` (the schema version the parser
+/// checks, `CONFIG_VERSION`) are known keys at the top and are not reported there.
+fn warn_unknown_keys<'a>(
+    scope: &str,
+    keys: impl Iterator<Item = &'a String>,
+    warnings: &mut Vec<String>,
+) {
+    for key in keys {
+        if scope.is_empty() && (key == "$schema" || key == "version") {
+            continue;
+        }
+        warnings.push(format!(
+            "{scope}{} is not a recognized configuration key and will be ignored — check for a typo.",
+            sanitize_for_log(key)
+        ));
     }
 }
 

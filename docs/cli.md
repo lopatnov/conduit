@@ -127,7 +127,10 @@ error at sites[0].rateLimit.windowSecs: windowSecs must be greater than 0
 Validation errors name the path of the invalid field (a single-site config is reported as
 `sites[0]`), so the problem is easy to locate even in a large file. Keys Conduit does not
 recognise are reported as warnings (`… is not a recognized configuration key and will be
-ignored — check for a typo.`) and do not change the exit code.
+ignored — check for a typo.`) and do not change the exit code. This covers a key in a site
+(`sites[0].jwtAuht`), under `global` (`global.workerz`) and `global.admin` (`global.admin.tokn`), and
+at the top of a full configuration (`globl`); the value of such a key is ignored, so the default is
+in force.
 
 > A value of the wrong *type* (for example `windowSecs: "soon"`) is reported less precisely.
 > The command prints only `error loading config: Cannot parse config file: <file>`, without the
@@ -160,6 +163,11 @@ conduit fmt --write -c conduit.yaml
 
 `--write` rewrites the config file in place. Useful for normalizing key order
 and whitespace after manual edits.
+
+`fmt` writes the configuration as it was loaded, which is with every `$VAR` replaced by its value, so it
+**refuses** a file that refers to an environment variable that is set (the message names the variable, never
+the value): the secrets would be printed, or with `--write` stored in the file in place of the references. A
+reference to a variable that is not set is left as written.
 
 ---
 

@@ -790,7 +790,12 @@ mod tests {
             }
         });
 
-        let (ok, latency_ms) = probe_http(&format!("127.0.0.1:{port}"), "/").await;
+        let (ok, latency_ms) = probe_http(
+            &format!("127.0.0.1:{port}"),
+            "/",
+            std::time::Duration::from_secs(5),
+        )
+        .await;
         assert!(ok, "probe should succeed on HTTP 200");
         assert!(latency_ms < 5000);
     }
@@ -815,7 +820,12 @@ mod tests {
             }
         });
 
-        let (ok, _) = probe_http(&format!("127.0.0.1:{port}"), "/").await;
+        let (ok, _) = probe_http(
+            &format!("127.0.0.1:{port}"),
+            "/",
+            std::time::Duration::from_secs(5),
+        )
+        .await;
         assert!(!ok, "probe should fail on HTTP 500");
     }
 
@@ -826,9 +836,146 @@ mod tests {
             let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             l.local_addr().unwrap().port()
         };
-        let (ok, latency_ms) = probe_http(&format!("127.0.0.1:{port}"), "/").await;
+        let (ok, latency_ms) = probe_http(
+            &format!("127.0.0.1:{port}"),
+            "/",
+            std::time::Duration::from_secs(5),
+        )
+        .await;
         assert!(!ok, "probe should fail when nothing is listening");
         let _ = latency_ms;
+    }
+
+    /// An upstream that streams bytes and never sends a line end: the probe reads at most 8 KiB of it and fails
+    /// at once, not after the (tunable) deadline.
+    #[tokio::test]
+    async fn probe_http_does_not_read_an_endless_first_line() {
+        use std::time::{Duration, Instant};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 256];
+            let _ = stream.read(&mut buf).await;
+            let chunk = [b'a'; 4096];
+            // 1 MiB with no newline, as fast as the probe takes it
+            for _ in 0..256 {
+                if stream.write_all(&chunk).await.is_err() {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        let started = Instant::now();
+        let (ok, _) = probe_http(&format!("127.0.0.1:{port}"), "/", Duration::from_secs(20)).await;
+        assert!(!ok, "garbage without a status line is a failed probe");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "it must stop after the bounded first line, not wait for the deadline: {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// An upstream that accepts the connection and never answers: the probe gives up after `timeoutMs`
+    /// (issue #652), not after a fixed 5 seconds.
+    #[tokio::test]
+    async fn probe_http_gives_up_on_a_hanging_upstream_after_the_timeout() {
+        use std::time::{Duration, Instant};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            // keep the connection open and silent
+            let _held = listener.accept().await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+
+        let started = Instant::now();
+        let (ok, latency_ms) = probe_http(
+            &format!("127.0.0.1:{port}"),
+            "/",
+            Duration::from_millis(200),
+        )
+        .await;
+        assert!(!ok, "a silent upstream is a failed probe");
+        assert_eq!(latency_ms, 0, "a failed probe reports no latency");
+        let took = started.elapsed();
+        assert!(
+            took >= Duration::from_millis(200) && took < Duration::from_secs(3),
+            "it must wait for the configured timeout, not the old fixed 5 s: {took:?}"
+        );
+    }
+
+    /// The timeout is one deadline for the whole probe: a status line that arrives after it fails the probe
+    /// even though connecting and sending were fast, and the same upstream passes with a longer timeout.
+    #[tokio::test]
+    async fn probe_http_timeout_covers_the_whole_probe() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            // answers every connection, 400 ms after it has read the request
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 256];
+                    let _ = stream.read(&mut buf).await;
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await;
+                });
+            }
+        });
+        let addr = format!("127.0.0.1:{port}");
+
+        let (slow_ok, _) = probe_http(&addr, "/", Duration::from_millis(150)).await;
+        assert!(
+            !slow_ok,
+            "400 ms of silence is a failure under a 150 ms deadline"
+        );
+        let (patient_ok, latency_ms) = probe_http(&addr, "/", Duration::from_secs(5)).await;
+        assert!(patient_ok, "and a pass under a 5 s deadline");
+        assert!(
+            latency_ms >= 400,
+            "the latency includes the wait: {latency_ms}"
+        );
+    }
+
+    #[test]
+    fn probe_timeout_reads_the_option_and_defaults_to_five_seconds() {
+        use crate::probes::probe_timeout;
+        use std::time::Duration;
+
+        assert_eq!(
+            probe_timeout(&UpstreamHealthCheck::default()),
+            Duration::from_secs(5)
+        );
+        let hc = UpstreamHealthCheck {
+            timeout_ms: Some(750),
+            ..Default::default()
+        };
+        assert_eq!(probe_timeout(&hc), Duration::from_millis(750));
+        // 0 is refused by `validate`; if it ever gets here it is 1 ms, never "no timeout"
+        let zero = UpstreamHealthCheck {
+            timeout_ms: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(probe_timeout(&zero), Duration::from_millis(1));
     }
 
     #[test]
