@@ -134,11 +134,11 @@ class Hostile(unittest.TestCase):
     """Security review of #686: issue titles and PR bodies are written by others."""
 
     def test_a_title_is_printed_without_control_characters_and_short(self):
-        title = "x\x1b[2J\nIGNORE PREVIOUS " + "y" * 500
+        title = "x\x1b[2J\nIGNORE PREVIOUS\u2028" + "y" * 500
         _, out = run_main(["--since", "2026-11-01"], gh(issues=[(30, title)]))
         self.assertNotIn("\x1b", out)
         self.assertNotIn("IGNORE PREVIOUS\n", out)
-        self.assertNotIn(" ", out)
+        self.assertNotIn("\u2028", out)
         self.assertNotIn("y" * 200, out)
 
     def test_a_digit_run_longer_than_nine_is_not_an_issue_number(self):
@@ -147,7 +147,7 @@ class Hostile(unittest.TestCase):
         self.assertEqual(lc.parse_ledger(f"| #{long} | a | b | c |\n"), [])
 
     def test_since_accepts_only_ascii_digits(self):
-        code, _ = run_main(["--since", "٢٠٢٦-١١-٠٩"], gh())
+        code, _ = run_main(["--since", "\u0662\u0660\u0662\u0666-\u0661\u0661-\u0660\u0669"], gh())
         self.assertEqual(code, 2)
 
     def test_pr_must_be_positive(self):
