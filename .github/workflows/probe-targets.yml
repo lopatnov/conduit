@@ -1,0 +1,103 @@
+name: Probe targets
+
+# Issue #696: which 32-bit and Android targets does Conduit build for, bundle by bundle? Each job builds one bundle
+# for one target and reports whether it builds (and, if it does not, the first errors in the job summary). Nothing
+# here is a merge gate and nothing is released from it: a pair that builds and passes its tests is moved into
+# `ci.yml` (`cross-compile`) and `release.yml` by hand. It runs on the working branch of the issue and on demand.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/32bit-android-targets-696
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  probe:
+    name: Probe ${{ matrix.target }} ${{ matrix.bundle }}
+    runs-on: ${{ contains(matrix.target, 'windows') && 'windows-latest' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - i686-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+          - arm-unknown-linux-gnueabihf
+          - arm-unknown-linux-gnueabi
+          - i686-pc-windows-msvc
+          - aarch64-linux-android
+          - armv7-linux-androideabi
+        bundle:
+          - standard
+          - gateway
+          - static-server
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          key: probe-${{ matrix.target }}-${{ matrix.bundle }}
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Install cross
+        if: ${{ !contains(matrix.target, 'windows') }}
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
+        with:
+          tool: cross
+
+      # pingora-core 0.9.1 defines `group_id` in `server/daemon.rs` for macOS, FreeBSD and Linux only and uses it under
+      # a wider cfg, so no Android target compiles (#668). The probe patches the unpacked registry copy (cross mounts
+      # the cargo home into its container) to learn what else breaks; a fix for it goes to Pingora, not into a release.
+      - name: Patch pingora-core for Android (probe only)
+        if: ${{ contains(matrix.target, 'android') }}
+        shell: bash
+        run: |
+          cargo fetch --locked
+          file=$(ls "$HOME"/.cargo/registry/src/*/pingora-core-0.9.1/src/server/daemon.rs)
+          perl -0pi -e 's/#\[cfg\(target_os = "linux"\)\]\n(\s*let group_id)/#[cfg(any(target_os = "linux", target_os = "android"))]\n$1/' "$file"
+          grep -n 'target_os = "android"' "$file"
+
+      - name: Build (cross)
+        if: ${{ !contains(matrix.target, 'windows') }}
+        shell: bash
+        run: |
+          set -o pipefail
+          cross build --release --locked --target ${{ matrix.target }} --no-default-features --features ${{ matrix.bundle }} 2>&1 | tee build.log
+
+      - name: Build (native)
+        if: ${{ contains(matrix.target, 'windows') }}
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features ${{ matrix.bundle }} 2>&1 | tee build.log
+
+      - name: Size of the binary
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target }}/release/conduit
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          ls -l "$bin"
+          echo "Built ${{ matrix.target }} ${{ matrix.bundle }}: $(wc -c < "$bin") bytes" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: First errors
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.target }} ${{ matrix.bundle }}: does not build"
+            echo '```'
+            grep -n -E "^(error|warning: unused)|error\[|could not compile|failed to run custom build|CMake Error|fatal error" build.log | head -25
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
