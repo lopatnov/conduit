@@ -20,6 +20,7 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 | #659 | build the C, Go and Zig samples of the WASM guide in CI | #565 | open |
 | #658 | flaky dns::resolve_socket_addr_hostname_respects_timeout | a docs PR | open |
 | #684 | libyaml folds leading/trailing blanks on the first line of a block scalar or a continuation line of a multi-line quoted scalar: `interpolate_yaml` does not guard it | security review of #683 | open |
+| #633 | split the production files over 400 code lines: `wasm.rs` (614), `filter.rs` (520), and since #683 `conduit-config-core/src/env.rs` (415, to go with #684) | code-length reports | open |
 | #619 | Windows #600 follow-ups: placeholders, ReFS, symlink-converted dirs (needs those environments) | #600 | open, waits for the environments |
 | #643 | groups: a dead group is not failed over; backup, retry and mirror not applied to a grouped route | balancer work (#631) | open (predates the ledger) |
 | #644 | sticky: ignored on routes with groups without a warning; cookie has no Secure/Max-Age | balancer work (#631) | open (predates the ledger) |

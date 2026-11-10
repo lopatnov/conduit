@@ -73,7 +73,7 @@ the clippy matrix or CI do not.
   and no "a separate PR next" exception; the owner may say otherwise for a given item, I do not decide it): it is fixed, with its
   test, or, only when it needs an environment the session does not have (hardware, a service, another repository's fix) or the
   budget left is short, **asked as a question: "do we do #N?"**: the owner answers yes and the item gets a fresh budget; an item
-  is never silently left; the PR description is then re-read against the final code and corrected (counts, behaviours, the
+  is never silently left; this is done before the security pass on the final head (a fix added after it gets the delta pass, and a second round is the budget rule below); the PR description is then re-read against the final code and corrected (counts, behaviours, the
   table) before the merge, because it goes stale across review rounds; (3) the PR table lists every item with its disposition;
   ledger items left from earlier tasks are worked through or asked the same way. A ticket filed and then neither fixed nor asked
   about is the failure; so is a stray finding fixed on the spot at the cost of the task in hand.
