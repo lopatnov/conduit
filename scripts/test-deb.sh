@@ -2,7 +2,7 @@
 # Installs a conduit .deb in clean Debian containers and checks what a user depends on (issue #669).
 #
 #   scripts/test-deb.sh PACKAGE.deb [IMAGE ...]      default images: debian:12 debian:13
-#   EXPECT_VERSION=2.2.1 scripts/test-deb.sh ...     also checks that `conduit --version` says so
+#   EXPECT_VERSION=2.3.0 scripts/test-deb.sh ...     also checks that `conduit --version` says so
 #   UPGRADE_FROM=old.deb scripts/test-deb.sh ...     also installs this older conduit-proxy package first and
 #                                                    checks that PACKAGE.deb replaces it and keeps the configuration
 #

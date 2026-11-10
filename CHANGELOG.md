@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [2.3.0] — 2026-11-11
+
 ### Added
 
 - **`healthCheck.timeoutMs`** (issue #652): the timeout of an active probe, one deadline for the whole probe
