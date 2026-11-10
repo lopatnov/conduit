@@ -226,10 +226,11 @@ class Review(unittest.TestCase):
             self.assertEqual(code, 2, bad)
 
     def test_an_open_issue_in_the_table_but_not_in_the_ledger_is_a_gap(self):
-        body = BODY.replace("(#10)", "(#10, #99)")
+        body = BODY.replace("(#10)", "(#10, #11, #99)")
         code, out = run_main(["--pr", "50", "--since", "2026-11-01"], gh(body, api={99: {"state": "open"}}))
         self.assertEqual(code, 1)
         self.assertIn("#99 is in the PR table, is still open", out)
+        self.assertEqual(out.count("\n  - "), 1, out)  # and it is the only gap
 
     def test_a_closed_issue_a_pull_request_or_a_closed_by_the_pr_is_not_a_gap(self):
         body = "## Found while here\n\n| (#10, #98, #99, #97) |\n\nFixes #97\n"
@@ -244,7 +245,7 @@ class Review(unittest.TestCase):
         self.assertEqual(lc.clean(title), "a?b?c??d")
 
     def test_a_number_github_does_not_know_is_reported_and_the_check_goes_on(self):
-        body = BODY.replace("(#10)", "(#10, #99, #98)")
+        body = BODY.replace("(#10)", "(#10, #11, #99, #98)")
 
         def run(args):
             if args[0] == "api" and args[1].endswith("/99"):
@@ -255,6 +256,7 @@ class Review(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("#99 is in the PR table but GitHub has no such issue here", out)
         self.assertNotIn("#98 is in", out)
+        self.assertEqual(out.count("\n  - "), 1, out)  # #99 is the only gap
         self.assertIn("do we do #11?", out)  # the to-do list is still printed
 
     def test_cross_repository_and_glued_references_are_not_issues_of_this_one(self):
@@ -265,9 +267,10 @@ class Review(unittest.TestCase):
     def test_closing_keywords_in_linear_time(self):
         import time
         started = time.monotonic()
-        for body in ("fix" + " " * 60000, "fix " + " " * 60000 + ":" + " " * 60000, ("fix " * 15000)):
+        # 150,000 blanks: the old quadratic pattern needs about a minute here, the linear one a few hundredths of a second
+        for body in ("fix" + " " * 150000, "fix " + " " * 150000 + ":" + " " * 150000, ("fix " * 15000)):
             self.assertEqual(lc.closed_by(body), set())
-        self.assertLess(time.monotonic() - started, 10.0)
+        self.assertLess(time.monotonic() - started, 5.0)
         self.assertEqual(lc.closed_by("Closes:#1 Fixes: #2 resolved   #3"), {1, 2, 3})
 
     def test_more_than_the_cap_of_table_issues_is_one_gap_and_no_lookups(self):
