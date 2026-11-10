@@ -9,7 +9,8 @@ Run it before `gh pr merge` and at the end of a task:
 It prints the open ledger items as a to-do ("do we do #N?") and exits 1 when
   * a ledger line that says it was found in this PR (its "Found in" column names `#<pr>`) is open and not in the PR table,
   * a ledger line marked done in this PR is not in the PR table,
-  * an open `fast-follow` issue created since the given day is not in the ledger at all.
+  * an open `fast-follow` issue created since the given day is not in the ledger at all,
+  * an open issue that is in the PR table but neither in the ledger nor closed by the PR (a deferral nobody recorded).
 Without `--pr` only the last check and the to-do list run.  `gh` is called in one place (`gh_json`), so the tests need no network.
 """
 import argparse
@@ -17,6 +18,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -24,7 +26,14 @@ LEDGER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 LIMIT = 200
 # at most 9 digits: a longer run is not an issue number, and `int()` refuses very long ones
 ISSUE = re.compile(r"#([0-9]{1,9})(?![0-9])")
-CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+# control characters, line separators, and the invisible/bidirectional marks that reorder or hide text
+CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
+# a `|` that is not escaped as `\|`, and a heading line (up to three leading spaces, CommonMark)
+UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
+# GitHub closing keywords: the issues a PR closes are not "deferred" even though they are still open before the merge
+CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#([0-9]{1,9})(?![0-9])", re.I)
+GH = shutil.which("gh") or "gh"
 
 
 def clean(text, limit=120):
@@ -44,10 +53,10 @@ def parse_ledger(text):
     """Rows of the ledger table as `(number, what, found_in, status)`; the header and the separator are skipped."""
     rows = []
     for line in text.splitlines():
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        cells = [c.strip().replace("\\|", "|") for c in UNESCAPED_PIPE.split(line.strip().strip("|"))]
         if len(cells) < 4 or not re.fullmatch(r"#[0-9]{1,9}", cells[0]):
             continue
-        # a `|` inside a cell would shift the columns: the last cell is the status, the first three are fixed
+        # an escaped `|` stays inside its cell; the last cell is the status, the first three are fixed
         rows.append((int(cells[0][1:]), cells[1], cells[2], cells[-1]))
     return rows
 
@@ -57,16 +66,21 @@ def is_done(status):
 
 
 def table_issues(body):
-    """The issue numbers named in the "Found while here" section of a PR description (up to the next heading)."""
+    """The issue numbers in the table rows of the "Found while here" section of a PR description (up to the next heading)."""
     found = set()
     inside = False
     for line in body.splitlines():
-        if line.startswith("#"):
-            inside = line.lstrip("# ").strip().lower().startswith("found while here")
+        if HEADING.match(line):
+            inside = line.strip().lstrip("#").strip().lower().startswith("found while here")
             continue
-        if inside:
+        if inside and line.strip().startswith("|"):
             found.update(int(n) for n in ISSUE.findall(line))
     return found
+
+
+def closed_by(body):
+    """The issues a PR description closes with a GitHub keyword (`Closes #1`, `Fixes #2`)."""
+    return {int(n) for n in CLOSES.findall(body)}
 
 
 def check(rows, pr, table, fast_follow):
@@ -88,8 +102,24 @@ def check(rows, pr, table, fast_follow):
 
 
 def gh_json(args):
-    out = subprocess.run(["gh", *args], check=True, capture_output=True, text=True, encoding="utf-8").stdout
-    return json.loads(out)
+    """Run `gh` and parse its JSON; a failure is one line on stderr and exit status 2, not a traceback."""
+    try:
+        done = subprocess.run([GH, *args], check=True, capture_output=True, text=True, encoding="utf-8")
+        return json.loads(done.stdout)
+    except subprocess.CalledProcessError as e:
+        sys.exit(f"gh {' '.join(args[:2])} failed ({e.returncode}): {clean(e.stderr or '', 300)}")
+    except (OSError, ValueError) as e:
+        sys.exit(f"gh {' '.join(args[:2])} failed: {clean(str(e), 300)}")
+
+
+def untracked_open_issues(numbers, run=gh_json):
+    """Of these numbers, the ones that are open issues (not pull requests) as far as GitHub says."""
+    found = []
+    for n in sorted(numbers):
+        info = run(["api", f"repos/{{owner}}/{{repo}}/issues/{n}"])
+        if "pull_request" not in info and info.get("state") == "open":
+            found.append(n)
+    return found
 
 
 def recent_fast_follow(since, run=gh_json):
@@ -104,16 +134,24 @@ def main(argv=None, run=gh_json, ledger_path=LEDGER):
     default_since = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
     ap.add_argument("--since", default=default_since, help="issues created since this day (YYYY-MM-DD), default: 7 days ago")
     args = ap.parse_args(argv)
-    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", args.since):
-        print("--since must be YYYY-MM-DD", file=sys.stderr)
+    try:
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", args.since):
+            raise ValueError
+        datetime.date(*(int(part) for part in args.since.split("-")))
+    except ValueError:
+        print("--since must be a valid date, YYYY-MM-DD", file=sys.stderr)
         return 2
     with open(ledger_path, encoding="utf-8") as f:
         rows = parse_ledger(f.read())
-    table = set()
+    table, closes = set(), set()
     if args.pr is not None:
-        table = table_issues(run(["pr", "view", str(args.pr), "--json", "body"])["body"] or "")
+        body = run(["pr", "view", str(args.pr), "--json", "body"])["body"] or ""
+        table, closes = table_issues(body), closed_by(body)
     recent = recent_fast_follow(args.since, run)
     problems = check(rows, args.pr, table, recent)
+    in_ledger = {r[0] for r in rows}
+    for n in untracked_open_issues(table - in_ledger - closes, run):
+        problems.append(f"#{n} is in the PR table, is still open, is not closed by the PR and is not in the ledger")
     if len(recent) >= LIMIT:
         problems.append(f"{LIMIT} or more open fast-follow issues in the window: the list may be cut, narrow --since")
     open_rows = [r for r in rows if not is_done(r[3])]
