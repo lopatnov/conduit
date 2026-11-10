@@ -8,7 +8,8 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
-| #685 | scripts/ledger-check.py: compare the ledger, the PR table and the fast-follow issues before a merge | the ledger process | done in PR #686 |
+| #696 | 32-bit targets (i686 Linux/Windows, ARMv6/ARMv7) and the Android targets: probe build, then ship what builds (standard, gateway, static-server; `full` not required) | owner's question on rustc and targets, 2026-11-11 | owner said yes: start right after 2.3.0 |
+| #697 | ledger-check hardening: Windows cwd lookup of `gh`, no subprocess timeout, `RecursionError`, glued `PR#N` | security review of #686 | open (was missing from #686's table; added there afterwards) |
 | #677 | flaky server start in the integration tests | full test run for #678 | harness improved in PR #683 (stderr kept, one retry); open until the cause is named |
 | #676 | serde_yaml is unmaintained (RUSTSEC-2024-0449) | OSV | PR #678 closed by the owner, waits for Pingora (cloudflare/pingora#1117); reopen then |
 | #673 | RISC-V release build is not run under QEMU in CI | 2.2.1 | open |
