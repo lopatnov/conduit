@@ -160,6 +160,9 @@ class Review(unittest.TestCase):
     def test_a_failing_gh_is_one_line_not_a_traceback(self):
         import subprocess
         from unittest import mock
+        found = mock.patch.object(lc, "find_gh", return_value="/x/gh")
+        found.start()
+        self.addCleanup(found.stop)
         err = subprocess.CalledProcessError(4, ["gh"], stderr="HTTP 401: bad credentials\n")
         with mock.patch.object(lc.subprocess, "run", side_effect=err):
             with self.assertRaises(lc.GhError) as cm:
@@ -303,6 +306,71 @@ class Review(unittest.TestCase):
 
     def test_closing_keywords(self):
         self.assertEqual(lc.closed_by("Closes #1\nfixed #2, resolves: #3\nSee #4"), {1, 2, 3})
+
+
+class Hardening(unittest.TestCase):
+    """Issue #697, from the security review of #686."""
+
+    def setUp(self):
+        from unittest import mock
+        found = mock.patch.object(lc, "find_gh", return_value="/x/gh")
+        found.start()
+        self.addCleanup(found.stop)
+
+    def test_gh_is_never_taken_from_the_working_directory(self):
+        name = "gh.exe" if os.name == "nt" else "gh"
+        # the real function (setUp replaced the module's), with the planted copy first and the real one last
+        real = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real)
+        with tempfile.TemporaryDirectory() as work, tempfile.TemporaryDirectory() as good:
+            for d in (work, good):
+                path = os.path.join(d, name)
+                with open(path, "w") as f:
+                    f.write("x")
+                os.chmod(path, 0o755)
+            entries = os.pathsep.join(["", ".", work, good])
+            self.assertEqual(real.find_gh(entries, cwd=work), os.path.abspath(os.path.join(good, name)))
+            self.assertIsNone(real.find_gh(os.pathsep.join(["", ".", work]), cwd=work))
+            self.assertIsNone(real.find_gh("", cwd=work))
+
+    def test_gh_not_found_is_a_gh_error(self):
+        from unittest import mock
+        with mock.patch.object(lc, "find_gh", return_value=None):
+            with self.assertRaises(lc.GhError) as cm:
+                lc.gh_json(["pr", "view", "1"])
+        self.assertIn("not found", str(cm.exception))
+
+    def test_a_hung_gh_times_out_as_a_gh_error(self):
+        import subprocess
+        from unittest import mock
+        with mock.patch.object(lc.subprocess, "run", side_effect=subprocess.TimeoutExpired(["gh"], lc.GH_TIMEOUT)) as run:
+            with self.assertRaises(lc.GhError) as cm:
+                lc.gh_json(["pr", "view", "1"])
+        self.assertIn("no answer", str(cm.exception))
+        # and the call is made with a timeout at all
+        done = subprocess.CompletedProcess(["gh"], 0, stdout="{}")
+        with mock.patch.object(lc.subprocess, "run", return_value=done) as run:
+            lc.gh_json(["pr", "view", "1"])
+        self.assertEqual(run.call_args.kwargs["timeout"], lc.GH_TIMEOUT)
+
+    def test_a_deeply_nested_reply_is_a_gh_error_not_a_traceback(self):
+        import subprocess
+        from unittest import mock
+        done = subprocess.CompletedProcess(["gh"], 0, stdout="[" * 200000)
+        with mock.patch.object(lc.subprocess, "run", return_value=done):
+            with self.assertRaises(lc.GhError):
+                lc.gh_json(["pr", "view", "1"])
+
+    def test_a_reference_glued_to_a_word_in_the_ledger_is_reported(self):
+        ledger = ("| #11 | a | found in PR#50 | open |\n"
+                  "| #12 | b | #40 | waits for cloudflare/pingora#1117 |\n"
+                  "| #13 | c | #41 | done in PR #42 |\n")
+        self.assertEqual(lc.glued_references(lc.parse_ledger(ledger)), [(11, "PR#50")])
+        code, out = run_main(["--since", "2026-11-01"], gh(), ledger)
+        self.assertEqual(code, 1)
+        self.assertIn('#11: "PR#50" has no space', out)
+        self.assertNotIn("#12:", out)
+        self.assertNotIn("#13:", out)
 
 
 class Hostile(unittest.TestCase):
