@@ -161,13 +161,15 @@ class Review(unittest.TestCase):
         from unittest import mock
         err = subprocess.CalledProcessError(4, ["gh"], stderr="HTTP 401: bad credentials\n")
         with mock.patch.object(lc.subprocess, "run", side_effect=err):
-            with self.assertRaises(SystemExit) as cm:
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()) as e:
                 lc.gh_json(["pr", "view", "1"])
-        self.assertIn("HTTP 401: bad credentials", str(cm.exception))
-        self.assertNotIn("\n", str(cm.exception))
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("HTTP 401: bad credentials", e.getvalue())
+        self.assertEqual(e.getvalue().count("\n"), 1)
         with mock.patch.object(lc.subprocess, "run", side_effect=FileNotFoundError("gh")):
-            with self.assertRaises(SystemExit):
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
                 lc.gh_json(["pr", "view", "1"])
+        self.assertEqual(cm.exception.code, 2)
 
     def test_an_impossible_date_is_refused_before_gh(self):
         def run(args):
@@ -193,6 +195,52 @@ class Review(unittest.TestCase):
     def test_bidirectional_and_invisible_marks_are_not_printed(self):
         title = "a" + chr(0x202E) + "b" + chr(0x200B) + "c" + chr(0xFEFF) + chr(0x2066) + "d"
         self.assertEqual(lc.clean(title), "a?b?c??d")
+
+    def test_closing_keywords_in_linear_time(self):
+        import time
+        started = time.monotonic()
+        for body in ("fix" + " " * 60000, "fix " + " " * 60000 + ":" + " " * 60000, ("fix " * 15000)):
+            self.assertEqual(lc.closed_by(body), set())
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertEqual(lc.closed_by("Closes:#1 Fixes: #2 resolved   #3"), {1, 2, 3})
+
+    def test_more_than_the_cap_of_table_issues_is_one_gap_and_no_lookups(self):
+        numbers = ", ".join(f"#{1000 + i}" for i in range(lc.MAX_LOOKUPS + 1))
+        body = f"## Found while here\n\n| ({numbers}) |\n"
+        calls = []
+
+        def run(args):
+            if args[0] == "api":
+                calls.append(args)
+                raise AssertionError("no lookup above the cap")
+            return gh(body)(args)
+        code, out = run_main(["--pr", "50", "--since", "2026-11-01"], run)
+        self.assertEqual(code, 1)
+        self.assertEqual(calls, [])
+        self.assertIn("check them by hand", out)
+
+    def test_at_the_cap_every_number_is_looked_up(self):
+        numbers = ", ".join(f"#{1000 + i}" for i in range(lc.MAX_LOOKUPS))
+        body = f"## Found while here\n\n| ({numbers}) |\n"
+        calls = []
+
+        def run(args):
+            if args[0] == "api":
+                calls.append(args)
+                return {"state": "closed"}
+            return gh(body)(args)
+        run_main(["--pr", "50", "--since", "2026-11-01"], run)
+        self.assertEqual(len(calls), lc.MAX_LOOKUPS)
+
+    def test_a_tool_failure_exits_2_and_the_records_disagreeing_exits_1(self):
+        import subprocess
+        from unittest import mock
+        err = subprocess.CalledProcessError(4, ["gh"], stderr="boom")
+        with mock.patch.object(lc.subprocess, "run", side_effect=err):
+            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()) as e:
+                lc.gh_json(["pr", "view", "1"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("boom", e.getvalue())
 
     def test_closing_keywords(self):
         self.assertEqual(lc.closed_by("Closes #1\nfixed #2, resolves: #3\nSee #4"), {1, 2, 3})

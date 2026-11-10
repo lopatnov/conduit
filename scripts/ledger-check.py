@@ -32,7 +32,10 @@ CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060
 UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
 HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 # GitHub closing keywords: the issues a PR closes are not "deferred" even though they are still open before the merge
-CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#([0-9]{1,9})(?![0-9])", re.I)
+# (the separator is `\s+` or `:\s*`, which start with different characters, so matching is linear on a long run of blanks)
+CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:\s+|:\s*)#([0-9]{1,9})(?![0-9])", re.I)
+# the most issues the PR table is checked against GitHub for: a PR description is written by anyone who can edit it
+MAX_LOOKUPS = 50
 GH = shutil.which("gh") or "gh"
 
 
@@ -107,9 +110,15 @@ def gh_json(args):
         done = subprocess.run([GH, *args], check=True, capture_output=True, text=True, encoding="utf-8")
         return json.loads(done.stdout)
     except subprocess.CalledProcessError as e:
-        sys.exit(f"gh {' '.join(args[:2])} failed ({e.returncode}): {clean(e.stderr or '', 300)}")
+        fail(f"gh {' '.join(args[:2])} failed ({e.returncode}): {clean(e.stderr or '', 300)}")
     except (OSError, ValueError) as e:
-        sys.exit(f"gh {' '.join(args[:2])} failed: {clean(str(e), 300)}")
+        fail(f"gh {' '.join(args[:2])} failed: {clean(str(e), 300)}")
+
+
+def fail(message):
+    """Exit status 2 (a tool failure), distinct from 1 (the records disagree)."""
+    print(message, file=sys.stderr)
+    sys.exit(2)
 
 
 def untracked_open_issues(numbers, run=gh_json):
@@ -150,8 +159,13 @@ def main(argv=None, run=gh_json, ledger_path=LEDGER):
     recent = recent_fast_follow(args.since, run)
     problems = check(rows, args.pr, table, recent)
     in_ledger = {r[0] for r in rows}
-    for n in untracked_open_issues(table - in_ledger - closes, run):
-        problems.append(f"#{n} is in the PR table, is still open, is not closed by the PR and is not in the ledger")
+    untracked = table - in_ledger - closes
+    if len(untracked) > MAX_LOOKUPS:
+        problems.append(f"the PR table names {len(untracked)} issues that are not in the ledger or closed by the PR "
+                        f"(more than {MAX_LOOKUPS}): check them by hand, they were not looked up")
+    else:
+        for n in untracked_open_issues(untracked, run):
+            problems.append(f"#{n} is in the PR table, is still open, is not closed by the PR and is not in the ledger")
     if len(recent) >= LIMIT:
         problems.append(f"{LIMIT} or more open fast-follow issues in the window: the list may be cut, narrow --since")
     open_rows = [r for r in rows if not is_done(r[3])]
