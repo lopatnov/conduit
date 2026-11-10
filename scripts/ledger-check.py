@@ -105,31 +105,44 @@ def check(rows, pr, table, fast_follow):
     return problems
 
 
+class GhError(Exception):
+    """A `gh` call that failed or answered with something unusable. `missing` is set for an HTTP 404 (no such issue)."""
+
+    def __init__(self, message, missing=False):
+        super().__init__(message)
+        self.missing = missing
+
+
 def gh_json(args):
-    """Run `gh` and parse its JSON; a failure is one line on stderr and exit status 2, not a traceback."""
+    """Run `gh` and parse its JSON. A failure raises `GhError`; `main` turns it into one stderr line and exit status 2."""
+    what = f"gh {' '.join(args[:2])}"
     try:
         done = subprocess.run([GH, *args], check=True, capture_output=True, text=True, encoding="utf-8")
         return json.loads(done.stdout)
     except subprocess.CalledProcessError as e:
-        fail(f"gh {' '.join(args[:2])} failed ({e.returncode}): {clean(e.stderr or '', 300)}")
+        stderr = e.stderr or ""
+        raise GhError(f"{what} failed ({e.returncode}): {clean(stderr, 300)}", missing="HTTP 404" in stderr) from None
     except (OSError, ValueError) as e:
-        fail(f"gh {' '.join(args[:2])} failed: {clean(str(e), 300)}")
+        raise GhError(f"{what} failed: {clean(str(e), 300)}") from None
 
 
-def fail(message):
-    """Exit status 2 (a tool failure), distinct from 1 (the records disagree)."""
-    print(message, file=sys.stderr)
-    sys.exit(2)
+def as_mapping(reply, what):
+    if not isinstance(reply, dict):
+        raise GhError(f"{what} returned an unexpected reply")
+    return reply
 
 
 def untracked_open_issues(numbers, run=gh_json):
-    """Of these numbers: `(open, unknown)`. `open` are open issues (not pull requests); `unknown` could not be looked up
-    (no such issue here, a deleted one, a typo): that is reported, it does not stop the check."""
+    """Of these numbers: `(open, unknown)`. `open` are open issues (not pull requests); `unknown` are numbers GitHub
+    answers 404 for (a typo, a deleted issue): that is reported, it does not stop the check. Any other failure raises."""
     found, unknown = [], []
     for n in sorted(numbers):
         try:
-            info = run(["api", f"repos/{{owner}}/{{repo}}/issues/{n}"])
-        except SystemExit:  # `gh_json` has already written one line about it to stderr
+            info = as_mapping(run(["api", f"repos/{{owner}}/{{repo}}/issues/{n}"]), "gh api")
+        except GhError as e:
+            if not e.missing:
+                raise
+            print(e, file=sys.stderr)
             unknown.append(n)
             continue
         if "pull_request" not in info and info.get("state") == "open":
@@ -140,27 +153,22 @@ def untracked_open_issues(numbers, run=gh_json):
 def recent_fast_follow(since, run=gh_json):
     issues = run(["issue", "list", "--label", "fast-follow", "--state", "open", "--search", f"created:>={since}",
                   "--limit", str(LIMIT), "--json", "number,title"])
+    if not isinstance(issues, list) or not all(
+        isinstance(i, dict) and isinstance(i.get("number"), int) and isinstance(i.get("title"), str) for i in issues
+    ):
+        raise GhError("gh issue list returned an unexpected reply")
     return {i["number"]: i["title"] for i in issues}
 
 
-def main(argv=None, run=gh_json, ledger_path=LEDGER):
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--pr", type=positive_int, help="the pull request about to be merged")
-    default_since = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
-    ap.add_argument("--since", default=default_since, help="issues created since this day (YYYY-MM-DD), default: 7 days ago")
-    args = ap.parse_args(argv)
-    try:
-        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", args.since):
-            raise ValueError
-        datetime.date(*(int(part) for part in args.since.split("-")))
-    except ValueError:
-        print("--since must be a valid date, YYYY-MM-DD", file=sys.stderr)
-        return 2
+def report(args, run, ledger_path):
+    """The checks and the report; `GhError` from any `gh` call propagates."""
     with open(ledger_path, encoding="utf-8") as f:
         rows = parse_ledger(f.read())
     table, closes = set(), set()
     if args.pr is not None:
-        body = run(["pr", "view", str(args.pr), "--json", "body"])["body"] or ""
+        reply = as_mapping(run(["pr", "view", str(args.pr), "--json", "body"]), "gh pr view")
+        body = reply.get("body")
+        body = body if isinstance(body, str) else ""
         table, closes = table_issues(body), closed_by(body)
     recent = recent_fast_follow(args.since, run)
     problems = check(rows, args.pr, table, recent)
@@ -174,7 +182,7 @@ def main(argv=None, run=gh_json, ledger_path=LEDGER):
         for n in open_issues:
             problems.append(f"#{n} is in the PR table, is still open, is not closed by the PR and is not in the ledger")
         for n in unknown:
-            problems.append(f"#{n} is in the PR table but could not be looked up (no such issue here, or the lookup failed: see the line above); check it")
+            problems.append(f"#{n} is in the PR table but GitHub has no such issue here (HTTP 404): check the number")
     if len(recent) >= LIMIT:
         problems.append(f"{LIMIT} or more open fast-follow issues in the window: the list may be cut, narrow --since")
     open_rows = [r for r in rows if not is_done(r[3])]
@@ -188,6 +196,27 @@ def main(argv=None, run=gh_json, ledger_path=LEDGER):
         return 1
     print("\nThe ledger, the PR table and the fast-follow issues agree.")
     return 0
+
+
+def main(argv=None, run=gh_json, ledger_path=LEDGER):
+    """Exit status: 0 the records agree, 1 they do not, 2 the tool could not run (bad input, or `gh` failed)."""
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--pr", type=positive_int, help="the pull request about to be merged")
+    default_since = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+    ap.add_argument("--since", default=default_since, help="issues created since this day (YYYY-MM-DD), default: 7 days ago")
+    args = ap.parse_args(argv)
+    try:
+        if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", args.since):
+            raise ValueError
+        datetime.date(*(int(part) for part in args.since.split("-")))
+    except ValueError:
+        print("--since must be a valid date, YYYY-MM-DD", file=sys.stderr)
+        return 2
+    try:
+        return report(args, run, ledger_path)
+    except GhError as e:
+        print(e, file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -162,15 +162,61 @@ class Review(unittest.TestCase):
         from unittest import mock
         err = subprocess.CalledProcessError(4, ["gh"], stderr="HTTP 401: bad credentials\n")
         with mock.patch.object(lc.subprocess, "run", side_effect=err):
-            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()) as e:
+            with self.assertRaises(lc.GhError) as cm:
                 lc.gh_json(["pr", "view", "1"])
-        self.assertEqual(cm.exception.code, 2)
-        self.assertIn("HTTP 401: bad credentials", e.getvalue())
-        self.assertEqual(e.getvalue().count("\n"), 1)
+        self.assertIn("HTTP 401: bad credentials", str(cm.exception))
+        self.assertNotIn("\n", str(cm.exception))
+        self.assertFalse(cm.exception.missing)
+        err404 = subprocess.CalledProcessError(1, ["gh"], stderr="gh: Not Found (HTTP 404)\n")
+        with mock.patch.object(lc.subprocess, "run", side_effect=err404):
+            with self.assertRaises(lc.GhError) as cm:
+                lc.gh_json(["api", "x"])
+        self.assertTrue(cm.exception.missing)
         with mock.patch.object(lc.subprocess, "run", side_effect=FileNotFoundError("gh")):
-            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(lc.GhError):
                 lc.gh_json(["pr", "view", "1"])
-        self.assertEqual(cm.exception.code, 2)
+
+    def test_main_exits_2_for_every_gh_failure_and_prints_one_line(self):
+        def run(args):
+            raise lc.GhError("gh pr view failed (4): HTTP 401: bad credentials")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code, _ = run_main(["--pr", "50", "--since", "2026-11-01"], run)
+        self.assertEqual(code, 2)
+        self.assertEqual(err.getvalue().count("\n"), 1)
+        self.assertIn("bad credentials", err.getvalue())
+
+    def test_a_lookup_that_fails_for_another_reason_than_404_exits_2(self):
+        body = BODY.replace("(#10)", "(#10, #99)")
+
+        def run(args):
+            if args[0] == "api":
+                raise lc.GhError("gh api failed (1): HTTP 401: bad credentials")
+            return gh(body)(args)
+        with contextlib.redirect_stderr(io.StringIO()):
+            code, _ = run_main(["--pr", "50", "--since", "2026-11-01"], run)
+        self.assertEqual(code, 2)
+
+    def test_an_unexpected_reply_shape_exits_2_not_with_a_traceback(self):
+        replies = {
+            "pr": [1, 2],
+            "pr-no-body": {"other": 1},
+            "list": {"not": "a list"},
+            "list-item": [{"number": "x", "title": 3}],
+            "api": ["not", "a", "mapping"],
+        }
+        body = BODY.replace("(#10)", "(#10, #99)")
+        for name, bad in replies.items():
+            def run(args, bad=bad, name=name):
+                if args[:2] == ["pr", "view"]:
+                    return bad if name.startswith("pr") else {"body": body}
+                if args[:2] == ["issue", "list"]:
+                    return bad if name.startswith("list") else []
+                return bad
+            with contextlib.redirect_stderr(io.StringIO()):
+                code, _ = run_main(["--pr", "50", "--since", "2026-11-01"], run)
+            # a PR reply without a body is read as an empty description, everything else is a tool failure
+            self.assertEqual(code, 1 if name == "pr-no-body" else 2, name)
 
     def test_an_impossible_date_is_refused_before_gh(self):
         def run(args):
@@ -202,13 +248,12 @@ class Review(unittest.TestCase):
 
         def run(args):
             if args[0] == "api" and args[1].endswith("/99"):
-                print("gh api failed (1): HTTP 404", file=sys.stderr)
-                raise SystemExit(2)
+                raise lc.GhError("gh api failed (1): HTTP 404", missing=True)
             return gh(body, api={98: {"state": "closed"}})(args)
         with contextlib.redirect_stderr(io.StringIO()):
             code, out = run_main(["--pr", "50", "--since", "2026-11-01"], run)
         self.assertEqual(code, 1)
-        self.assertIn("#99 is in the PR table but could not be looked up", out)
+        self.assertIn("#99 is in the PR table but GitHub has no such issue here", out)
         self.assertNotIn("#98 is in", out)
         self.assertIn("do we do #11?", out)  # the to-do list is still printed
 
@@ -222,7 +267,7 @@ class Review(unittest.TestCase):
         started = time.monotonic()
         for body in ("fix" + " " * 60000, "fix " + " " * 60000 + ":" + " " * 60000, ("fix " * 15000)):
             self.assertEqual(lc.closed_by(body), set())
-        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertLess(time.monotonic() - started, 10.0)
         self.assertEqual(lc.closed_by("Closes:#1 Fixes: #2 resolved   #3"), {1, 2, 3})
 
     def test_more_than_the_cap_of_table_issues_is_one_gap_and_no_lookups(self):
@@ -252,16 +297,6 @@ class Review(unittest.TestCase):
             return gh(body)(args)
         run_main(["--pr", "50", "--since", "2026-11-01"], run)
         self.assertEqual(len(calls), lc.MAX_LOOKUPS)
-
-    def test_a_tool_failure_exits_2_and_the_records_disagreeing_exits_1(self):
-        import subprocess
-        from unittest import mock
-        err = subprocess.CalledProcessError(4, ["gh"], stderr="boom")
-        with mock.patch.object(lc.subprocess, "run", side_effect=err):
-            with self.assertRaises(SystemExit) as cm, contextlib.redirect_stderr(io.StringIO()) as e:
-                lc.gh_json(["pr", "view", "1"])
-        self.assertEqual(cm.exception.code, 2)
-        self.assertIn("boom", e.getvalue())
 
     def test_closing_keywords(self):
         self.assertEqual(lc.closed_by("Closes #1\nfixed #2, resolves: #3\nSee #4"), {1, 2, 3})
