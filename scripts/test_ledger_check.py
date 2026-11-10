@@ -208,7 +208,7 @@ class Review(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()):
             code, out = run_main(["--pr", "50", "--since", "2026-11-01"], run)
         self.assertEqual(code, 1)
-        self.assertIn("#99 is in the PR table but GitHub has no such issue", out)
+        self.assertIn("#99 is in the PR table but could not be looked up", out)
         self.assertNotIn("#98 is in", out)
         self.assertIn("do we do #11?", out)  # the to-do list is still printed
 

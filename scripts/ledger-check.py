@@ -174,7 +174,7 @@ def main(argv=None, run=gh_json, ledger_path=LEDGER):
         for n in open_issues:
             problems.append(f"#{n} is in the PR table, is still open, is not closed by the PR and is not in the ledger")
         for n in unknown:
-            problems.append(f"#{n} is in the PR table but GitHub has no such issue here: check the number")
+            problems.append(f"#{n} is in the PR table but could not be looked up (no such issue here, or the lookup failed: see the line above); check it")
     if len(recent) >= LIMIT:
         problems.append(f"{LIMIT} or more open fast-follow issues in the window: the list may be cut, narrow --since")
     open_rows = [r for r in rows if not is_done(r[3])]
