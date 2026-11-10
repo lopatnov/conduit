@@ -72,6 +72,8 @@ the clippy matrix or CI do not.
   theme; otherwise next) or, when the budget left is short, **asked as a question: "do we do #N?"**: the owner answers yes and the
   item gets a fresh budget; an item is never silently left; (3) the PR table lists every item with its disposition. A ticket filed
   and then neither fixed nor asked about is the failure; so is a stray finding fixed on the spot at the cost of the task in hand.
+  Before a merge and at the end of a task run `python3 scripts/ledger-check.py --pr <N> --since <the day the task began>`: it
+  prints the open items as the to-do list and exits 1 when the ledger, the PR table and the open `fast-follow` issues disagree (#685).
   **Every deferred item gets an issue, linked in the PR table, before the PR is merged** (owner, 2026-10-10: a deferral written
   only in a PR comment or a note was silently dropped) — whoever defers it: the owner, a review round, a security finding.
   "Deferred" with no issue number is a dropped item. Not covered: bugs in code the PR does not touch, and performance
