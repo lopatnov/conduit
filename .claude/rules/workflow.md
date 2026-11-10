@@ -64,14 +64,19 @@ the clippy matrix or CI do not.
   before the security pass. **Bugs found *while* working are not spun off at discovery** (owner, 2026-10-03): keep a "Found while
   here" list in a comment on the issue, finish the feature, put the list to the owner before the PR opens (one line each, with a
   recommendation); agreed ones become commits in the same PR; the PR description lists *every* item with its disposition.
-  **The ledger (owner, 2026-11-09).** The rules above exist to offset what a model does badly: it forgets what it was doing when it
-  switches task, and it forgets what it noticed on the side. So: (1) **finish the task in hand without chasing**: the stray
-  finding is *noted at once as an issue* (a ticket is the memory aid, never the fix) and its number goes into the ledger,
-  `.claude/logs/open-items.md` (one line: number, what, found in which PR, status); (2) **when the task is done, work through the
-  ledger**: each item is fixed (in this PR when it is the same defect, the same class or the same area and it keeps one reviewable
-  theme; otherwise next) or, when the budget left is short, **asked as a question: "do we do #N?"**: the owner answers yes and the
-  item gets a fresh budget; an item is never silently left; (3) the PR table lists every item with its disposition. A ticket filed
-  and then neither fixed nor asked about is the failure; so is a stray finding fixed on the spot at the cost of the task in hand.
+  **The ledger (owner, 2026-11-09; corrected 2026-11-11).** The rules above exist to offset what a model does badly: it forgets what
+  it was doing when it switches task, and it forgets what it noticed on the side. So: (1) **finish the task in hand without
+  chasing**: the stray finding is *noted at once as an issue* (a ticket is the memory aid, never the fix) and its number goes into
+  the ledger, `.claude/logs/open-items.md` (one line: number, what, found in which PR, status); (2) **at the end of the task,
+  before the merge, every issue filed or noted during the PR is pulled into that same PR**, whatever its theme and whatever kind of
+  PR it is (owner, 2026-11-11: "затягиваешь в PR в конце"; there is no "different area", no "a release PR must stay mechanical"
+  and no "a separate PR next" exception; the owner may say otherwise for a given item, I do not decide it): it is fixed, with its
+  test, or, only when it needs an environment the session does not have (hardware, a service, another repository's fix) or the
+  budget left is short, **asked as a question: "do we do #N?"**: the owner answers yes and the item gets a fresh budget; an item
+  is never silently left; the PR description is then re-read against the final code and corrected (counts, behaviours, the
+  table) before the merge, because it goes stale across review rounds; (3) the PR table lists every item with its disposition;
+  ledger items left from earlier tasks are worked through or asked the same way. A ticket filed and then neither fixed nor asked
+  about is the failure; so is a stray finding fixed on the spot at the cost of the task in hand.
   Before a merge and at the end of a task run `python3 scripts/ledger-check.py --pr <N> --since <the day the task began>`: it
   prints the open items as the to-do list and exits 1 when the ledger, the PR table and the open `fast-follow` issues disagree (#685).
   **Every deferred item gets an issue, linked in the PR table, before the PR is merged** (owner, 2026-10-10: a deferral written

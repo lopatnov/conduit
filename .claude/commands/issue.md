@@ -144,9 +144,11 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
   next.
 - **Read the ledger, `.claude/logs/open-items.md`** with `python3 scripts/ledger-check.py --pr <N> --since <the day the
   session began>` (it lists the open items and fails when the PR table or an open `fast-follow` issue is missing from the
-  ledger; run it before the merge too): every item that is still open is fixed now, or put to the owner as
-  "do we do #N?" with a one-line recommendation. A session does not end with an unmentioned ledger item
-  (`.claude/rules/workflow.md`, "The ledger").
+  ledger; run it before the merge too): every issue filed or noted during this PR (including the security reviewer's
+  INFO and non-blocking items) is pulled into this same PR and fixed with its test before the merge, whatever its theme;
+  only an item that needs an environment the session does not have, or when the budget is short, is put to the owner as
+  "do we do #N?" with a one-line recommendation. Then re-read the PR description against the final code and correct it.
+  A session does not end with an unmentioned ledger item (`.claude/rules/workflow.md`, "The ledger").
 
 ## Escalation (stop and ask, don't guess)
 
