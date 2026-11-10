@@ -25,7 +25,8 @@ import sys
 LEDGER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".claude", "logs", "open-items.md")
 LIMIT = 200
 # at most 9 digits: a longer run is not an issue number, and `int()` refuses very long ones
-ISSUE = re.compile(r"#([0-9]{1,9})(?![0-9])")
+# not after a word character or `/`: `owner/other-repo#5` and `abc#5` are not issues of this repository
+ISSUE = re.compile(r"(?<![\w/])#([0-9]{1,9})(?![0-9])")
 # control characters, line separators, and the invisible/bidirectional marks that reorder or hide text
 CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]")
 # a `|` that is not escaped as `\|`, and a heading line (up to three leading spaces, CommonMark)
@@ -122,13 +123,18 @@ def fail(message):
 
 
 def untracked_open_issues(numbers, run=gh_json):
-    """Of these numbers, the ones that are open issues (not pull requests) as far as GitHub says."""
-    found = []
+    """Of these numbers: `(open, unknown)`. `open` are open issues (not pull requests); `unknown` could not be looked up
+    (no such issue here, a deleted one, a typo): that is reported, it does not stop the check."""
+    found, unknown = [], []
     for n in sorted(numbers):
-        info = run(["api", f"repos/{{owner}}/{{repo}}/issues/{n}"])
+        try:
+            info = run(["api", f"repos/{{owner}}/{{repo}}/issues/{n}"])
+        except SystemExit:  # `gh_json` has already written one line about it to stderr
+            unknown.append(n)
+            continue
         if "pull_request" not in info and info.get("state") == "open":
             found.append(n)
-    return found
+    return found, unknown
 
 
 def recent_fast_follow(since, run=gh_json):
@@ -164,8 +170,11 @@ def main(argv=None, run=gh_json, ledger_path=LEDGER):
         problems.append(f"the PR table names {len(untracked)} issues that are not in the ledger or closed by the PR "
                         f"(more than {MAX_LOOKUPS}): check them by hand, they were not looked up")
     else:
-        for n in untracked_open_issues(untracked, run):
+        open_issues, unknown = untracked_open_issues(untracked, run)
+        for n in open_issues:
             problems.append(f"#{n} is in the PR table, is still open, is not closed by the PR and is not in the ledger")
+        for n in unknown:
+            problems.append(f"#{n} is in the PR table but GitHub has no such issue here: check the number")
     if len(recent) >= LIMIT:
         problems.append(f"{LIMIT} or more open fast-follow issues in the window: the list may be cut, narrow --since")
     open_rows = [r for r in rows if not is_done(r[3])]

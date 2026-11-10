@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import sys
 import tempfile
 import unittest
 
@@ -195,6 +196,26 @@ class Review(unittest.TestCase):
     def test_bidirectional_and_invisible_marks_are_not_printed(self):
         title = "a" + chr(0x202E) + "b" + chr(0x200B) + "c" + chr(0xFEFF) + chr(0x2066) + "d"
         self.assertEqual(lc.clean(title), "a?b?c??d")
+
+    def test_a_number_github_does_not_know_is_reported_and_the_check_goes_on(self):
+        body = BODY.replace("(#10)", "(#10, #99, #98)")
+
+        def run(args):
+            if args[0] == "api" and args[1].endswith("/99"):
+                print("gh api failed (1): HTTP 404", file=sys.stderr)
+                raise SystemExit(2)
+            return gh(body, api={98: {"state": "closed"}})(args)
+        with contextlib.redirect_stderr(io.StringIO()):
+            code, out = run_main(["--pr", "50", "--since", "2026-11-01"], run)
+        self.assertEqual(code, 1)
+        self.assertIn("#99 is in the PR table but GitHub has no such issue", out)
+        self.assertNotIn("#98 is in", out)
+        self.assertIn("do we do #11?", out)  # the to-do list is still printed
+
+    def test_cross_repository_and_glued_references_are_not_issues_of_this_one(self):
+        body = "## Found while here\n\n| other/repo#5, abc#6, (#7), #8: x, cloudflare/pingora#1117 |\n"
+        self.assertEqual(lc.table_issues(body), {7, 8})
+        self.assertEqual(lc.closed_by("Fixes other/repo#5"), set())
 
     def test_closing_keywords_in_linear_time(self):
         import time
