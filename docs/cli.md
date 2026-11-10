@@ -353,12 +353,18 @@ conduit status --upstream
 <!-- docs-check: skip (command output (JSON), not a config) -->
 ```json
 {
-  "version": "2.3.0",
-  "uptime_secs": 3600,
+  "status": "running",
   "inflight": 42,
-  "sites": 2
+  "retry_inflight": 3,
+  "sites": 2,
+  "configured_upstreams": 4,
+  "healthy_upstreams": 3,
+  "total_probed_upstreams": 4,
+  "config_path": "/etc/conduit/conduit.yaml"
 }
 ```
+
+This is the body of the Admin API's `GET /status` (the fields are described in [`admin.md`](admin.md#get-status)).
 
 **`--upstream` output (table):**
 
