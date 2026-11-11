@@ -13,8 +13,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   documented anywhere, capped every request before the site's own limits were consulted, so `maxFileSizeBytes:
   53687091200` still got a `413` at 5 GiB. The bound is now worked out per request from the site's config: the
   larger of 5 GiB and `maxFileSizeBytes` when `maxTotalSizeBytes` is not set (a site with no limits at all keeps the
-  5 GiB safety net), `maxTotalSizeBytes` when it is, enforced while the body streams and, from `Content-Length`,
-  before it is read. See the Upload section of `docs/configuration.md`.
+  5 GiB safety net), `maxTotalSizeBytes` when it is. It is enforced on the whole body as it arrives (every field,
+  chunked bodies included), and from `Content-Length` before the body is read. See the Upload section of
+  `docs/configuration.md`.
 - **`--features upload` (so `full`) compiles on 32-bit targets** (issue #696): the 5 GiB constant was a `usize`
   and overflowed there. The bound is a `u64` now.
 
