@@ -13,7 +13,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `armv7-unknown-linux-gnueabihf`, `arm-unknown-linux-gnueabihf` (ARMv6, Raspberry Pi 1 and Zero),
   `arm-unknown-linux-gnueabi` and `aarch64-pc-windows-msvc`, each in the four builds (full without a suffix, as a bare
   binary and an archive; `-standard`, `-gateway`, `-static` as archives), and in the npm package for `linux-ia32`,
-  `linux-arm` (ARMv7) and `win32-arm64`. CI builds the full build of the four Linux targets on every pull request
+  `linux-arm` (the ARMv7 build where Node reports ARMv7, the ARMv6 build otherwise, which runs on both) and
+  `win32-arm64`. CI builds the full build of the four Linux targets on every pull request
   and runs the `standard` tests of the 32-bit x86 one. See the platform tables in the README and `docs/building.md`.
   `i686-pc-windows-msvc` and Android are not released (Pingora does not compile for them; cloudflare/pingora#1119).
 

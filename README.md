@@ -443,7 +443,7 @@ The npm package downloads the native binary for your platform from
 [GitHub Releases](https://github.com/lopatnov/conduit/releases) when it is installed (set
 `CONDUIT_SKIP_DOWNLOAD=1` to skip that). Node.js is only needed for the download and for the
 `conduit` launcher script; the server itself is the Rust binary. Since 2.0.0 the package installs
-the **full** build; platforms: Linux x64, arm64, x86 and ARMv7 (glibc), macOS Intel and Apple Silicon,
+the **full** build; platforms: Linux x64, arm64, x86 and 32-bit ARM, ARMv7 or ARMv6 as Node reports it (glibc), macOS Intel and Apple Silicon,
 Windows x64 and ARM64. See the [npm package page](npm/Readme.md) for details.
 
 ### Pre-built binaries

@@ -23,6 +23,7 @@ const ASSETS = [
   "conduit-aarch64-pc-windows-msvc.exe",
   "conduit-i686-unknown-linux-gnu",
   "conduit-armv7-unknown-linux-gnueabihf",
+  "conduit-arm-unknown-linux-gnueabihf",
 ];
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 
@@ -103,7 +104,10 @@ const PLATFORM_ASSETS = {
   "win32-x64": "conduit-x86_64-pc-windows-msvc.exe",
   "win32-arm64": "conduit-aarch64-pc-windows-msvc.exe",
   "linux-ia32": "conduit-i686-unknown-linux-gnu",
-  "linux-arm": "conduit-armv7-unknown-linux-gnueabihf",
+  // Node's `arm_version` decides: v7 gets the ARMv7 build, v6 and "no answer" the ARMv6 one (which runs on both).
+  "linux-arm-v7": "conduit-armv7-unknown-linux-gnueabihf",
+  "linux-arm-v6": "conduit-arm-unknown-linux-gnueabihf",
+  "linux-arm": "conduit-arm-unknown-linux-gnueabihf",
 };
 
 for (const [key, asset] of Object.entries(PLATFORM_ASSETS)) {
@@ -145,6 +149,12 @@ test("the table picks the musl build only on Linux with musl", () => {
   assert.equal(assetFor("linux", "x64", false).name, "conduit-x86_64-unknown-linux-gnu");
   assert.equal(assetFor("darwin", "arm64", true).name, "conduit-aarch64-apple-darwin");
   assert.equal(assetFor("linux", "riscv64", true).name, undefined);
+  // 32-bit ARM: ARMv7 only when Node says so; ARMv6 and an unknown level get the build that runs on both
+  assert.equal(assetFor("linux", "arm", false, "7").name, "conduit-armv7-unknown-linux-gnueabihf");
+  assert.equal(assetFor("linux", "arm", false, 7).name, "conduit-armv7-unknown-linux-gnueabihf");
+  assert.equal(assetFor("linux", "arm", false, "6").name, "conduit-arm-unknown-linux-gnueabihf");
+  assert.equal(assetFor("linux", "arm", false, undefined).name, "conduit-arm-unknown-linux-gnueabihf");
+  assert.equal(assetFor("linux", "arm", true, "7").name, undefined, "no musl build for 32-bit ARM");
 });
 
 // Detection: any musl signal wins; without one, glibc must show itself in the runtime report. A musl host whose

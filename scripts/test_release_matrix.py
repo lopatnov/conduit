@@ -40,10 +40,12 @@ NPM_PLATFORMS = {
     "darwin-x64": "x86_64-apple-darwin",
     "darwin-arm64": "aarch64-apple-darwin",
     "win32-x64": "x86_64-pc-windows-msvc",
-    # Node's `process.arch` is `ia32` on 32-bit x86 and `arm` on 32-bit ARM (Node itself needs ARMv7 there, which is
-    # the armv7 build; the ARMv6 and soft-float builds are downloads by hand).
+    # Node's `process.arch` is `ia32` on 32-bit x86 and `arm` on 32-bit ARM, where `process.config.variables.arm_version`
+    # tells ARMv7 ("linux-arm") from ARMv6 (the key "linux-armv6" of the table, which Node never reports itself); the
+    # soft-float build is a download by hand.
     "linux-ia32": "i686-unknown-linux-gnu",
     "linux-arm": "armv7-unknown-linux-gnueabihf",
+    "linux-armv6": "arm-unknown-linux-gnueabihf",
     "win32-arm64": "aarch64-pc-windows-msvc",
 }
 

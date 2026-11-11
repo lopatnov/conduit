@@ -316,11 +316,11 @@ dropped by the next reload. The complete reference is
 
 | Platform | Architecture          |
 | -------- | --------------------- |
-| Linux    | x86-64 and ARM64, glibc or musl (Alpine: the static musl build is picked); 32-bit x86 and ARMv7, glibc |
+| Linux    | x86-64 and ARM64, glibc or musl (Alpine: the static musl build is picked); 32-bit x86, ARMv7 and ARMv6 (Raspberry Pi 1 and Zero), glibc |
 | macOS    | Intel, Apple Silicon  |
 | Windows  | x86-64, ARM64         |
 
-Other platforms (Linux RISC-V 64, ARMv6 and soft-float ARM) and the smaller builds
+Other platforms (Linux RISC-V 64 and soft-float ARM) and the smaller builds
 (files ending in `-standard`, `-gateway`, `-static`) are [release downloads](https://github.com/lopatnov/conduit/releases).
 Docker images for `linux/amd64` and `linux/arm64` are
 `ghcr.io/lopatnov/conduit:latest` for full and `:latest-standard` for standard (also `-gateway`, `-static`).
