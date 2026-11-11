@@ -28,6 +28,8 @@ tokio        = { workspace = true, optional = true }
 async-trait  = { workspace = true, optional = true }
 pingora-core = { workspace = true, optional = true }
 tracing      = { workspace = true, optional = true }
+# `StreamExt::map` for the byte counter that bounds a request body (issue #700); already in the graph (root crate).
+futures      = { workspace = true, optional = true }
 mime_guess   = { workspace = true, optional = true }
 uuid         = { workspace = true, optional = true }
 
@@ -45,4 +47,5 @@ upload = [
     "dep:tracing",
     "dep:mime_guess",
     "dep:uuid",
+    "dep:futures",
 ]

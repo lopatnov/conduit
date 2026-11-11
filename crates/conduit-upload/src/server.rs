@@ -1,12 +1,16 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::extract::{DefaultBodyLimit, Multipart, State};
+use axum::body::Body;
+use axum::extract::{DefaultBodyLimit, Extension, Multipart, Request, State};
 use axum::http::{header::CONTENT_LENGTH, HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use axum::Router;
+use futures::StreamExt;
 use pingora_core::server::ShutdownWatch;
 use pingora_core::services::background::BackgroundService;
 use serde_json::json;
@@ -101,10 +105,16 @@ pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
         .route("/{*path}", post(upload_handler::<S>))
         // No router-wide body limit: axum's own default (2 MiB) would cap every upload, and a fixed ceiling here
         // (it used to be 5 GiB, issues #277 and #700) is decided before the site, and so its configured limits,
-        // is known: it capped a site that asked for more. The bound is applied per request in `upload_handler`
-        // from the site's config (`request_body_ceiling`), early on `Content-Length` and again chunk by chunk
-        // (`check_chunk_limits`, issue #277), so a site with no limits at all still cannot fill the disk.
+        // is known: it capped a site that asked for more. The bound is applied per request from the site's config
+        // (`request_body_ceiling`): `bound_request_body` counts every byte of the body, whatever the field and
+        // whether or not there is a `Content-Length` (chunked), and the handler refuses early on `Content-Length`
+        // and chunk by chunk (`check_chunk_limits`, issue #277), so a site with no limits at all still cannot
+        // fill the disk or hold a connection with an endless body.
         .layer(DefaultBodyLimit::disable())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            bound_request_body::<S>,
+        ))
         .with_state(state)
 }
 
@@ -144,16 +154,80 @@ pub async fn run_upload_server<S: UploadConfigSource>(listener: TcpListener, sta
     }
 }
 
-async fn upload_handler<S: UploadConfigSource>(
-    State(state): State<Arc<S>>,
-    headers: HeaderMap,
-    mut multipart: Multipart,
-) -> Response {
-    let site_idx: usize = headers
+/// Set by the byte counter of `bound_request_body` when a request's body went over its bound.
+#[derive(Clone)]
+struct BodyOverBound(Arc<AtomicBool>);
+
+/// The site this request is for, from the header the proxy injects (0 when absent or not a number).
+fn site_index(headers: &HeaderMap) -> usize {
+    headers
         .get(SITE_IDX_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+/// Bounds the whole request body (issue #700): counts every byte that is read, in `u64`, and fails the body when
+/// the count passes the site's ceiling plus the room for the multipart framing. The handler's own checks only count
+/// the bytes of the field it saves, so without this a field with another name, or a body with no `Content-Length`
+/// (chunked), could be pushed through without any bound. The error multer reports for that is turned into a `413` by
+/// `upload_handler`.
+async fn bound_request_body<S: UploadConfigSource>(
+    State(state): State<Arc<S>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let over = Arc::new(AtomicBool::new(false));
+    if let Some(cfg) = state.upload_config(site_index(req.headers())) {
+        let limit = request_body_ceiling(&cfg).saturating_add(CONTENT_LENGTH_SLACK);
+        let flag = over.clone();
+        let mut seen: u64 = 0;
+        let body = std::mem::take(req.body_mut());
+        let counted = body.into_data_stream().map(move |chunk| {
+            let chunk = chunk?;
+            seen = seen.saturating_add(chunk.len() as u64);
+            if seen > limit {
+                flag.store(true, Ordering::Relaxed);
+                return Err(axum::Error::new("request body is over its bound"));
+            }
+            Ok(chunk)
+        });
+        *req.body_mut() = Body::from_stream(counted);
+    }
+    req.extensions_mut().insert(BodyOverBound(over));
+    next.run(req).await
+}
+
+async fn upload_handler<S: UploadConfigSource>(
+    State(state): State<Arc<S>>,
+    headers: HeaderMap,
+    Extension(BodyOverBound(over)): Extension<BodyOverBound>,
+    multipart: Multipart,
+) -> Response {
+    bound_response(
+        over.load(Ordering::Relaxed),
+        handle_upload(state, headers, multipart).await,
+    )
+}
+
+/// A body that went over its bound surfaces from multer as a read error (a 400): it is a 413. A response that
+/// succeeded, or a request whose body never went over, is left as it is.
+fn bound_response(body_went_over: bool, response: Response) -> Response {
+    if body_went_over && !response.status().is_success() {
+        return err_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body exceeds maxTotalSizeBytes, or the default request ceiling when it is not set",
+        );
+    }
+    response
+}
+
+async fn handle_upload<S: UploadConfigSource>(
+    state: Arc<S>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    let site_idx = site_index(&headers);
 
     let cfg = match state.upload_config(site_idx) {
         Some(c) => c,
@@ -708,6 +782,25 @@ mod tests {
     }
 
     #[test]
+    fn a_body_over_its_bound_turns_a_read_error_into_a_413() {
+        let bad_request = || err_response(StatusCode::BAD_REQUEST, "multipart error: read error");
+        // over the bound: the 400 that multer's read error produced becomes a 413
+        assert_eq!(
+            bound_response(true, bad_request()).status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        // a body that never went over keeps its own status, and a success is never rewritten
+        assert_eq!(
+            bound_response(false, bad_request()).status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            bound_response(true, Json(json!({})).into_response()).status(),
+            StatusCode::OK
+        );
+    }
+
+    #[test]
     fn a_content_length_over_the_ceiling_is_seen_before_the_body_is_read() {
         let with = |v: &str| {
             let mut h = HeaderMap::new();
@@ -783,6 +876,109 @@ mod tests {
             "the streamed request was read, so its directory exists"
         );
         assert_eq!(std::fs::read_dir(&uploads).unwrap().count(), 0);
+    }
+
+    /// A one-field multipart body, sent with `Transfer-Encoding: chunked` (so with no `Content-Length`) in
+    /// 64 KiB chunks; returns the status line of the answer (empty when the connection was reset).
+    async fn send_chunked(addr: std::net::SocketAddr, field: &str, data: &[u8]) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let boundary = "conduit-test-boundary";
+        let mut body = format!(
+            "--{boundary}\r\n\
+             Content-Disposition: form-data; name=\"{field}\"; filename=\"test.bin\"\r\n\
+             Content-Type: application/octet-stream\r\n\
+             \r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(data);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+        let head = format!(
+            "POST / HTTP/1.1\r\n\
+             Host: {addr}\r\n\
+             Content-Type: multipart/form-data; boundary={boundary}\r\n\
+             Transfer-Encoding: chunked\r\n\
+             Connection: close\r\n\
+             \r\n"
+        );
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let (mut reader, mut writer) = stream.split();
+        let write = async {
+            let mut ok = writer.write_all(head.as_bytes()).await.is_ok();
+            for chunk in body.chunks(64 * 1024) {
+                if !ok {
+                    break;
+                }
+                ok = writer
+                    .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                    .await
+                    .is_ok()
+                    && writer.write_all(chunk).await.is_ok()
+                    && writer.write_all(b"\r\n").await.is_ok();
+            }
+            if ok {
+                let _ = writer.write_all(b"0\r\n\r\n").await;
+            }
+        };
+        let mut response = Vec::new();
+        // The answer is read while the body is still being written: a server that refuses early may close the
+        // connection under the writer, which then simply stops.
+        let read = async {
+            let _ = reader.read_to_end(&mut response).await;
+        };
+        tokio::join!(write, read);
+        String::from_utf8_lossy(&response)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn a_chunked_body_in_another_field_is_bounded_too() {
+        // Without the byte counter of `bound_request_body`, a field the handler does not save is read and thrown
+        // away without limit, and a chunked body has no `Content-Length` for the early refusal: 3 MiB in a field
+        // named "other" would be read to its end and answered with a 400 ("no files uploaded"). The bound is the
+        // total limit (1 MiB) plus 1 MiB of framing room, so it is refused: a 413, or a reset connection.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let addr = spawn_upload_server(site_config(&dir, None, Some(1024 * 1024))).await;
+        let status = send_chunked(addr, "other", &vec![7u8; 3 * 1024 * 1024]).await;
+        assert!(
+            status.is_empty() || status.starts_with("HTTP/1.1 413"),
+            "got: {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_of_exactly_the_total_limit_is_accepted_with_its_multipart_framing() {
+        // The counter sees the whole body, boundaries and part headers included, so its bound has room for them:
+        // a file of exactly `maxTotalSizeBytes` must not be refused for the few hundred bytes of framing around it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let limit = 100 * 1024;
+        let addr = spawn_upload_server(site_config(&dir, None, Some(limit))).await;
+        let with_length = send_multipart(addr, "/", &vec![7u8; limit as usize]).await;
+        assert!(
+            with_length.starts_with("HTTP/1.1 200"),
+            "got: {with_length}"
+        );
+        let chunked = send_chunked(addr, "file", &vec![7u8; limit as usize]).await;
+        assert!(chunked.starts_with("HTTP/1.1 200"), "got: {chunked}");
+        // one byte more is over the limit
+        let over = send_multipart(addr, "/", &vec![7u8; limit as usize + 1]).await;
+        assert!(
+            over.is_empty() || over.starts_with("HTTP/1.1 413"),
+            "got: {over}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chunked_upload_within_its_bound_is_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let addr = spawn_upload_server(site_config(&dir, None, Some(1024 * 1024))).await;
+        let status = send_chunked(addr, "file", &vec![7u8; 300 * 1024]).await;
+        assert!(status.starts_with("HTTP/1.1 200"), "got: {status}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[tokio::test]
