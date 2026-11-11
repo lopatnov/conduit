@@ -20,6 +20,9 @@ const ASSETS = [
   "conduit-x86_64-pc-windows-msvc.exe",
   "conduit-x86_64-unknown-linux-musl",
   "conduit-aarch64-unknown-linux-musl",
+  "conduit-aarch64-pc-windows-msvc.exe",
+  "conduit-i686-unknown-linux-gnu",
+  "conduit-armv7-unknown-linux-gnueabihf",
 ];
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 
@@ -98,6 +101,9 @@ const PLATFORM_ASSETS = {
   "darwin-x64": "conduit-x86_64-apple-darwin",
   "darwin-arm64": "conduit-aarch64-apple-darwin",
   "win32-x64": "conduit-x86_64-pc-windows-msvc.exe",
+  "win32-arm64": "conduit-aarch64-pc-windows-msvc.exe",
+  "linux-ia32": "conduit-i686-unknown-linux-gnu",
+  "linux-arm": "conduit-armv7-unknown-linux-gnueabihf",
 };
 
 for (const [key, asset] of Object.entries(PLATFORM_ASSETS)) {

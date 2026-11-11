@@ -25,6 +25,11 @@ TARGETS = (
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
+    "i686-unknown-linux-gnu",
+    "armv7-unknown-linux-gnueabihf",
+    "arm-unknown-linux-gnueabihf",
+    "arm-unknown-linux-gnueabi",
+    "aarch64-pc-windows-msvc",
 )
 # npm's `process.platform-process.arch` keys and the release target each one downloads.
 NPM_PLATFORMS = {
@@ -35,6 +40,11 @@ NPM_PLATFORMS = {
     "darwin-x64": "x86_64-apple-darwin",
     "darwin-arm64": "aarch64-apple-darwin",
     "win32-x64": "x86_64-pc-windows-msvc",
+    # Node's `process.arch` is `ia32` on 32-bit x86 and `arm` on 32-bit ARM (Node itself needs ARMv7 there, which is
+    # the armv7 build; the ARMv6 and soft-float builds are downloads by hand).
+    "linux-ia32": "i686-unknown-linux-gnu",
+    "linux-arm": "armv7-unknown-linux-gnueabihf",
+    "win32-arm64": "aarch64-pc-windows-msvc",
 }
 
 

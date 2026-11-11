@@ -17,6 +17,11 @@ const ASSETS = {
   "darwin-x64":       "conduit-x86_64-apple-darwin",
   "darwin-arm64":     "conduit-aarch64-apple-darwin",
   "win32-x64":        "conduit-x86_64-pc-windows-msvc.exe",
+  "win32-arm64":      "conduit-aarch64-pc-windows-msvc.exe",
+  // 32-bit: Node reports `ia32` and `arm`. Node itself needs ARMv7 on ARM, which is the armv7 hard-float build.
+  // There are no musl builds for these two, so an Alpine system gets the "unsupported" message.
+  "linux-ia32":       "conduit-i686-unknown-linux-gnu",
+  "linux-arm":        "conduit-armv7-unknown-linux-gnueabihf",
 };
 
 export const SUPPORTED = Object.keys(ASSETS);
