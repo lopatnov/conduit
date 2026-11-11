@@ -119,7 +119,18 @@ pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
 /// generous enough not to interfere with legitimate large-file uploads
 /// (video, datasets) while still bounding the worst case for a site that
 /// hasn't configured `maxFileSizeBytes`/`maxTotalSizeBytes` at all.
-const MAX_REQUEST_BODY_BYTES: usize = 5 * 1024 * 1024 * 1024;
+///
+/// On a 32-bit target 5 GiB does not fit in a `usize` (axum takes the limit as one), so the ceiling there is
+/// `usize::MAX`, just under 4 GiB: the largest request body such a process can address anyway (it did not compile
+/// at all before: `5 * 1024 * 1024 * 1024` overflowed in `usize`, issue #696).
+const MAX_REQUEST_BODY_BYTES: usize = {
+    const CEILING: u64 = 5 * 1024 * 1024 * 1024;
+    if CEILING > usize::MAX as u64 {
+        usize::MAX
+    } else {
+        CEILING as usize
+    }
+};
 
 /// Start the Axum file-upload server on the given `listener` and serve
 /// requests until the process exits.
@@ -389,6 +400,18 @@ fn destination_path(dir: &str, original_name: &str) -> (String, std::path::PathB
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Issue #696: the ceiling is 5 GiB where a `usize` can hold it and the largest `usize` where it cannot (32-bit
+    // targets); the constant did not compile at all on 32-bit before.
+    #[test]
+    fn the_request_ceiling_is_five_gib_or_the_largest_usize() {
+        let five_gib: u64 = 5 * 1024 * 1024 * 1024;
+        assert_eq!(MAX_REQUEST_BODY_BYTES as u64, five_gib.min(usize::MAX as u64));
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(MAX_REQUEST_BODY_BYTES as u64, five_gib);
+        #[cfg(target_pointer_width = "32")]
+        assert_eq!(MAX_REQUEST_BODY_BYTES, usize::MAX);
+    }
 
     #[test]
     fn no_allowlist_accepts_any_content_type_including_absent() {
