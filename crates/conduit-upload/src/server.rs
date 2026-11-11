@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::extract::{DefaultBodyLimit, Multipart, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header::CONTENT_LENGTH, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use axum::Router;
@@ -99,38 +99,39 @@ pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
         // covers every non-root path as before.
         .route("/", post(upload_handler::<S>))
         .route("/{*path}", post(upload_handler::<S>))
-        // Hard backstop, independent of per-site `maxFileSizeBytes`/
-        // `maxTotalSizeBytes` (issue #277): those are `Option<u64>` and
-        // resolved per-request from site config the router doesn't have
-        // at construction time, so a site with no limits configured at all
-        // would otherwise have no upper bound whatsoever on request body
-        // size (streaming to disk closes the *memory*-exhaustion vector,
-        // but an unconfigured site could still fill the disk). This is a
-        // blunt, generous global ceiling meant to catch that
-        // no-limits-configured case, not to replace the precise per-site
-        // streaming checks in `check_chunk_limits` — those still run first
-        // and reject with the more specific 413 message.
-        .layer(DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
+        // No router-wide body limit: axum's own default (2 MiB) would cap every upload, and a fixed ceiling here
+        // (it used to be 5 GiB, issues #277 and #700) is decided before the site, and so its configured limits,
+        // is known: it capped a site that asked for more. The bound is applied per request in `upload_handler`
+        // from the site's config (`request_body_ceiling`), early on `Content-Length` and again chunk by chunk
+        // (`check_chunk_limits`, issue #277), so a site with no limits at all still cannot fill the disk.
+        .layer(DefaultBodyLimit::disable())
         .with_state(state)
 }
 
-/// Absolute ceiling on a single upload request's body size, regardless of
-/// per-site config (see `make_upload_router`'s doc comment). 5 GiB —
-/// generous enough not to interfere with legitimate large-file uploads
-/// (video, datasets) while still bounding the worst case for a site that
-/// hasn't configured `maxFileSizeBytes`/`maxTotalSizeBytes` at all.
-///
-/// On a 32-bit target 5 GiB does not fit in a `usize` (axum takes the limit as one), so the ceiling there is
-/// `usize::MAX`, just under 4 GiB: the largest request body such a process can address anyway (it did not compile
-/// at all before: `5 * 1024 * 1024 * 1024` overflowed in `usize`, issue #696).
-const MAX_REQUEST_BODY_BYTES: usize = {
-    const CEILING: u64 = 5 * 1024 * 1024 * 1024;
-    if CEILING > usize::MAX as u64 {
-        usize::MAX
-    } else {
-        CEILING as usize
-    }
-};
+/// The request body ceiling of a site that sets no `maxTotalSizeBytes` (issue #277): 5 GiB, bounding the disk a site
+/// with no limits configured at all can be made to fill. A site that sets `maxFileSizeBytes` above it gets that
+/// instead (a configured single file always fits), and a site that sets `maxTotalSizeBytes` gets exactly that.
+/// In `u64`: a `usize` cannot hold 5 GiB on a 32-bit target (issues #696 and #700).
+const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+
+/// Room above the ceiling that a `Content-Length` may have before the request is refused without reading it: the
+/// multipart framing (boundaries, part headers) is part of the length but not of the file bytes the ceiling counts.
+const CONTENT_LENGTH_SLACK: u64 = 1024 * 1024;
+
+/// The most file bytes one request to this site may carry (issue #700).
+fn request_body_ceiling(cfg: &UploadConfig) -> u64 {
+    cfg.max_total_size_bytes
+        .unwrap_or_else(|| DEFAULT_MAX_REQUEST_BODY_BYTES.max(cfg.max_file_size_bytes.unwrap_or(0)))
+}
+
+/// Whether a `Content-Length` header already shows the request to be over its ceiling.
+fn content_length_over_ceiling(headers: &HeaderMap, ceiling: u64) -> bool {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .is_some_and(|len| len > ceiling.saturating_add(CONTENT_LENGTH_SLACK))
+}
 
 /// Start the Axum file-upload server on the given `listener` and serve
 /// requests until the process exits.
@@ -158,6 +159,13 @@ async fn upload_handler<S: UploadConfigSource>(
         Some(c) => c,
         None => return err_response(StatusCode::NOT_FOUND, "no upload config for this site"),
     };
+
+    if content_length_over_ceiling(&headers, request_body_ceiling(&cfg)) {
+        return err_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body exceeds maxTotalSizeBytes, or the default request ceiling when it is not set",
+        );
+    }
 
     if let Err(e) = tokio::fs::create_dir_all(&cfg.dir).await {
         return err_response(
@@ -270,10 +278,28 @@ fn check_chunk_limits(
     if max_total_size_bytes.is_some_and(|max| total_bytes_so_far + chunk_len > max) {
         return Err(err_response(
             StatusCode::PAYLOAD_TOO_LARGE,
-            "upload exceeds maxTotalSizeBytes",
+            "upload exceeds maxTotalSizeBytes, or the default request ceiling when it is not set",
         ));
     }
     Ok(())
+}
+
+/// `check_chunk_limits` with this site's limits: its own file limit, and as the request limit its ceiling
+/// (`maxTotalSizeBytes`, or the default one when that is not set, issue #700).
+#[allow(clippy::result_large_err)]
+fn check_request_limits(
+    chunk_len: u64,
+    file_bytes_so_far: u64,
+    total_bytes_so_far: u64,
+    cfg: &UploadConfig,
+) -> Result<(), Response> {
+    check_chunk_limits(
+        chunk_len,
+        file_bytes_so_far,
+        total_bytes_so_far,
+        cfg.max_file_size_bytes,
+        Some(request_body_ceiling(cfg)),
+    )
 }
 
 /// Stream `field`'s body to `save_path`, checking `check_chunk_limits`
@@ -312,12 +338,11 @@ async fn stream_field_to_file(
         // duration of streaming this field, letting a single large field
         // bypass maxTotalSizeBytes almost entirely (Gitar finding on this
         // PR).
-        check_chunk_limits(
+        check_request_limits(
             chunk.len() as u64,
             file_bytes,
             *total_bytes + file_bytes,
-            cfg.max_file_size_bytes,
-            cfg.max_total_size_bytes,
+            cfg,
         )?;
         tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
             .await
@@ -400,18 +425,6 @@ fn destination_path(dir: &str, original_name: &str) -> (String, std::path::PathB
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Issue #696: the ceiling is 5 GiB where a `usize` can hold it and the largest `usize` where it cannot (32-bit
-    // targets); the constant did not compile at all on 32-bit before.
-    #[test]
-    fn the_request_ceiling_is_five_gib_or_the_largest_usize() {
-        let five_gib: u64 = 5 * 1024 * 1024 * 1024;
-        assert_eq!(MAX_REQUEST_BODY_BYTES as u64, five_gib.min(usize::MAX as u64));
-        #[cfg(target_pointer_width = "64")]
-        assert_eq!(MAX_REQUEST_BODY_BYTES as u64, five_gib);
-        #[cfg(target_pointer_width = "32")]
-        assert_eq!(MAX_REQUEST_BODY_BYTES, usize::MAX);
-    }
 
     #[test]
     fn no_allowlist_accepts_any_content_type_including_absent() {
@@ -554,20 +567,29 @@ mod tests {
     /// exercises axum's own route matching -- the exact layer issue #286's
     /// bug lived in (`{*path}` silently not matching the empty root segment).
     async fn post_multipart_file(path: &str) -> String {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
         let dir = tempfile::tempdir().expect("tempdir");
-        let cfg = UploadConfig {
+        let addr = spawn_upload_server(site_config(&dir, None, None)).await;
+        send_multipart(addr, path, b"hello world").await
+    }
+
+    fn site_config(
+        dir: &tempfile::TempDir,
+        max_file_size_bytes: Option<u64>,
+        max_total_size_bytes: Option<u64>,
+    ) -> UploadConfig {
+        UploadConfig {
             path: "/upload".to_owned(),
             dir: dir.path().to_string_lossy().into_owned(),
-            max_file_size_bytes: None,
-            max_total_size_bytes: None,
+            max_file_size_bytes,
+            max_total_size_bytes,
             max_files: None,
             allowed_mime_types: None,
             field_name: None,
-        };
-        let state = Arc::new(FixedConfig(cfg));
+        }
+    }
 
+    async fn spawn_upload_server(cfg: UploadConfig) -> std::net::SocketAddr {
+        let state = Arc::new(FixedConfig(cfg));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -575,29 +597,40 @@ mod tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, make_upload_router(state)).await;
         });
+        addr
+    }
+
+    /// Posts a one-file multipart body to `path` on the server at `addr` and returns the whole response as text.
+    async fn send_multipart_response(
+        addr: std::net::SocketAddr,
+        path: &str,
+        file: &[u8],
+    ) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let boundary = "conduit-test-boundary";
-        let body = format!(
+        let mut body = format!(
             "--{boundary}\r\n\
-             Content-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n\
-             Content-Type: text/plain\r\n\
-             \r\n\
-             hello world\r\n\
-             --{boundary}--\r\n"
-        );
-        let request = format!(
+             Content-Disposition: form-data; name=\"file\"; filename=\"test.bin\"\r\n\
+             Content-Type: application/octet-stream\r\n\
+             \r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(file);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let head = format!(
             "POST {path} HTTP/1.1\r\n\
              Host: {addr}\r\n\
              Content-Type: multipart/form-data; boundary={boundary}\r\n\
              Content-Length: {}\r\n\
              Connection: close\r\n\
-             \r\n\
-             {body}",
+             \r\n",
             body.len()
         );
 
         let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
-        stream.write_all(request.as_bytes()).await.expect("write");
+        stream.write_all(head.as_bytes()).await.expect("write");
+        stream.write_all(&body).await.expect("write body");
         // Deliberately no `stream.shutdown()` here: half-closing the write
         // side before the server has `accept()`-ed the connection can drop
         // the still-pending backlog entry outright on some platforms
@@ -606,12 +639,150 @@ mod tests {
         // and the server's own `Connection: close` closes its end after
         // responding, which is what actually terminates `read_to_end` below.
         let mut response = Vec::new();
-        stream
-            .read_to_end(&mut response)
+        // A server that refuses early may close while the client is still writing; what it answered is still read.
+        let _ = stream.read_to_end(&mut response).await;
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    /// The first line of the response (the status line).
+    async fn send_multipart(addr: std::net::SocketAddr, path: &str, file: &[u8]) -> String {
+        send_multipart_response(addr, path, file)
             .await
-            .expect("read response");
-        let response = String::from_utf8_lossy(&response);
-        response.lines().next().unwrap_or_default().to_owned()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    }
+
+    // ── the request body ceiling (issue #700) ──────────────────────────────────
+
+    fn config_with(max_file: Option<u64>, max_total: Option<u64>) -> UploadConfig {
+        UploadConfig {
+            path: "/upload".to_owned(),
+            dir: "./uploads".to_owned(),
+            max_file_size_bytes: max_file,
+            max_total_size_bytes: max_total,
+            max_files: None,
+            allowed_mime_types: None,
+            field_name: None,
+        }
+    }
+
+    #[test]
+    fn the_ceiling_is_five_gib_without_limits_and_follows_the_configured_ones() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // nothing configured: the default, computed in u64 (5 GiB does not fit a 32-bit usize)
+        assert_eq!(request_body_ceiling(&config_with(None, None)), 5 * GIB);
+        // a file limit below the default changes nothing; one above it is honoured (AI models are tens of GB)
+        assert_eq!(
+            request_body_ceiling(&config_with(Some(1024), None)),
+            5 * GIB
+        );
+        assert_eq!(
+            request_body_ceiling(&config_with(Some(50 * GIB), None)),
+            50 * GIB
+        );
+        // a total limit is the ceiling, below or above the default
+        assert_eq!(request_body_ceiling(&config_with(None, Some(100))), 100);
+        assert_eq!(
+            request_body_ceiling(&config_with(Some(10), Some(50 * GIB))),
+            50 * GIB
+        );
+    }
+
+    #[test]
+    fn the_streaming_check_refuses_at_the_ceiling_of_a_site_without_limits() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // a site without limits: refused at the default ceiling, accepted one byte below it
+        let cfg = config_with(None, None);
+        assert!(check_request_limits(1, 0, 5 * GIB - 1, &cfg).is_ok());
+        assert!(check_request_limits(1, 0, 5 * GIB, &cfg).is_err());
+        // a configured big file is not stopped by the default: its own limit is the ceiling
+        let big = config_with(Some(50 * GIB), None);
+        assert!(check_request_limits(1, 6 * GIB, 6 * GIB, &big).is_ok());
+        assert!(check_request_limits(1, 50 * GIB, 50 * GIB, &big).is_err());
+        // a total limit below the default is what applies
+        let small = config_with(None, Some(100));
+        assert!(check_request_limits(1, 0, 99, &small).is_ok());
+        assert!(check_request_limits(1, 0, 100, &small).is_err());
+    }
+
+    #[test]
+    fn a_content_length_over_the_ceiling_is_seen_before_the_body_is_read() {
+        let with = |v: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(CONTENT_LENGTH, v.parse().unwrap());
+            h
+        };
+        let ceiling = 1000;
+        // within the ceiling plus the framing slack: read and checked chunk by chunk
+        assert!(!content_length_over_ceiling(&with("1000"), ceiling));
+        assert!(!content_length_over_ceiling(
+            &with(&(ceiling + CONTENT_LENGTH_SLACK).to_string()),
+            ceiling
+        ));
+        // beyond it: refused without reading
+        assert!(content_length_over_ceiling(
+            &with(&(ceiling + CONTENT_LENGTH_SLACK + 1).to_string()),
+            ceiling
+        ));
+        // no length, or one that is not a number (chunked, garbage): the streaming check decides
+        assert!(!content_length_over_ceiling(&HeaderMap::new(), ceiling));
+        assert!(!content_length_over_ceiling(&with("lots"), ceiling));
+        // a ceiling near u64::MAX does not overflow
+        assert!(!content_length_over_ceiling(&with("5"), u64::MAX));
+    }
+
+    #[tokio::test]
+    async fn a_site_without_limits_accepts_a_file_over_axums_default_body_limit() {
+        // axum's own default body limit is 2 MiB: if the router layer is not disabled, a 3 MiB file is refused
+        // although the site's ceiling is 5 GiB.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let addr = spawn_upload_server(site_config(&dir, None, None)).await;
+        let status = send_multipart(addr, "/", &vec![7u8; 3 * 1024 * 1024]).await;
+        assert!(status.starts_with("HTTP/1.1 200"), "got: {status}");
+    }
+
+    #[tokio::test]
+    async fn a_file_limit_above_the_old_fixed_ceiling_is_configurable() {
+        // the per-site number decides: a site that sets a file limit takes it, here with a 3 MiB file under it
+        let dir = tempfile::tempdir().expect("tempdir");
+        let addr = spawn_upload_server(site_config(&dir, Some(10 * 1024 * 1024), None)).await;
+        let status = send_multipart(addr, "/", &vec![7u8; 3 * 1024 * 1024]).await;
+        assert!(status.starts_with("HTTP/1.1 200"), "got: {status}");
+    }
+
+    #[tokio::test]
+    async fn a_total_limit_refuses_with_413_both_while_streaming_and_on_content_length() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // a directory that does not exist yet: the handler creates it only for a request it is going to read
+        let uploads = root.path().join("uploads");
+        let mut cfg = site_config(&root, None, Some(1024 * 1024));
+        cfg.dir = uploads.to_string_lossy().into_owned();
+        let addr = spawn_upload_server(cfg).await;
+        // A server that refuses a body it has not finished reading closes the connection on unread data, which
+        // the client may see as a reset (Windows especially) instead of the 413: both mean "refused", an empty
+        // answer is only accepted for that reason, and what must hold either way is that nothing stays on disk.
+        let refused = |status: &str| status.is_empty() || status.starts_with("HTTP/1.1 413");
+
+        // 3 MiB: over the ceiling plus the slack, refused from the header before the body is read, so the
+        // upload directory is not even created
+        let early = send_multipart(addr, "/", &vec![7u8; 3 * 1024 * 1024]).await;
+        assert!(refused(&early), "got: {early}");
+        assert!(
+            !uploads.exists(),
+            "an early refusal must not touch the disk"
+        );
+
+        // 1.5 MiB: the length is within the slack, so the body is streamed and refused on the way, and the
+        // partly written file is removed again
+        let streamed = send_multipart(addr, "/", &vec![7u8; 1536 * 1024]).await;
+        assert!(refused(&streamed), "got: {streamed}");
+        assert!(
+            uploads.exists(),
+            "the streamed request was read, so its directory exists"
+        );
+        assert_eq!(std::fs::read_dir(&uploads).unwrap().count(), 0);
     }
 
     #[tokio::test]
