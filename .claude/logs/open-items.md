@@ -8,10 +8,10 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
-| #700 | upload: the 5 GiB request ceiling is hard-coded, undocumented and silently caps a larger per-site limit (decided with #696: the 32-bit overflow fix there is a patch on it) | owner's question during #696 | open: proposal on the issue, owner to confirm |
-| #696 | 32-bit targets (i686 Linux/Windows, ARMv6/ARMv7) and the Android targets: probe build, then ship what builds (standard, gateway, static-server; `full` not required) | owner's question on rustc and targets, 2026-11-11 | owner said yes: start right after 2.3.0 |
-| cloudflare/pingora#1119, #1120 | upstream issue and PR: pingora-core does not compile on 32-bit Windows (`from_raw_socket(fd as u64)`); Windows i686 joins the Conduit release when a Pingora release has it | #696 | filed 2026-11-11, waiting for Pingora |
-| #697 | ledger-check hardening: Windows cwd lookup of `gh`, no subprocess timeout, `RecursionError`, glued `PR#N` | security review of #686 | open (was missing from #686's table; added there afterwards) |
+| #700 | upload: the 5 GiB request ceiling is hard-coded, undocumented and silently caps a larger per-site limit | owner's question during #696 | done in PR #699 |
+| #696 | 32-bit targets (i686 Linux/Windows, ARMv6/ARMv7) and the Android targets: probe builds, then ship what builds | owner's question on rustc and targets, 2026-11-11 | done in PR #699: the four 32-bit Linux targets and Windows ARM64 ship; i686 Windows waits for Pingora (#701, cloudflare/pingora#1119 and cloudflare/pingora#1120); Android is not supported by Pingora |
+| #701 | release: add i686-pc-windows-msvc once a Pingora release compiles on 32-bit Windows | #696 | open, waits for Pingora |
+| #697 | ledger-check hardening: Windows cwd lookup of `gh`, no subprocess timeout, `RecursionError`, glued `PR#N` | security review of #686 | done in PR #699 |
 | #677 | flaky server start in the integration tests | full test run for #678 | harness improved in PR #683 (stderr kept, one retry); open until the cause is named |
 | #676 | serde_yaml is unmaintained (RUSTSEC-2024-0449) | OSV | PR #678 closed by the owner, waits for Pingora (cloudflare/pingora#1117); reopen then |
 | #673 | RISC-V release build is not run under QEMU in CI | 2.2.1 | open |
