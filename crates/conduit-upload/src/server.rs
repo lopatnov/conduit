@@ -204,10 +204,9 @@ async fn upload_handler<S: UploadConfigSource>(
     Extension(BodyOverBound(over)): Extension<BodyOverBound>,
     multipart: Multipart,
 ) -> Response {
-    bound_response(
-        over.load(Ordering::Relaxed),
-        handle_upload(state, headers, multipart).await,
-    )
+    // The flag is read after the request has been handled: it is set while the body is read.
+    let response = handle_upload(state, headers, multipart).await;
+    bound_response(over.load(Ordering::Relaxed), response)
 }
 
 /// A body that went over its bound surfaces from multer as a read error (a 400): it is a 413. A response that
@@ -703,19 +702,32 @@ mod tests {
         );
 
         let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
-        stream.write_all(head.as_bytes()).await.expect("write");
-        stream.write_all(&body).await.expect("write body");
-        // Deliberately no `stream.shutdown()` here: half-closing the write
-        // side before the server has `accept()`-ed the connection can drop
-        // the still-pending backlog entry outright on some platforms
-        // (confirmed empirically on Windows) -- the `Content-Length` header
-        // above already tells the server exactly how much body to expect,
-        // and the server's own `Connection: close` closes its end after
-        // responding, which is what actually terminates `read_to_end` below.
+        let (mut reader, mut writer) = stream.split();
+        // Deliberately no `shutdown()` of the write side here: half-closing it before the server has `accept()`-ed
+        // the connection can drop the still-pending backlog entry outright on some platforms (confirmed empirically
+        // on Windows) -- the `Content-Length` header already tells the server exactly how much body to expect, and
+        // the server's own `Connection: close` closes its end after responding, which terminates the read below.
+        //
+        // The answer is read while the body is still being written: a server that refuses the request closes the
+        // connection under the writer (a broken pipe on Linux, a reset on Windows), which then simply stops.
+        let write = async {
+            if writer.write_all(head.as_bytes()).await.is_ok() {
+                let _ = writer.write_all(&body).await;
+            }
+        };
         let mut response = Vec::new();
-        // A server that refuses early may close while the client is still writing; what it answered is still read.
-        let _ = stream.read_to_end(&mut response).await;
+        let read = async {
+            let _ = reader.read_to_end(&mut response).await;
+        };
+        tokio::join!(write, read);
         String::from_utf8_lossy(&response).into_owned()
+    }
+
+    /// Whether `status` shows a refusal for being too large. On Windows the client may see a reset connection and no
+    /// answer at all when the server refuses a body it has not finished reading (so an empty status counts there);
+    /// on Unix the 413 is always seen, and it is required.
+    fn is_413(status: &str) -> bool {
+        status.starts_with("HTTP/1.1 413") || (cfg!(windows) && status.is_empty())
     }
 
     /// The first line of the response (the status line).
@@ -856,7 +868,7 @@ mod tests {
         // A server that refuses a body it has not finished reading closes the connection on unread data, which
         // the client may see as a reset (Windows especially) instead of the 413: both mean "refused", an empty
         // answer is only accepted for that reason, and what must hold either way is that nothing stays on disk.
-        let refused = |status: &str| status.is_empty() || status.starts_with("HTTP/1.1 413");
+        let refused = is_413;
 
         // 3 MiB: over the ceiling plus the slack, refused from the header before the body is read, so the
         // upload directory is not even created
@@ -944,10 +956,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let addr = spawn_upload_server(site_config(&dir, None, Some(1024 * 1024))).await;
         let status = send_chunked(addr, "other", &vec![7u8; 3 * 1024 * 1024]).await;
-        assert!(
-            status.is_empty() || status.starts_with("HTTP/1.1 413"),
-            "got: {status}"
-        );
+        assert!(is_413(&status), "got: {status}");
     }
 
     #[tokio::test]
@@ -966,10 +975,7 @@ mod tests {
         assert!(chunked.starts_with("HTTP/1.1 200"), "got: {chunked}");
         // one byte more is over the limit
         let over = send_multipart(addr, "/", &vec![7u8; limit as usize + 1]).await;
-        assert!(
-            over.is_empty() || over.starts_with("HTTP/1.1 413"),
-            "got: {over}"
-        );
+        assert!(is_413(&over), "got: {over}");
     }
 
     #[tokio::test]
