@@ -72,6 +72,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the npm Readme said RISC-V had the standard build only, since 2.2.1 it has all four.
 - **`--features upload` (so `full`) compiles on 32-bit targets** (issue #696): the 5 GiB constant was a `usize`
   and overflowed there. The bound is a `u64` now.
+- **An upload request that is refused keeps none of its files**: a request that failed after it had saved a file (a
+  later file over its limit, a body over its bound, a multipart error, or a client that went away) used to leave the
+  completed files on disk although the status said nothing was kept. They are removed now. A saved file's extension
+  is kept only when it is ASCII letters and digits (16 at most), so a name like `x.a:b` cannot make an NTFS
+  alternate data stream on Windows.
 
 ### Internal
 

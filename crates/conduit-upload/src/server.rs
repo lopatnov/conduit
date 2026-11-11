@@ -235,11 +235,34 @@ fn bound_response(body_went_over: bool, response: Response) -> Response {
     response
 }
 
-/// Removes the files a request saved before it was rejected: an error status means nothing was kept, the same
-/// as for the file that was being written when the error came (`process_upload_field`).
-async fn discard(saved: &[PathBuf]) {
-    for path in saved {
-        let _ = tokio::fs::remove_file(path).await;
+/// The files a request has saved so far. They are removed when this is dropped unless `keep` was called: an error
+/// status means nothing was kept, the same as for the file that was being written when the error came
+/// (`process_upload_field`), and a request that is cancelled (the client goes away, the task is dropped) is cleaned
+/// up too, which an explicit cleanup on the error path would not cover.
+#[derive(Default)]
+struct SavedFiles {
+    paths: Vec<PathBuf>,
+    keep: bool,
+}
+
+impl SavedFiles {
+    fn push(&mut self, path: PathBuf) {
+        self.paths.push(path);
+    }
+
+    /// The request succeeded: the files stay.
+    fn keep(mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for SavedFiles {
+    fn drop(&mut self) {
+        if !self.keep {
+            for path in &self.paths {
+                let _ = std::fs::remove_file(path);
+            }
+        }
     }
 }
 
@@ -270,7 +293,7 @@ async fn handle_upload(
 
     let field_name = cfg.field_name.as_deref().unwrap_or("file");
     let mut uploaded: Vec<serde_json::Value> = Vec::new();
-    let mut saved: Vec<PathBuf> = Vec::new();
+    let mut saved = SavedFiles::default();
     let mut total_bytes: u64 = 0;
 
     let outcome: Result<(), Response> = async {
@@ -299,8 +322,8 @@ async fn handle_upload(
         }
     }
     .await;
+    // On an error `saved` is dropped here and takes the files with it.
     if let Err(response) = outcome {
-        discard(&saved).await;
         return response;
     }
 
@@ -308,6 +331,7 @@ async fn handle_upload(
         return err_response(StatusCode::BAD_REQUEST, "no files uploaded");
     }
 
+    saved.keep();
     Json(json!({ "status": "ok", "files": uploaded })).into_response()
 }
 
@@ -516,12 +540,22 @@ fn check_mime_type(
     Err(err_response(StatusCode::UNSUPPORTED_MEDIA_TYPE, &msg))
 }
 
-/// Compute a random UUID-based destination filename (preserving the
-/// original extension, verbatim) and its full path under `dir`.
+/// The longest extension of an uploaded file name that is kept.
+const MAX_EXTENSION_LEN: usize = 16;
+
+/// Compute a random UUID-based destination filename and its full path under `dir`. The original extension is kept
+/// verbatim when it is ASCII letters and digits (at most `MAX_EXTENSION_LEN`); anything else is dropped, so that a
+/// client's name cannot put a `:` (an NTFS alternate data stream on Windows), a space, a control or other special
+/// character into the name of a file on the server.
 fn destination_path(dir: &str, original_name: &str) -> (String, std::path::PathBuf) {
     let ext = Path::new(original_name)
         .extension()
         .and_then(std::ffi::OsStr::to_str)
+        .filter(|e| {
+            !e.is_empty()
+                && e.len() <= MAX_EXTENSION_LEN
+                && e.bytes().all(|b| b.is_ascii_alphanumeric())
+        })
         .map(|e| format!(".{e}"))
         .unwrap_or_default();
     let save_name = format!("{}{ext}", uuid::Uuid::new_v4());
@@ -587,6 +621,58 @@ mod tests {
             "extension from original_name must be preserved verbatim: {save_name}"
         );
         assert_eq!(save_path, std::path::Path::new("/uploads").join(&save_name));
+    }
+
+    #[test]
+    fn destination_path_drops_an_extension_that_is_not_plain_letters_and_digits() {
+        // `a:b` would make an NTFS alternate data stream on Windows; the others are special characters
+        for name in [
+            "x.a:b",
+            "x.a b",
+            "x.\u{e9}",
+            "x.t\u{0}t",
+            "x.a*b",
+            "x.",
+            "x.<b>",
+            &format!("x.{}", "a".repeat(17)),
+        ] {
+            let (save_name, _) = destination_path("/uploads", name);
+            assert!(
+                !save_name.contains('.') && !save_name.contains(':'),
+                "{name:?} must not leave an extension: {save_name}"
+            );
+        }
+        // plain ones stay, up to the length limit
+        assert!(destination_path("/u", "photo.jpeg").0.ends_with(".jpeg"));
+        assert!(destination_path("/u", "a.b2").0.ends_with(".b2"));
+        assert!(destination_path("/u", &format!("x.{}", "a".repeat(16)))
+            .0
+            .ends_with(&"a".repeat(16)));
+    }
+
+    #[test]
+    fn saved_files_are_removed_when_dropped_unless_the_request_kept_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let make = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            path
+        };
+        // dropped (an error, or a cancelled request): gone
+        let mut dropped = SavedFiles::default();
+        dropped.push(make("a"));
+        dropped.push(make("b"));
+        drop(dropped);
+        assert!(!dir.path().join("a").exists() && !dir.path().join("b").exists());
+        // kept (the request succeeded): stay
+        let mut kept = SavedFiles::default();
+        kept.push(make("c"));
+        kept.keep();
+        assert!(dir.path().join("c").exists());
+        // a path that is already gone is no problem
+        let mut gone = SavedFiles::default();
+        gone.push(dir.path().join("never-existed"));
+        drop(gone);
     }
 
     #[test]

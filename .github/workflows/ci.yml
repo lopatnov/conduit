@@ -31,8 +31,8 @@ jobs:
       fail-fast: false
       matrix:
         # ubuntu-24.04-arm and windows-11-arm are native arm64 runners. The first tests the aarch64-unknown-linux-gnu
-        # build that the release publishes; the second only shows whether Windows ARM64 builds and passes the tests
-        # (the release does not publish it yet: see the issue about Windows ARM64).
+        # build that the release publishes; the second tests the default build on Windows ARM64, whose four release
+        # builds are made natively on the same kind of runner by release.yml.
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
 
     steps:
