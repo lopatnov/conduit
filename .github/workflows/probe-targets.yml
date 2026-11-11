@@ -19,7 +19,8 @@ env:
 jobs:
   probe:
     name: Probe ${{ matrix.target }} ${{ matrix.bundle }}
-    runs-on: ${{ contains(matrix.target, 'windows') && 'windows-latest' || 'ubuntu-latest' }}
+    # `windows-11-arm` is a native ARM64 runner (the `ci` job of ci.yml tests on it); i686 Windows runs on x86-64.
+    runs-on: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 'windows-11-arm' || (contains(matrix.target, 'windows') && 'windows-latest' || 'ubuntu-latest') }}
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +30,7 @@ jobs:
           - arm-unknown-linux-gnueabihf
           - arm-unknown-linux-gnueabi
           - i686-pc-windows-msvc
+          - aarch64-pc-windows-msvc
           - aarch64-linux-android
           - armv7-linux-androideabi
         bundle:
