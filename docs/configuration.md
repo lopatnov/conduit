@@ -4051,9 +4051,10 @@ upload:
 | `fieldName`         | string   | `"file"` | Multipart field name to read                    |
 
 **How large one request may be.** Both size limits are enforced while the body streams to disk, and a file that goes
-over its limit is removed again. A site that sets no `maxTotalSizeBytes` is still bounded, so that a site with no
-limits at all cannot be made to fill the disk: a request may carry up to the larger of **5 GiB** and
-`maxFileSizeBytes`. To accept bigger uploads (AI model files are tens of gigabytes), set the limit you want:
+over its limit is removed again, and so are the files an earlier part of a refused request had already saved. A site that
+sets no `maxTotalSizeBytes` is still bounded per request: one request may carry up to the larger of **5 GiB** and
+`maxFileSizeBytes`. That bound is for one request, not a storage quota: many successful uploads can still fill the
+disk, so put the upload directory on a volume with its own limit or quota. To accept bigger uploads (AI model files are tens of gigabytes), set the limit you want:
 `maxFileSizeBytes: 53687091200` accepts one 50 GiB file, and `maxTotalSizeBytes` sets the bound for the whole request.
 A request whose `Content-Length` is already more than 1 MiB plus 0.1% above that bound is refused with `413` before its
 body is read (that margin is the room for the multipart framing). The whole body is counted as it arrives, whatever the

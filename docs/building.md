@@ -223,8 +223,10 @@ cross build --release --target arm-unknown-linux-gnueabi --features full
 | `arm-unknown-linux-gnueabi`     | Tier 2 | ✅       | ✅   |
 
 The tier is the one the [Rust platform support page](https://doc.rust-lang.org/rustc/platform-support.html) gives the
-target (it changes between Rust releases). A tick means the build is in the release. How far each is tested: the
-64-bit targets run the full test suite; the 32-bit x86 Linux build runs the `standard` suite in CI; the three
+target (it changes between Rust releases). A tick means the build is in the release. How far each is tested: CI runs the
+workspace tests on native runners (Linux x86-64 and ARM64 with glibc, macOS on Apple Silicon, Windows x86-64 and
+ARM64); the musl targets, RISC-V and macOS Intel are cross-compiled or built only (the musl binaries also go
+through the Debian package tests); the 32-bit x86 Linux build runs the `standard` suite in CI; the three
 32-bit ARM builds compile and link in CI and were run once under QEMU with the `standard` suite: 1,028 tests passed
 and 61 failed, all tests of the proxy path, because the emulator lacks the socket option Pingora sets on upstream
 connections (the same tests pass on 32-bit x86).
