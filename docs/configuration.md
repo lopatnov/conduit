@@ -4055,10 +4055,10 @@ over its limit is removed again. A site that sets no `maxTotalSizeBytes` is stil
 limits at all cannot be made to fill the disk: a request may carry up to the larger of **5 GiB** and
 `maxFileSizeBytes`. To accept bigger uploads (AI model files are tens of gigabytes), set the limit you want:
 `maxFileSizeBytes: 53687091200` accepts one 50 GiB file, and `maxTotalSizeBytes` sets the bound for the whole request.
-A request whose `Content-Length` is already more than 1 MiB above that bound is refused with `413` before its body is
-read (the extra MiB is the room for the multipart framing). The whole body is counted as it arrives, whatever the
+A request whose `Content-Length` is already more than 1 MiB plus 0.1% above that bound is refused with `413` before its
+body is read (that margin is the room for the multipart framing). The whole body is counted as it arrives, whatever the
 field names are and whether or not there is a `Content-Length` (a chunked body has none), and a body that passes the
-bound plus that MiB is cut off with `413`. The limits are 64-bit numbers on every platform.
+bound plus that margin is cut off with `413`. The limits are 64-bit numbers on every platform.
 
 ---
 

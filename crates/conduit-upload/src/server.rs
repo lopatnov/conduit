@@ -124,8 +124,8 @@ pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
 /// In `u64`: a `usize` cannot hold 5 GiB on a 32-bit target (issues #696 and #700).
 const DEFAULT_MAX_REQUEST_BODY_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 
-/// Room above the ceiling that a `Content-Length` may have before the request is refused without reading it: the
-/// multipart framing (boundaries, part headers) is part of the length but not of the file bytes the ceiling counts.
+/// Room above the ceiling for the multipart framing (boundaries, part headers), which is part of the request body
+/// but not of the file bytes the ceiling counts: 1 MiB, plus 0.1% of the ceiling (see `request_body_bound`).
 const CONTENT_LENGTH_SLACK: u64 = 1024 * 1024;
 
 /// The most file bytes one request to this site may carry (issue #700).
@@ -134,13 +134,22 @@ fn request_body_ceiling(cfg: &UploadConfig) -> u64 {
         .unwrap_or_else(|| DEFAULT_MAX_REQUEST_BODY_BYTES.max(cfg.max_file_size_bytes.unwrap_or(0)))
 }
 
-/// Whether a `Content-Length` header already shows the request to be over its ceiling.
+/// The most bytes the whole request body may have: the ceiling plus the room for the multipart framing. The room is
+/// 1 MiB and 0.1% of the ceiling, so that a request with a great many small files, whose framing grows with their
+/// number, is not refused for it when it is at the ceiling (about 200 bytes of framing per file).
+fn request_body_bound(ceiling: u64) -> u64 {
+    ceiling
+        .saturating_add(CONTENT_LENGTH_SLACK)
+        .saturating_add(ceiling / 1024)
+}
+
+/// Whether a `Content-Length` header already shows the request body to be over its bound.
 fn content_length_over_ceiling(headers: &HeaderMap, ceiling: u64) -> bool {
     headers
         .get(CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok())
-        .is_some_and(|len| len > ceiling.saturating_add(CONTENT_LENGTH_SLACK))
+        .is_some_and(|len| len > request_body_bound(ceiling))
 }
 
 /// Start the Axum file-upload server on the given `listener` and serve
@@ -179,7 +188,7 @@ async fn bound_request_body<S: UploadConfigSource>(
 ) -> Response {
     let over = Arc::new(AtomicBool::new(false));
     if let Some(cfg) = state.upload_config(site_index(req.headers())) {
-        let limit = request_body_ceiling(&cfg).saturating_add(CONTENT_LENGTH_SLACK);
+        let limit = request_body_bound(request_body_ceiling(&cfg));
         let flag = over.clone();
         let mut seen: u64 = 0;
         let body = std::mem::take(req.body_mut());
@@ -813,6 +822,22 @@ mod tests {
     }
 
     #[test]
+    fn the_room_for_the_framing_grows_with_the_ceiling() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        // a small ceiling: the 1 MiB is what counts
+        assert_eq!(request_body_bound(0), CONTENT_LENGTH_SLACK);
+        assert_eq!(request_body_bound(1024), 1024 + CONTENT_LENGTH_SLACK + 1);
+        // a big one: 0.1% more, so that thousands of small files at the ceiling still fit
+        assert_eq!(
+            request_body_bound(5 * GIB),
+            5 * GIB + CONTENT_LENGTH_SLACK + 5 * GIB / 1024
+        );
+        assert!(request_body_bound(5 * GIB) - 5 * GIB > 6 * 1024 * 1024 - 1);
+        // no overflow near the top of u64
+        assert_eq!(request_body_bound(u64::MAX), u64::MAX);
+    }
+
+    #[test]
     fn a_content_length_over_the_ceiling_is_seen_before_the_body_is_read() {
         let with = |v: &str| {
             let mut h = HeaderMap::new();
@@ -820,7 +845,7 @@ mod tests {
             h
         };
         let ceiling = 1000;
-        // within the ceiling plus the framing slack: read and checked chunk by chunk
+        // within the ceiling plus the framing room: read and checked chunk by chunk
         assert!(!content_length_over_ceiling(&with("1000"), ceiling));
         assert!(!content_length_over_ceiling(
             &with(&(ceiling + CONTENT_LENGTH_SLACK).to_string()),
