@@ -38,21 +38,23 @@ HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:\s+|:\s*)#([0-9]{1,9})(?![0-9])", re.I)
 # the most issues the PR table is checked against GitHub for: a PR description is written by anyone who can edit it
 MAX_LOOKUPS = 50
-# a reference glued to a word (`PR#50`) is not read by `ISSUE`; `owner/repo#5` (a reference to another repository) is fine
-GLUED = re.compile(r"(?<![\w/])[A-Za-z]+#[0-9]{1,9}")
+# a reference glued to a word (`PR#50`) is not read by `ISSUE`; a token that has a `/` (`owner/repo#5`, also with `-` or `.`
+# in the repository name) is a reference to another repository and is fine
+GLUED = re.compile(r"(?<![\w/.-])[A-Za-z][\w.-]*#[0-9]{1,9}")
 # the longest a single `gh` call may take; a hung `gh` must not hang the check
 GH_TIMEOUT = 60
 
 
 def find_gh(path_env=None, cwd=None):
     """The `gh` executable found on `PATH`, never in the current directory (Windows looks there first, so a `gh.exe` planted
-    in a checkout would run): empty entries, `.` and the working directory are skipped. `None` when there is none."""
+    in a checkout would run). Empty and relative entries (`.`, `bin`, `node_modules/.bin`: each means a directory of the
+    checkout) and the working directory itself are skipped. `None` when there is none."""
     cwd = os.path.realpath(cwd or os.getcwd())
     names = ["gh"]
     if os.name == "nt":
         names = ["gh" + ext.lower() for ext in os.environ.get("PATHEXT", ".EXE;.CMD;.BAT").split(";") if ext]
     for entry in (os.environ.get("PATH", "") if path_env is None else path_env).split(os.pathsep):
-        if entry in ("", ".") or os.path.realpath(entry) == cwd:
+        if not entry or not os.path.isabs(entry) or os.path.realpath(entry) == cwd:
             continue
         for name in names:
             candidate = os.path.join(entry, name)

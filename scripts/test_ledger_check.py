@@ -373,6 +373,35 @@ class Hardening(unittest.TestCase):
         self.assertNotIn("#13:", out)
 
 
+class Gitar(unittest.TestCase):
+    """Gitar on #699."""
+
+    def test_references_to_other_repositories_are_not_glued_references(self):
+        ledger = ("| #11 | a | taiki-e/install-action#5 | open |\n"
+                  "| #12 | b | owner/bar.js#3 | waits for cloudflare/pingora#1117 |\n"
+                  "| #13 | c | PR#50 | open |\n"
+                  "| #14 | d | foo.bar#3 | open |\n")
+        self.assertEqual(lc.glued_references(lc.parse_ledger(ledger)), [(13, "PR#50"), (14, "foo.bar#3")])
+
+    def test_a_relative_path_entry_is_not_trusted(self):
+        real = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real)
+        name = "gh.exe" if os.name == "nt" else "gh"
+        with tempfile.TemporaryDirectory() as work:
+            os.mkdir(os.path.join(work, "bin"))
+            path = os.path.join(work, "bin", name)
+            with open(path, "w") as f:
+                f.write("x")
+            os.chmod(path, 0o755)
+            before = os.getcwd()
+            os.chdir(work)
+            try:
+                self.assertIsNone(real.find_gh("bin", cwd=work))
+                self.assertIsNone(real.find_gh(os.pathsep.join(["bin", os.path.join(".", "bin")]), cwd=work))
+            finally:
+                os.chdir(before)
+
+
 class Hostile(unittest.TestCase):
     """Security review of #686: issue titles and PR bodies are written by others."""
 
