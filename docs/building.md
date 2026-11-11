@@ -191,10 +191,16 @@ cross build --release --target aarch64-unknown-linux-musl
 
 # Linux RISC-V 64 (the full build, as in the release; cross compiles it from x86-64)
 cross build --release --target riscv64gc-unknown-linux-gnu --features full
+
+# 32-bit Linux: x86, ARMv7 (Raspberry Pi 2 and later with a 32-bit OS), ARMv6 (Raspberry Pi 1 and Zero), soft-float ARM
+cross build --release --target i686-unknown-linux-gnu --features full
+cross build --release --target armv7-unknown-linux-gnueabihf --features full
+cross build --release --target arm-unknown-linux-gnueabihf --features full
+cross build --release --target arm-unknown-linux-gnueabi --features full
 ```
 
 > **macOS targets** can only be built on macOS, and **Windows ARM64**
-> (`aarch64-pc-windows-msvc`, not in the releases yet) on Windows (an ARM64 host is simplest).
+> (`aarch64-pc-windows-msvc`) on Windows (an ARM64 host is simplest).
 > The [release workflow](../.github/workflows/release.yml) uses GitHub-hosted
 > macOS and Windows runners for those targets.
 
@@ -203,14 +209,28 @@ cross build --release --target riscv64gc-unknown-linux-gnu --features full
 | Target                          | Tier   | Standard | Full |
 | ------------------------------- | ------ | :------: | :--: |
 | `x86_64-unknown-linux-gnu`      | Tier 1 | ✅       | ✅   |
-| `x86_64-unknown-linux-musl`     | Tier 1 | ✅       | ✅   |
+| `x86_64-unknown-linux-musl`     | Tier 2 | ✅       | ✅   |
 | `aarch64-unknown-linux-gnu`     | Tier 1 | ✅       | ✅   |
 | `aarch64-unknown-linux-musl`    | Tier 2 | ✅       | ✅   |
 | `riscv64gc-unknown-linux-gnu`   | Tier 2 | ✅       | ✅   |
-| `x86_64-apple-darwin`           | Tier 1 | ✅       | ✅   |
+| `x86_64-apple-darwin`           | Tier 2 | ✅       | ✅   |
 | `aarch64-apple-darwin`          | Tier 1 | ✅       | ✅   |
 | `x86_64-pc-windows-msvc`        | Tier 1 | ✅       | ✅   |
-| `aarch64-pc-windows-msvc`       | Tier 2 | not released yet; built and tested in CI | |
+| `aarch64-pc-windows-msvc`       | Tier 1 | ✅       | ✅   |
+| `i686-unknown-linux-gnu`        | Tier 1 | ✅       | ✅   |
+| `armv7-unknown-linux-gnueabihf` | Tier 2 | ✅       | ✅   |
+| `arm-unknown-linux-gnueabihf`   | Tier 2 | ✅       | ✅   |
+| `arm-unknown-linux-gnueabi`     | Tier 2 | ✅       | ✅   |
+
+The tier is the one the [Rust platform support page](https://doc.rust-lang.org/rustc/platform-support.html) gives the
+target (it changes between Rust releases). A tick means the build is in the release. How far each is tested: the
+64-bit targets run the full test suite; the 32-bit x86 Linux build runs the `standard` suite in CI; the three
+32-bit ARM builds compile and link in CI and were run once under QEMU with the `standard` suite: 1,028 tests passed
+and 61 failed, all tests of the proxy path, because the emulator lacks the socket option Pingora sets on upstream
+connections (the same tests pass on 32-bit x86).
+`i686-pc-windows-msvc` is not in the table: `pingora-core` does not compile for 32-bit Windows yet
+([cloudflare/pingora#1119](https://github.com/cloudflare/pingora/issues/1119)). Android does not build either
+and is not supported by Pingora.
 
 ---
 

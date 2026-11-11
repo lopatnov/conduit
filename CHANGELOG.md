@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Release builds for 32-bit Linux and for Windows ARM64** (issues #696, #671): `i686-unknown-linux-gnu`,
+  `armv7-unknown-linux-gnueabihf`, `arm-unknown-linux-gnueabihf` (ARMv6, Raspberry Pi 1 and Zero),
+  `arm-unknown-linux-gnueabi` and `aarch64-pc-windows-msvc`, each in the four builds (full without a suffix, as a bare
+  binary and an archive; `-standard`, `-gateway`, `-static` as archives), and in the npm package for `linux-ia32`,
+  `linux-arm` (ARMv7) and `win32-arm64`. CI builds the full build of the four Linux targets on every pull request
+  and runs the `standard` tests of the 32-bit x86 one. See the platform tables in the README and `docs/building.md`.
+  `i686-pc-windows-msvc` and Android are not released (Pingora does not compile for them; cloudflare/pingora#1119).
+
 ### Fixed
 
 - **The upload server's 5 GiB request ceiling can be raised** (issue #700). A fixed router-wide limit of 5 GiB, not
@@ -16,6 +26,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   5 GiB safety net), `maxTotalSizeBytes` when it is. It is enforced on the whole body as it arrives (every field,
   chunked bodies included), and from `Content-Length` before the body is read. See the Upload section of
   `docs/configuration.md`.
+- **The tier column of `docs/building.md` and the RISC-V line of the npm Readme were out of date**: `x86_64-unknown-linux-musl`
+  and `x86_64-apple-darwin` are Tier 2 and `aarch64-pc-windows-msvc` is Tier 1 on the Rust platform support page;
+  the npm Readme said RISC-V had the standard build only, since 2.2.1 it has all four.
 - **`--features upload` (so `full`) compiles on 32-bit targets** (issue #696): the 5 GiB constant was a `usize`
   and overflowed there. The bound is a `u64` now.
 

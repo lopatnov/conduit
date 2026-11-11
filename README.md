@@ -443,8 +443,8 @@ The npm package downloads the native binary for your platform from
 [GitHub Releases](https://github.com/lopatnov/conduit/releases) when it is installed (set
 `CONDUIT_SKIP_DOWNLOAD=1` to skip that). Node.js is only needed for the download and for the
 `conduit` launcher script; the server itself is the Rust binary. Since 2.0.0 the package installs
-the **full** build; platforms: Linux x64 and arm64 (glibc), macOS Intel and Apple Silicon,
-Windows x64. See the [npm package page](npm/Readme.md) for details.
+the **full** build; platforms: Linux x64, arm64, x86 and ARMv7 (glibc), macOS Intel and Apple Silicon,
+Windows x64 and ARM64. See the [npm package page](npm/Readme.md) for details.
 
 ### Pre-built binaries
 
@@ -472,6 +472,21 @@ Each archive holds one file, named like the archive without `.tar.gz` or `.zip`.
 | macOS Intel          | `x86_64-apple-darwin`         | full, standard, gateway, static |
 | macOS Apple Silicon  | `aarch64-apple-darwin`        | full, standard, gateway, static |
 | Windows x86-64       | `x86_64-pc-windows-msvc`      | full, standard, gateway, static |
+| Windows ARM64        | `aarch64-pc-windows-msvc`     | full, standard, gateway, static |
+| Linux x86 (32-bit)   | `i686-unknown-linux-gnu`      | full, standard, gateway, static |
+| Linux ARMv7 (32-bit, hard-float) | `armv7-unknown-linux-gnueabihf` | full, standard, gateway, static |
+| Linux ARMv6 (32-bit, hard-float: Raspberry Pi 1 and Zero) | `arm-unknown-linux-gnueabihf` | full, standard, gateway, static |
+| Linux ARM (32-bit, soft-float) | `arm-unknown-linux-gnueabi` | full, standard, gateway, static |
+
+The 32-bit Linux builds compile and link in CI on every pull request, and the 32-bit x86 build also passes the
+`standard` test suite there, integration tests included. The three 32-bit ARM builds are not run in CI: they were
+checked once under QEMU with the `standard` test suite: 1,028 tests passed and 61 failed, all of them tests of the
+proxy path (caching, forward auth, retries, mirroring, routes to an upstream), because the emulator does not
+implement the socket option Pingora sets on upstream connections, so the proxy cannot connect to an upstream in it
+(the same tests pass on 32-bit x86). The test setup has no 32-bit ARM hardware. A 32-bit process addresses at most 4 GiB, so size memory-hungry settings (cache
+sizes, buffers) accordingly. 32-bit Windows (`i686-pc-windows-msvc`) is not released: `pingora-core` does not
+compile for it yet ([cloudflare/pingora#1119](https://github.com/cloudflare/pingora/issues/1119), fix proposed in
+[#1120](https://github.com/cloudflare/pingora/pull/1120)). Android is not supported by Pingora.
 
 > **Upgrading from 2.1 and earlier:** the unsuffixed name used to be the standard build and the full build ended in
 > `-full`. Since 2.2.0 the plain name is the **full** build and the standard build ends in `-standard`; the `:latest`
