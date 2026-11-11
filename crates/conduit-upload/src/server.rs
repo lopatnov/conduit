@@ -316,8 +316,7 @@ async fn handle_upload(
                 return Err(err_response(StatusCode::BAD_REQUEST, "too many files"));
             }
 
-            let (entry, path) = process_upload_field(field, &cfg, &mut total_bytes).await?;
-            saved.push(path);
+            let entry = process_upload_field(field, &cfg, &mut total_bytes, &mut saved).await?;
             uploaded.push(entry);
         }
     }
@@ -338,7 +337,7 @@ async fn handle_upload(
 /// Process a single multipart field: validate type, stream to disk while
 /// enforcing size limits per chunk, and return the resulting JSON entry.
 ///
-/// Returns `Ok((json_entry, path_of_the_saved_file))` on success or `Err(error_response)` on rejection.
+/// Returns `Ok(json_entry)` on success or `Err(error_response)` on rejection; the file's path goes into `saved`.
 // `Response` as the Err type is the idiomatic Axum short-circuit-to-HTTP-error
 // pattern used throughout this file (via `err_response()` and `?`) -- boxing
 // it would only add an allocation on the error path without changing behavior.
@@ -347,7 +346,8 @@ async fn process_upload_field(
     field: axum::extract::multipart::Field<'_>,
     cfg: &UploadConfig,
     total_bytes: &mut u64,
-) -> Result<(serde_json::Value, PathBuf), Response> {
+    saved: &mut SavedFiles,
+) -> Result<serde_json::Value, Response> {
     let original_name = field.file_name().unwrap_or("upload").to_owned();
     let content_type_str = field.content_type().map(str::to_owned);
 
@@ -365,25 +365,19 @@ async fn process_upload_field(
     // buffering the whole body in memory via `field.bytes()` before any
     // size check ran — a client posting a part larger than the configured
     // limit no longer forces the server to allocate (and hold) the entire
-    // body first. On any rejection or I/O error, remove the partially
-    // written file so a rejected upload never leaves debris on disk.
-    let file_bytes = match stream_field_to_file(field, &save_path, cfg, total_bytes).await {
-        Ok(n) => n,
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&save_path).await;
-            return Err(e);
-        }
-    };
+    // body first. The path is registered with `saved` BEFORE the file is
+    // created, so that a rejection, an I/O error, or the request being
+    // cancelled in the middle of the write (the client goes away) removes the
+    // partly written file with the rest: a refused upload never leaves debris.
+    saved.push(save_path.clone());
+    let file_bytes = stream_field_to_file(field, &save_path, cfg, total_bytes).await?;
 
-    Ok((
-        json!({
-            "name":         save_name,
-            "originalName": original_name,
-            "size":         file_bytes,
-            "mimeType":     mime,
-        }),
-        save_path,
-    ))
+    Ok(json!({
+        "name":         save_name,
+        "originalName": original_name,
+        "size":         file_bytes,
+        "mimeType":     mime,
+    }))
 }
 
 /// Whether writing `chunk_len` more bytes would push this field or the
@@ -923,6 +917,55 @@ mod tests {
             "the request was refused before it was read, so the cleanup was not exercised"
         );
         assert_eq!(std::fs::read_dir(&uploads).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_client_that_goes_away_in_the_middle_of_a_file_leaves_no_file() {
+        // The request is abandoned while the file is being written. What the server then does (a body read error,
+        // or the request being dropped) must remove the half-written file: its path is registered before the
+        // write starts.
+        use tokio::io::AsyncWriteExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let addr = spawn_upload_server(site_config(&dir, None, None)).await;
+        let big = vec![9u8; 4 * 1024 * 1024];
+        let body = multipart_body(&[("file", &big)]);
+        let head = format!(
+            "POST / HTTP/1.1\r\nHost: {addr}\r\n\
+             Content-Type: multipart/form-data; boundary=conduit-test-boundary\r\n\
+             Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        );
+        let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        stream.write_all(head.as_bytes()).await.expect("write head");
+        // the first 256 KiB of the body: the field header and the start of the file, no end
+        let part = &body[..256 * 1024];
+        stream
+            .write_all(format!("{:x}\r\n", part.len()).as_bytes())
+            .await
+            .expect("write chunk size");
+        stream.write_all(part).await.expect("write part");
+        stream.write_all(b"\r\n").await.expect("write chunk end");
+        stream.flush().await.expect("flush");
+        // the server has started the file: wait until it is there
+        let count = || std::fs::read_dir(dir.path()).map_or(0, |d| d.count());
+        let mut waited = 0;
+        while count() == 0 && waited < 50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            waited += 1;
+        }
+        assert_eq!(count(), 1, "the server never started the file");
+        // the client goes away
+        drop(stream);
+        let mut waited = 0;
+        while count() != 0 && waited < 50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            waited += 1;
+        }
+        assert_eq!(
+            count(),
+            0,
+            "the half-written file of an abandoned request must be removed"
+        );
     }
 
     #[tokio::test]
