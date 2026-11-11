@@ -8,6 +8,7 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
+| #700 | upload: the 5 GiB request ceiling is hard-coded, undocumented and silently caps a larger per-site limit (decided with #696: the 32-bit overflow fix there is a patch on it) | owner's question during #696 | open: proposal on the issue, owner to confirm |
 | #696 | 32-bit targets (i686 Linux/Windows, ARMv6/ARMv7) and the Android targets: probe build, then ship what builds (standard, gateway, static-server; `full` not required) | owner's question on rustc and targets, 2026-11-11 | owner said yes: start right after 2.3.0 |
 | #697 | ledger-check hardening: Windows cwd lookup of `gh`, no subprocess timeout, `RecursionError`, glued `PR#N` | security review of #686 | open (was missing from #686's table; added there afterwards) |
 | #677 | flaky server start in the integration tests | full test run for #678 | harness improved in PR #683 (stderr kept, one retry); open until the cause is named |
