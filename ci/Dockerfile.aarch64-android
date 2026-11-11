@@ -16,3 +16,8 @@ RUN printf '%s\n' \
 
 # The Rust cmake crate picks CMAKE_TOOLCHAIN_FILE up from the environment.
 ENV CMAKE_TOOLCHAIN_FILE=/android-toolchain.cmake
+
+# The image's old NDK toolchain has no libunwind, but the Rust standard library for this target links `-lunwind`
+# ("ld: cannot find -lunwind" when linking the binary; the ARMv7 image links fine). An archive-named linker script
+# that pulls in libgcc, which carries the unwinder, is the usual workaround.
+RUN printf 'INPUT(-lgcc)\n' > /android-ndk/lib/gcc/aarch64-linux-android/4.9.x/libunwind.a
