@@ -120,3 +120,84 @@ jobs:
             grep -n -E "^(error|warning: unused)|error\[|could not compile|failed to run custom build|CMake Error|fatal error" build.log | head -25
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Does it run? The same packages and features as the `standard` job of `ci.yml` (`cargo test ... --features
+  # standard`), on the targets that build: i686 Linux natively in the cross container, the ARM targets under QEMU
+  # user-mode (the integration tests start the built `conduit`, so the host registers QEMU in binfmt_misc too), and
+  # i686 Windows natively (WoW64). A red job names a 32-bit bug in our code or in a dependency (#696).
+  test:
+    name: Test ${{ matrix.target }} ${{ matrix.bundle }}
+    runs-on: ${{ contains(matrix.target, 'windows') && 'windows-latest' || 'ubuntu-latest' }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - i686-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+          - arm-unknown-linux-gnueabihf
+          - arm-unknown-linux-gnueabi
+          - i686-pc-windows-msvc
+        bundle:
+          - standard
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          key: probe-test-${{ matrix.target }}-${{ matrix.bundle }}
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Install cross
+        if: ${{ !contains(matrix.target, 'windows') }}
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
+        with:
+          tool: cross
+
+      - name: QEMU user-mode for the ARM targets
+        if: ${{ startsWith(matrix.target, 'arm') }}
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends qemu-user-static
+          ls /proc/sys/fs/binfmt_misc | grep -i arm
+
+      - name: Patch pingora-core for 32-bit Windows (probe only)
+        if: ${{ matrix.target == 'i686-pc-windows-msvc' }}
+        shell: bash
+        run: |
+          cargo fetch --locked
+          file=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/pingora-core-0.9.1/src/listeners/l4.rs)
+          perl -0pi -e 's/from_raw_socket\(fd as u64\)/from_raw_socket(fd as _)/' "$file"
+
+      - name: Test (cross)
+        if: ${{ !contains(matrix.target, 'windows') }}
+        shell: bash
+        run: |
+          set -o pipefail
+          cross test --locked --target ${{ matrix.target }} -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features ${{ matrix.bundle }} 2>&1 | tee test.log
+
+      - name: Test (native)
+        if: ${{ contains(matrix.target, 'windows') }}
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --target ${{ matrix.target }} -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features ${{ matrix.bundle }} 2>&1 | tee test.log
+
+      - name: Test results
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.target }} ${{ matrix.bundle }}: tests"
+            echo '```'
+            grep -a -E "^test result|FAILED|panicked|^error|could not compile|failures:" test.log | sort | uniq -c | sort -rn | head -30
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
