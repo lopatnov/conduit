@@ -2,13 +2,13 @@ name: Probe targets
 
 # Issue #696: which 32-bit and Android targets does Conduit build for, bundle by bundle? Each job builds one bundle
 # for one target and reports whether it builds (and, if it does not, the first errors in the job summary). Nothing
-# here is a merge gate and nothing is released from it: a pair that builds and passes its tests is moved into
-# `ci.yml` (`cross-compile`) and `release.yml` by hand. It runs on the working branch of the issue and on demand.
+# here is a merge gate and nothing is released from it. It was the working tool of #696: the Linux 32-bit targets
+# and Windows ARM64 it showed to build are now in `ci.yml` (`cross-compile`, `test-i686`) and `release.yml`; what is
+# left for it are the targets that do not build without a patch of pingora-core, which are probed here with the
+# patch applied to the unpacked copy: i686 Windows (cloudflare/pingora#1119) and Android (not supported by Pingora).
+# Run it by hand (Actions, "Probe targets", Run workflow) when Pingora changes or to see whether a target works.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - feat/32bit-android-targets-696
 
 permissions:
   contents: read
