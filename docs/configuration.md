@@ -4045,10 +4045,18 @@ upload:
 | `path`              | string   | —        | URL path for upload endpoint — **required**     |
 | `dir`               | string   | —        | Directory to save uploaded files — **required** |
 | `maxFileSizeBytes`  | number   | —        | Max size per individual file                    |
-| `maxTotalSizeBytes` | number   | —        | Max total size of all files in one request      |
+| `maxTotalSizeBytes` | number   | 5 GiB (see below) | Max total size of all files in one request |
 | `maxFiles`          | number   | —        | Max number of files per request                 |
 | `allowedMimeTypes`  | string[] | all      | Allowed MIME types (e.g. `"image/jpeg"`)        |
 | `fieldName`         | string   | `"file"` | Multipart field name to read                    |
+
+**How large one request may be.** Both size limits are enforced while the body streams to disk, and a file that goes
+over its limit is removed again. A site that sets no `maxTotalSizeBytes` is still bounded, so that a site with no
+limits at all cannot be made to fill the disk: a request may carry up to the larger of **5 GiB** and
+`maxFileSizeBytes`. To accept bigger uploads (AI model files are tens of gigabytes), set the limit you want:
+`maxFileSizeBytes: 53687091200` accepts one 50 GiB file, and `maxTotalSizeBytes` sets the bound for the whole request.
+A request whose `Content-Length` is already more than 1 MiB above that bound is refused with `413` before its body is
+read (the extra MiB is the room for the multipart framing). The limits are 64-bit numbers on every platform.
 
 ---
 
