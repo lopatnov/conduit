@@ -904,16 +904,25 @@ mod tests {
 
     #[tokio::test]
     async fn a_request_whose_body_goes_over_its_bound_keeps_none_of_its_files() {
-        // a completed file, then 3 MiB in a field that is ignored: the whole body goes over the bound (1 MiB
-        // total limit plus the framing room), the request is refused, and the completed file is removed.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let addr = spawn_upload_server(site_config(&dir, None, Some(1024 * 1024))).await;
+        // A completed file, then 3 MiB in a field that is ignored, sent chunked: there is no Content-Length for the
+        // early refusal, so only the byte counter can stop it (1 MiB total limit plus the framing room), and it
+        // does so after the first file was saved. The request is refused and that file is removed again.
+        let root = tempfile::tempdir().expect("tempdir");
+        // a directory that does not exist yet: the handler creates it only for a request it reads, so that it
+        // exists afterwards shows that this request got as far as saving the first file
+        let uploads = root.path().join("uploads");
+        let mut cfg = site_config(&root, None, Some(1024 * 1024));
+        cfg.dir = uploads.to_string_lossy().into_owned();
+        let addr = spawn_upload_server(cfg).await;
         let small = vec![1u8; 10 * 1024];
         let ignored = vec![3u8; 3 * 1024 * 1024];
-        let response = send_fields(addr, "/", &[("file", &small), ("other", &ignored)]).await;
-        let status = response.lines().next().unwrap_or_default();
-        assert!(is_413(status), "got: {status}");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        let status = send_chunked_fields(addr, &[("file", &small), ("other", &ignored)]).await;
+        assert!(is_413(&status), "got: {status}");
+        assert!(
+            uploads.exists(),
+            "the request was refused before it was read, so the cleanup was not exercised"
+        );
+        assert_eq!(std::fs::read_dir(&uploads).unwrap().count(), 0);
     }
 
     #[tokio::test]
@@ -1130,18 +1139,15 @@ mod tests {
     /// A one-field multipart body, sent with `Transfer-Encoding: chunked` (so with no `Content-Length`) in
     /// 64 KiB chunks; returns the status line of the answer (empty when the connection was reset).
     async fn send_chunked(addr: std::net::SocketAddr, field: &str, data: &[u8]) -> String {
+        send_chunked_fields(addr, &[(field, data)]).await
+    }
+
+    /// The same for a body of several fields.
+    async fn send_chunked_fields(addr: std::net::SocketAddr, fields: &[(&str, &[u8])]) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let boundary = "conduit-test-boundary";
-        let mut body = format!(
-            "--{boundary}\r\n\
-             Content-Disposition: form-data; name=\"{field}\"; filename=\"test.bin\"\r\n\
-             Content-Type: application/octet-stream\r\n\
-             \r\n"
-        )
-        .into_bytes();
-        body.extend_from_slice(data);
-        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let body = multipart_body(fields);
 
         let head = format!(
             "POST / HTTP/1.1\r\n\
