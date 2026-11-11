@@ -1,0 +1,14 @@
+FROM ghcr.io/cross-rs/armv7-linux-androideabi:0.2.5
+
+# See ci/Dockerfile.aarch64-android: the same CMake toolchain file for libz-ng-sys, naming this image's compiler.
+RUN printf '%s\n' \
+    'set(CMAKE_SYSTEM_NAME Linux)' \
+    'set(CMAKE_SYSTEM_PROCESSOR arm)' \
+    'set(CMAKE_C_COMPILER arm-linux-androideabi-gcc)' \
+    'set(CMAKE_CXX_COMPILER arm-linux-androideabi-g++)' \
+    'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' \
+    'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' \
+    'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' \
+    > /android-toolchain.cmake
+
+ENV CMAKE_TOOLCHAIN_FILE=/android-toolchain.cmake

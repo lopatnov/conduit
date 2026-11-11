@@ -35,6 +35,14 @@ jobs:
           - standard
           - gateway
           - static-server
+          - full
+        exclude:
+          # `full` needs wasmtime, which has no Cranelift back end for 32-bit x86 (Pulley, its interpreter, is the
+          # fallback); it is probed on the targets that build the lighter bundles first, so not on Android yet.
+          - target: aarch64-linux-android
+            bundle: full
+          - target: armv7-linux-androideabi
+            bundle: full
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -68,6 +76,17 @@ jobs:
           file=$(ls "$HOME"/.cargo/registry/src/*/pingora-core-0.9.1/src/server/daemon.rs)
           perl -0pi -e 's/#\[cfg\(target_os = "linux"\)\]\n(\s*let group_id)/#[cfg(any(target_os = "linux", target_os = "android"))]\n$1/' "$file"
           grep -n 'target_os = "android"' "$file"
+
+      # pingora-core 0.9.1, `listeners/l4.rs`: `TcpStream::from_raw_socket(fd as u64)`, but a `RawSocket` is a `u32` on
+      # 32-bit Windows, so the crate does not compile there (probe run 42927045801). `fd as _` takes the target's type.
+      - name: Patch pingora-core for 32-bit Windows (probe only)
+        if: ${{ matrix.target == 'i686-pc-windows-msvc' }}
+        shell: bash
+        run: |
+          cargo fetch --locked
+          file=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/pingora-core-0.9.1/src/listeners/l4.rs)
+          perl -0pi -e 's/from_raw_socket\(fd as u64\)/from_raw_socket(fd as _)/' "$file"
+          grep -n 'from_raw_socket' "$file"
 
       - name: Build (cross)
         if: ${{ !contains(matrix.target, 'windows') }}
