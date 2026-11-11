@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -101,8 +101,8 @@ pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
         // service's root got a 404 instead of reaching `upload_handler`.
         // The explicit `/` route below covers that case; `{*path}` still
         // covers every non-root path as before.
-        .route("/", post(upload_handler::<S>))
-        .route("/{*path}", post(upload_handler::<S>))
+        .route("/", post(upload_handler))
+        .route("/{*path}", post(upload_handler))
         // No router-wide body limit: axum's own default (2 MiB) would cap every upload, and a fixed ceiling here
         // (it used to be 5 GiB, issues #277 and #700) is decided before the site, and so its configured limits,
         // is known: it capped a site that asked for more. The bound is applied per request from the site's config
@@ -163,9 +163,14 @@ pub async fn run_upload_server<S: UploadConfigSource>(listener: TcpListener, sta
     }
 }
 
-/// Set by the byte counter of `bound_request_body` when a request's body went over its bound.
+/// What `bound_request_body` decided for this request, for the handler: the site's config, looked up once (a hot
+/// reload between two lookups could otherwise give the counter and the handler different limits), and the flag the
+/// byte counter sets when the body went over its bound.
 #[derive(Clone)]
-struct BodyOverBound(Arc<AtomicBool>);
+struct RequestState {
+    over: Arc<AtomicBool>,
+    cfg: Option<UploadConfig>,
+}
 
 /// The site this request is for, from the header the proxy injects (0 when absent or not a number).
 fn site_index(headers: &HeaderMap) -> usize {
@@ -176,19 +181,20 @@ fn site_index(headers: &HeaderMap) -> usize {
         .unwrap_or(0)
 }
 
-/// Bounds the whole request body (issue #700): counts every byte that is read, in `u64`, and fails the body when
-/// the count passes the site's ceiling plus the room for the multipart framing. The handler's own checks only count
-/// the bytes of the field it saves, so without this a field with another name, or a body with no `Content-Length`
-/// (chunked), could be pushed through without any bound. The error multer reports for that is turned into a `413` by
-/// `upload_handler`.
+/// Looks up the site's config once, and bounds the whole request body (issue #700): counts every byte that is read,
+/// in `u64`, and fails the body when the count passes the site's ceiling plus the room for the multipart framing. The
+/// handler's own checks only count the bytes of the field it saves, so without this a field with another name, or a
+/// body with no `Content-Length` (chunked), could be pushed through without any bound. The error multer reports for
+/// that is turned into a `413` by `upload_handler`.
 async fn bound_request_body<S: UploadConfigSource>(
     State(state): State<Arc<S>>,
     mut req: Request,
     next: Next,
 ) -> Response {
     let over = Arc::new(AtomicBool::new(false));
-    if let Some(cfg) = state.upload_config(site_index(req.headers())) {
-        let limit = request_body_bound(request_body_ceiling(&cfg));
+    let cfg = state.upload_config(site_index(req.headers()));
+    if let Some(cfg) = &cfg {
+        let limit = request_body_bound(request_body_ceiling(cfg));
         let flag = over.clone();
         let mut seen: u64 = 0;
         let body = std::mem::take(req.body_mut());
@@ -203,18 +209,17 @@ async fn bound_request_body<S: UploadConfigSource>(
         });
         *req.body_mut() = Body::from_stream(counted);
     }
-    req.extensions_mut().insert(BodyOverBound(over));
+    req.extensions_mut().insert(RequestState { over, cfg });
     next.run(req).await
 }
 
-async fn upload_handler<S: UploadConfigSource>(
-    State(state): State<Arc<S>>,
+async fn upload_handler(
     headers: HeaderMap,
-    Extension(BodyOverBound(over)): Extension<BodyOverBound>,
+    Extension(RequestState { over, cfg }): Extension<RequestState>,
     multipart: Multipart,
 ) -> Response {
     // The flag is read after the request has been handled: it is set while the body is read.
-    let response = handle_upload(state, headers, multipart).await;
+    let response = handle_upload(cfg, headers, multipart).await;
     bound_response(over.load(Ordering::Relaxed), response)
 }
 
@@ -230,14 +235,21 @@ fn bound_response(body_went_over: bool, response: Response) -> Response {
     response
 }
 
-async fn handle_upload<S: UploadConfigSource>(
-    state: Arc<S>,
+/// Removes the files a request saved before it was rejected: an error status means nothing was kept, the same
+/// as for the file that was being written when the error came (`process_upload_field`).
+async fn discard(saved: &[PathBuf]) {
+    for path in saved {
+        let _ = tokio::fs::remove_file(path).await;
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn handle_upload(
+    cfg: Option<UploadConfig>,
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
-    let site_idx = site_index(&headers);
-
-    let cfg = match state.upload_config(site_idx) {
+    let cfg = match cfg {
         Some(c) => c,
         None => return err_response(StatusCode::NOT_FOUND, "no upload config for this site"),
     };
@@ -258,28 +270,38 @@ async fn handle_upload<S: UploadConfigSource>(
 
     let field_name = cfg.field_name.as_deref().unwrap_or("file");
     let mut uploaded: Vec<serde_json::Value> = Vec::new();
+    let mut saved: Vec<PathBuf> = Vec::new();
     let mut total_bytes: u64 = 0;
 
-    loop {
-        let field = match multipart.next_field().await {
-            Ok(Some(f)) => f,
-            Ok(None) => break,
-            Err(e) => {
-                return err_response(StatusCode::BAD_REQUEST, &format!("multipart error: {e}"))
+    let outcome: Result<(), Response> = async {
+        loop {
+            let field = match multipart.next_field().await {
+                Ok(Some(f)) => f,
+                Ok(None) => return Ok(()),
+                Err(e) => {
+                    return Err(err_response(
+                        StatusCode::BAD_REQUEST,
+                        &format!("multipart error: {e}"),
+                    ))
+                }
+            };
+
+            if field.name().unwrap_or("") != field_name {
+                continue;
             }
-        };
+            if cfg.max_files.is_some_and(|max| uploaded.len() >= max) {
+                return Err(err_response(StatusCode::BAD_REQUEST, "too many files"));
+            }
 
-        if field.name().unwrap_or("") != field_name {
-            continue;
+            let (entry, path) = process_upload_field(field, &cfg, &mut total_bytes).await?;
+            saved.push(path);
+            uploaded.push(entry);
         }
-        if cfg.max_files.is_some_and(|max| uploaded.len() >= max) {
-            return err_response(StatusCode::BAD_REQUEST, "too many files");
-        }
-
-        match process_upload_field(field, &cfg, &mut total_bytes).await {
-            Ok(entry) => uploaded.push(entry),
-            Err(resp) => return resp,
-        }
+    }
+    .await;
+    if let Err(response) = outcome {
+        discard(&saved).await;
+        return response;
     }
 
     if uploaded.is_empty() {
@@ -292,7 +314,7 @@ async fn handle_upload<S: UploadConfigSource>(
 /// Process a single multipart field: validate type, stream to disk while
 /// enforcing size limits per chunk, and return the resulting JSON entry.
 ///
-/// Returns `Ok(json_entry)` on success or `Err(error_response)` on rejection.
+/// Returns `Ok((json_entry, path_of_the_saved_file))` on success or `Err(error_response)` on rejection.
 // `Response` as the Err type is the idiomatic Axum short-circuit-to-HTTP-error
 // pattern used throughout this file (via `err_response()` and `?`) -- boxing
 // it would only add an allocation on the error path without changing behavior.
@@ -301,7 +323,7 @@ async fn process_upload_field(
     field: axum::extract::multipart::Field<'_>,
     cfg: &UploadConfig,
     total_bytes: &mut u64,
-) -> Result<serde_json::Value, Response> {
+) -> Result<(serde_json::Value, PathBuf), Response> {
     let original_name = field.file_name().unwrap_or("upload").to_owned();
     let content_type_str = field.content_type().map(str::to_owned);
 
@@ -329,12 +351,15 @@ async fn process_upload_field(
         }
     };
 
-    Ok(json!({
-        "name":         save_name,
-        "originalName": original_name,
-        "size":         file_bytes,
-        "mimeType":     mime,
-    }))
+    Ok((
+        json!({
+            "name":         save_name,
+            "originalName": original_name,
+            "size":         file_bytes,
+            "mimeType":     mime,
+        }),
+        save_path,
+    ))
 }
 
 /// Whether writing `chunk_len` more bytes would push this field or the
@@ -682,24 +707,46 @@ mod tests {
         addr
     }
 
+    /// A multipart body of `(field name, bytes)` parts, each with a file name.
+    fn multipart_body(fields: &[(&str, &[u8])]) -> Vec<u8> {
+        let boundary = "conduit-test-boundary";
+        let mut body = Vec::new();
+        for (name, data) in fields {
+            body.extend_from_slice(
+                format!(
+                    "--{boundary}\r\n\
+                     Content-Disposition: form-data; name=\"{name}\"; filename=\"test.bin\"\r\n\
+                     Content-Type: application/octet-stream\r\n\
+                     \r\n"
+                )
+                .as_bytes(),
+            );
+            body.extend_from_slice(data);
+            body.extend_from_slice(b"\r\n");
+        }
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        body
+    }
+
     /// Posts a one-file multipart body to `path` on the server at `addr` and returns the whole response as text.
     async fn send_multipart_response(
         addr: std::net::SocketAddr,
         path: &str,
         file: &[u8],
     ) -> String {
+        send_fields(addr, path, &[("file", file)]).await
+    }
+
+    /// Posts a multipart body of several fields (with a `Content-Length`) and returns the whole response as text.
+    async fn send_fields(
+        addr: std::net::SocketAddr,
+        path: &str,
+        fields: &[(&str, &[u8])],
+    ) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let boundary = "conduit-test-boundary";
-        let mut body = format!(
-            "--{boundary}\r\n\
-             Content-Disposition: form-data; name=\"file\"; filename=\"test.bin\"\r\n\
-             Content-Type: application/octet-stream\r\n\
-             \r\n"
-        )
-        .into_bytes();
-        body.extend_from_slice(file);
-        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let body = multipart_body(fields);
         let head = format!(
             "POST {path} HTTP/1.1\r\n\
              Host: {addr}\r\n\
@@ -747,6 +794,85 @@ mod tests {
             .next()
             .unwrap_or_default()
             .to_owned()
+    }
+
+    // ── what a rejected request leaves behind, and one config per request (CodeRabbit on #699) ──────
+
+    #[tokio::test]
+    async fn a_request_refused_for_a_later_file_keeps_none_of_its_earlier_files() {
+        // two files in one request, the second over `maxFileSizeBytes`: the 413 means nothing was kept, so the
+        // first file, which had completed, is removed as well as the half-written second one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let addr = spawn_upload_server(site_config(&dir, Some(100 * 1024), None)).await;
+        let small = vec![1u8; 10 * 1024];
+        let big = vec![2u8; 200 * 1024];
+        let response = send_fields(addr, "/", &[("file", &small), ("file", &big)]).await;
+        let status = response.lines().next().unwrap_or_default();
+        assert!(is_413(status), "got: {status}");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "a rejected request must leave no file"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_whose_body_goes_over_its_bound_keeps_none_of_its_files() {
+        // a completed file, then 3 MiB in a field that is ignored: the whole body goes over the bound (1 MiB
+        // total limit plus the framing room), the request is refused, and the completed file is removed.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let addr = spawn_upload_server(site_config(&dir, None, Some(1024 * 1024))).await;
+        let small = vec![1u8; 10 * 1024];
+        let ignored = vec![3u8; 3 * 1024 * 1024];
+        let response = send_fields(addr, "/", &[("file", &small), ("other", &ignored)]).await;
+        let status = response.lines().next().unwrap_or_default();
+        assert!(is_413(status), "got: {status}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_successful_request_keeps_all_its_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let addr = spawn_upload_server(site_config(&dir, None, None)).await;
+        let a = vec![1u8; 1024];
+        let b = vec![2u8; 2048];
+        let response = send_fields(addr, "/", &[("file", &a), ("file", &b)]).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    /// A config source that counts how often it is asked: a request must ask once, so that the byte counter and the
+    /// handler cannot see two different configs when a hot reload lands between two lookups.
+    struct CountingConfig {
+        cfg: UploadConfig,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl UploadConfigSource for CountingConfig {
+        fn upload_config(&self, _site_idx: usize) -> Option<UploadConfig> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Some(self.cfg.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_looks_up_the_site_config_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(CountingConfig {
+            cfg: site_config(&dir, None, None),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        let served = state.clone();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, make_upload_router(served)).await;
+        });
+        let response = send_multipart_response(addr, "/", b"hello").await;
+        assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+        assert_eq!(state.calls.load(Ordering::SeqCst), 1);
     }
 
     // ── the request body ceiling (issue #700) ──────────────────────────────────
