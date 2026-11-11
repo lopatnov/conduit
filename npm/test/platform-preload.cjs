@@ -6,9 +6,13 @@ const [platform, arch, libc] = (process.env.CONDUIT_TEST_PLATFORM || "").split("
 if (platform && arch) {
   Object.defineProperty(process, "platform", { value: platform });
   Object.defineProperty(process, "arch", { value: arch });
-  if (/^v\d$/.test(libc || "")) {
-    const config = { ...process.config, variables: { ...process.config.variables, arm_version: libc.slice(1) } };
-    Object.defineProperty(process, "config", { value: config });
+  if (arch === "arm") {
+    // Every synthetic ARM case sets the ARM level itself: the one in the suffix, or none at all, never the host's
+    // (an ARMv7 host would otherwise make "linux-arm" read as ARMv7).
+    const variables = { ...process.config.variables };
+    if (/^v\d$/.test(libc || "")) variables.arm_version = libc.slice(1);
+    else delete variables.arm_version;
+    Object.defineProperty(process, "config", { value: { ...process.config, variables } });
   }
   if (platform === "linux") {
     const header = libc === "musl" ? {} : { glibcVersionRuntime: "2.39" };

@@ -153,7 +153,9 @@ test("the table picks the musl build only on Linux with musl", () => {
   assert.equal(assetFor("linux", "arm", false, "7").name, "conduit-armv7-unknown-linux-gnueabihf");
   assert.equal(assetFor("linux", "arm", false, 7).name, "conduit-armv7-unknown-linux-gnueabihf");
   assert.equal(assetFor("linux", "arm", false, "6").name, "conduit-arm-unknown-linux-gnueabihf");
-  assert.equal(assetFor("linux", "arm", false, undefined).name, "conduit-arm-unknown-linux-gnueabihf");
+  // "no answer" is `null` here: `undefined` would make the default parameter read the host's own `arm_version`
+  assert.equal(assetFor("linux", "arm", false, null).name, "conduit-arm-unknown-linux-gnueabihf");
+  assert.equal(assetFor("linux", "arm", false, "").name, "conduit-arm-unknown-linux-gnueabihf");
   assert.equal(assetFor("linux", "arm", true, "7").name, undefined, "no musl build for 32-bit ARM");
 });
 
