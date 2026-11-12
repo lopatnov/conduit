@@ -116,14 +116,30 @@ fn maybe_fire_mirror(
 ) {
 }
 
-pub(super) fn extract_host(session: &Session) -> String {
-    session
-        .req_header()
-        .headers
+/// The effective request authority, keeping the port when the client sent one.
+///
+/// On HTTP/2 browsers do not send a `host` header — the target authority is
+/// carried by the `:authority` pseudo-header, which Pingora stores in
+/// `uri.authority()`. Fall back to it so h2 requests keep host-based routing,
+/// caching, `allowedHosts` matching and forwarded headers working (Chromium
+/// negotiates h2 whenever ALPN offers it, so every browser request used to
+/// degrade to an empty host).
+pub(super) fn request_host(session: &Session) -> String {
+    request_host_of(session.req_header())
+}
+
+/// The header-only core of [`request_host`] — testable without a Pingora session.
+fn request_host_of(req: &RequestHeader) -> String {
+    req.headers
         .get("host")
         .and_then(|v| v.to_str().ok())
-        .map(|h| host_without_port(h).to_owned())
+        .map(str::to_owned)
+        .or_else(|| req.uri.authority().map(|a| a.as_str().to_owned()))
         .unwrap_or_default()
+}
+
+pub(super) fn extract_host(session: &Session) -> String {
+    host_without_port(&request_host(session)).to_owned()
 }
 
 /// Append `X-Forwarded-For` and `X-Forwarded-Proto` headers to the upstream request.
@@ -166,14 +182,20 @@ pub(super) fn append_forwarded_headers(
     };
     upstream_request.insert_header("x-forwarded-proto", proto)?;
 
-    // X-Forwarded-Host: original Host header so the upstream can reconstruct URLs.
-    if let Some(host) = session
-        .req_header()
-        .headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-    {
-        upstream_request.insert_header("x-forwarded-host", host)?;
+    // X-Forwarded-Host: original Host (or h2 `:authority`) so the upstream can reconstruct URLs.
+    let client_host = request_host(session);
+    if !client_host.is_empty() {
+        upstream_request.insert_header("x-forwarded-host", client_host.as_str())?;
+    }
+
+    // HTTP/2 requests carry no `host` header, but every HTTP/1.1 upstream needs one.
+    // Restore it from the h2 `:authority` (Pingora stores it in `uri.authority()`),
+    // preferring an existing header — Pingora already rejects h2 requests whose
+    // `host` and `:authority` disagree.
+    if upstream_request.headers.get("host").is_none() {
+        if let Some(authority) = upstream_request.uri.authority().map(|a| a.as_str().to_owned()) {
+            upstream_request.insert_header("host", &authority)?;
+        }
     }
 
     // Via: RFC 7230 §5.7 — identify the proxy hop.
@@ -373,13 +395,12 @@ pub(super) fn fire_mirror_request(
         }
     }
     // Add X-Mirrored-From so the mirror can distinguish shadow traffic.
-    let primary_host = session
-        .req_header()
-        .headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("-")
-        .to_owned();
+    let primary_host = request_host(session);
+    let primary_host = if primary_host.is_empty() {
+        "-".to_owned()
+    } else {
+        primary_host
+    };
     headers.push(("x-mirrored-from".to_owned(), primary_host));
 
     tokio::spawn(async move {
@@ -505,6 +526,59 @@ mod tests {
         }));
         apply_upstream_path_transforms(&mut req, &ctx).unwrap();
         assert_eq!(req.uri.path(), "/api/v1/users");
+    }
+
+    // ── request_host (h2 `:authority` fallback) ────────────────────────────────
+
+    /// A browser request over HTTP/2: no `host` header, the authority rides in
+    /// `:authority` (Pingora stores it in `uri.authority()`). The host must not
+    /// degrade to an empty string — that is what made every Chromium request
+    /// fail `allowedHosts` with `400 host not allowed`.
+    #[test]
+    fn request_host_falls_back_to_h2_authority() {
+        use pingora_http::RequestHeader;
+        let (parts, _) = http::Request::builder()
+            .uri("https://snff.cc/index.html")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let req = RequestHeader::from(parts);
+        assert_eq!(request_host_of(&req), "snff.cc");
+    }
+
+    /// HTTP/1.1 keeps its precedence: the `host` header wins over whatever the
+    /// target carries (Pingora already rejects requests where they disagree).
+    #[test]
+    fn request_host_prefers_the_host_header() {
+        use pingora_http::RequestHeader;
+        let mut req = RequestHeader::build("GET", b"/", None).unwrap();
+        req.insert_header("host", "snff.cc:8443").unwrap();
+        assert_eq!(request_host_of(&req), "snff.cc:8443");
+    }
+
+    /// An h2 `:authority` may carry an explicit port; it is preserved for
+    /// `allowedHosts` matching (which accepts both forms) and stripped by
+    /// `extract_host` for site matching.
+    #[test]
+    fn request_host_keeps_an_explicit_h2_authority_port() {
+        use pingora_http::RequestHeader;
+        let (parts, _) = http::Request::builder()
+            .uri("https://snff.cc:8443/")
+            .body(())
+            .unwrap()
+            .into_parts();
+        let req = RequestHeader::from(parts);
+        assert_eq!(request_host_of(&req), "snff.cc:8443");
+        assert_eq!(host_without_port(&request_host_of(&req)), "snff.cc");
+    }
+
+    /// No host header and no authority (a bare origin-form HTTP/1.0 request)
+    /// still yields an empty host, not a panic.
+    #[test]
+    fn request_host_empty_when_nothing_available() {
+        use pingora_http::RequestHeader;
+        let req = RequestHeader::build("GET", b"/", None).unwrap();
+        assert_eq!(request_host_of(&req), "");
     }
 
     // ── apply_header_transform_request_with_claims ────────────────────────────

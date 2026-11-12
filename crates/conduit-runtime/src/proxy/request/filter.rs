@@ -38,7 +38,7 @@ use crate::filter::rate_limit;
 use crate::filter::{cors, redirects, security_headers};
 use crate::handler::response;
 use crate::proxy::ctx::{AcceptEncoding, RequestCtx};
-use crate::proxy::request::transform::extract_host;
+use crate::proxy::request::transform::{extract_host, request_host};
 use crate::proxy::request::{handler_kind_of, GuardCtx, HandlerKind};
 use crate::proxy::router;
 use crate::proxy::service::ConduitProxy;
@@ -279,14 +279,10 @@ impl ConduitProxy {
         let handler_kind = handler_kind_of(&req_ctx.upstream);
 
         // ── Guard filters (ip, cors, limits, auth, redirects, scripts) ──────────
-        // Extract Host header once for AllowedHostsGuard.
-        let incoming_host = session
-            .req_header()
-            .headers
-            .get("host")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_owned();
+        // Extract Host header once for AllowedHostsGuard. `request_host` also
+        // reads the h2 `:authority` (stored by Pingora in `uri.authority()`)
+        // because browsers on HTTP/2 send no `host` header at all.
+        let incoming_host = request_host(session);
 
         let guards = GuardCtx {
             ip_cfg,
