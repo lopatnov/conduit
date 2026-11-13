@@ -236,11 +236,15 @@ A 32-bit x86 process in a Docker container cannot create a socket under the defa
 its fix for CVE-2026-31431 says why: 29.4.2 blocked the `socketcall` system call, which older 32-bit libc uses for every
 socket operation (moby/moby#52506), and 29.4.3 reverted that and enforces the same limit in AppArmor and SELinux instead
 (moby/moby#52537; we have not run 29.4.3). Options, safest first: use Docker 29.4.3 or later, or run the binary outside a
-container; or start from Docker's default seccomp profile (the `default.json` of the moby repository), add the 32-bit x86 socket system calls to it and start the
-container with `--security-opt seccomp=profile.json` (not tested here); as a last resort `--security-opt
-seccomp=unconfined` works (measured), but it turns off the container's whole syscall filter, one of the limits on what
-an exploited network-facing process can do, so use it only for a throw-away or test container and never for one that
-faces untrusted traffic (issue #708). The CI jobs that run 32-bit code in a container are pinned to `ubuntu-24.04`
+container. Both of the other two options allow `socketcall`, and through it `AF_ALG` sockets, which is what the 29.4.2
+block was for: use them only on a kernel that includes the fix for CVE-2026-31431 (Docker's write-up says Debian and
+RHEL 9 have one and Ubuntu did not yet when it was written; check yours), because on an unpatched kernel a compromised
+container can use that bug to gain privileges inside the container. The first is Docker's default seccomp profile (the
+`default.json` of the moby repository) with the 32-bit x86 socket system calls added, started with `--security-opt
+seccomp=profile.json` (not tested here). The second, a last resort, is `--security-opt seccomp=unconfined`: it works
+(measured), but it turns off the container's whole syscall filter, one of the limits on what an exploited
+network-facing process can do, so use it only for a throw-away or test container and never for one that faces
+untrusted traffic (issue #708). The CI jobs that run 32-bit code in a container are pinned to `ubuntu-24.04`
 (Docker 28) for this reason until the `ubuntu-latest` runner has Docker 29.4.3 or later.
 `i686-pc-windows-msvc` is not in the table: `pingora-core` does not compile for 32-bit Windows yet
 ([cloudflare/pingora#1119](https://github.com/cloudflare/pingora/issues/1119)). Android does not build either
