@@ -18,7 +18,8 @@
  * user's profile), so there the binary goes to the package's folder only; and on Linux and macOS an entry (the two
  * directories above the file, and the file) is used only when it is not a symbolic link, is owned by the effective user
  * and cannot be written by group or others, and every directory above them belongs to root or that user and is not open
- * to others (nobody else can then swap a directory of the path). A cached binary is also checked against its hash at
+ * to others (nobody else can then swap a directory of the path); what was checked is what is run, the path with the
+ * links above the cache resolved. A cached binary is also checked against its hash at
  * every run. Anything the cache does not pass is ignored, never removed.
  *
  * It is fetched after the install (download.js, a prefetch: npm hides the output of install scripts unless it is run
@@ -52,7 +53,7 @@ import { get as httpGet } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assetFor, SUPPORTED } from "./platform.js";
 
@@ -147,6 +148,11 @@ function ancestorsSafe(dir) {
     }
     if (dirname(p) === p) return true;
   }
+}
+
+/** `place` with the links of the directories above it resolved (the cache directory itself is never a link). */
+function resolvedCachePath(place) {
+  return join(realpathSync(dirname(place)), basename(place));
 }
 
 /** The cache directories (and the file, when given) pass `trusted`, and so do all the directories above them. */
@@ -354,8 +360,14 @@ export async function ensureBinary({ verifyExisting = false, write = (s) => proc
   const inPackage = places[0];
   let found;
   for (const place of places.filter((p) => existsSync(p))) {
-    if (place === inPackage || cacheTrusted(place)) {
+    if (place === inPackage) {
       found = place;
+      break;
+    }
+    if (cacheTrusted(place)) {
+      // What was checked is what is run: the path with its links resolved, since the original may go through a link
+      // that could be pointed elsewhere after the check.
+      found = resolvedCachePath(place);
       break;
     }
     say(`[conduit] Ignoring ${place}: it is not owned by you, or it can be written by others, or it is a link.`);
@@ -383,7 +395,7 @@ export async function ensureBinary({ verifyExisting = false, write = (s) => proc
   if (writable(NATIVE_DIR)) {
     dir = NATIVE_DIR;
   } else if (cacheAllowed() && writable(cacheDir(), 0o700) && cacheTrusted()) {
-    dir = cacheDir();
+    dir = realpathSync(cacheDir());
   }
   if (!dir) {
     throw new FetchError(

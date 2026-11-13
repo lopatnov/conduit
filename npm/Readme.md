@@ -65,17 +65,17 @@ conduit
 >
 > npm hides the output of install scripts unless you add `--foreground-scripts`; the first run
 > shows it either way. The binary is stored in the package's `bin/native/` when that directory
-> can be written, otherwise in a per-user cache (`~/.cache/conduit` or `$XDG_CACHE_HOME/conduit`
-> on Linux, `~/Library/Caches/conduit` on macOS, `%LOCALAPPDATA%\conduit\Cache` on Windows, in a
-> `v<version>` folder; `CONDUIT_CACHE_DIR` replaces the base), so a global install owned by root
-> still works for an ordinary user. The cache is for its owner only, on Linux and macOS: an entry is used only when it is not a
+> can be written, otherwise (on Linux and macOS) in a per-user cache (`~/.cache/conduit` or
+> `$XDG_CACHE_HOME/conduit` on Linux, `~/Library/Caches/conduit` on macOS, in a `v<version>` folder;
+> `CONDUIT_CACHE_DIR` replaces the base), so a global install owned by root still works for an
+> ordinary user. The cache is for its owner only, on Linux and macOS: an entry is used only when it is not a
 > link, belongs to you, cannot be written by others, and every directory above it belongs to you or
 > to root and is not open to others; root never uses it, and neither does Windows (a process with
 > more privilege than the cache's owner must not run what that user can replace; on Windows the
 > binary goes to the package's folder only); and a binary found there is checked against its
-> SHA-256 at every run and downloaded again if it differs.
-> A download follows redirects only to https, gives up when no data arrives for 60 seconds and
-> refuses more than 200 MiB.
+> SHA-256 at every run and downloaded again if it differs; what is checked is what is run (the path
+> with its links resolved). A download follows redirects only to https, gives up when no data
+> arrives for 60 seconds or after 30 minutes in all, and refuses more than 200 MiB.
 >
 > Set `CONDUIT_SKIP_DOWNLOAD=1` to never download (for example when you provide the binary
 > yourself): `conduit` then says where it looked. A failed download does not fail `npm install`;

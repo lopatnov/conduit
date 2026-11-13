@@ -276,6 +276,26 @@ test("a cache below a directory that others can write is ignored (they could swa
   assert.deepEqual(t.urls, []);
 });
 
+test("a link above the cache is resolved once and the resolved path is the one that is run", { skip: !cacheUsable }, async () => {
+  // CONDUIT_CACHE_DIR goes through a link (`alias`): the checks and the run must use the resolved path, because the
+  // original could be pointed somewhere else after the check.
+  const t = await setup({ nativeIsAFile: true });
+  const real = join(t.pkg, "real");
+  mkdirSync(real);
+  symlinkSync(real, join(t.pkg, "alias"));
+  const viaLink = join(t.pkg, "alias", "cachebase");
+  const first = await t.run("conduit.js", ["a"], { CONDUIT_CACHE_DIR: viaLink });
+  assert.equal(first.code, 0, first.stderr);
+  assert.equal(first.stdout, "hello-from-conduit a\n");
+  const to = first.stderr.split("\n").find((l) => l.startsWith("[conduit] To:"));
+  assert.ok(to.includes(join(real, "cachebase")) && !to.includes("alias"), to);
+  // the next run finds it and downloads nothing
+  const second = await t.run("conduit.js", ["b"], { CONDUIT_CACHE_DIR: viaLink });
+  t.close();
+  assert.equal(second.stdout, "hello-from-conduit b\n");
+  assert.equal(t.urls.length, 1);
+});
+
 test("the cache is for an ordinary POSIX user only: not for root, not where there is no effective user id (Windows)", () => {
   assert.equal(cacheAllowed(1000), true);
   assert.equal(cacheAllowed(0), false);
