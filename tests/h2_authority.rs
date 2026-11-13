@@ -360,16 +360,11 @@ fn h2_request_for_the_second_allowed_host_is_served() {
 fn connect_is_not_served() {
     let f = Fixture::start();
     let port = f.plain_port;
-    let answer = f.raw(
-        format!(
-            "CONNECT {SITE_HOST}:{port} HTTP/1.1
-Host: {SITE_HOST}:{port}
-Connection: close
-
-"
-        )
-        .as_bytes(),
+    let request = format!(
+        "CONNECT {SITE_HOST}:{port} HTTP/1.1\r\nHost: {SITE_HOST}:{port}\r\nConnection: close\r\n\r\n"
     );
+    assert!(request.contains("\r\n\r\n"), "the request must use CRLF");
+    let answer = f.raw(request.as_bytes());
     assert!(answer.starts_with("HTTP/1.1 405"), "{answer}");
     assert!(!answer.contains("\"headers\""), "{answer}");
 }
