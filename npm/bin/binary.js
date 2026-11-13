@@ -8,15 +8,18 @@
  *
  *   1. `bin/native/` inside the package, when that directory can be written (the usual `npm install`, and a global
  *      install run by root: root owns the package, so no other user can replace the binary);
- *   2. otherwise a per-user cache directory (a global install owned by root, run by an ordinary user):
- *      Linux `$XDG_CACHE_HOME/conduit` or `~/.cache/conduit`, macOS `~/Library/Caches/conduit`,
- *      Windows `%LOCALAPPDATA%\conduit\Cache`, in a `v<version>` subdirectory; `CONDUIT_CACHE_DIR` replaces the base.
+ *   2. otherwise, on Linux and macOS and not for root, a per-user cache directory (a global install owned by root, run
+ *      by an ordinary user): `$XDG_CACHE_HOME/conduit` or `~/.cache/conduit`, or macOS `~/Library/Caches/conduit`, in a
+ *      `v<version>` subdirectory; `CONDUIT_CACHE_DIR` replaces the base.
  *
- * The cache is for the user who owns it, and only that user: on a POSIX system an entry (the two directories above the
- * file, and the file) is used only when it is not a symbolic link, is owned by the effective user and cannot be written
- * by group or others, and root never uses the cache at all (a process with more privilege than the cache's owner must
- * not run what that user can replace: `sudo` on macOS keeps the user's HOME). A cached binary is also checked against
- * its hash at every run. Anything the cache does not pass is ignored, never removed.
+ * The cache is for the user who owns it, and only that user. A process with more privilege than the cache's owner must
+ * not run what that user can replace (`sudo` on macOS keeps the user's HOME), so: root never uses the cache; Windows
+ * never does either (it has no effective user id to tell an elevated process from an ordinary one, and UAC keeps the
+ * user's profile), so there the binary goes to the package's folder only; and on Linux and macOS an entry (the two
+ * directories above the file, and the file) is used only when it is not a symbolic link, is owned by the effective user
+ * and cannot be written by group or others, and every directory above them belongs to root or that user and is not open
+ * to others (nobody else can then swap a directory of the path). A cached binary is also checked against its hash at
+ * every run. Anything the cache does not pass is ignored, never removed.
  *
  * It is fetched after the install (download.js, a prefetch: npm hides the output of install scripts unless it is run
  * with `--foreground-scripts`), and again by the launcher (conduit.js) at any run where the binary is missing, so a
@@ -24,8 +27,8 @@
  * Messages go to stderr: stdout belongs to the program that is run.
  *
  * A download follows redirects only to https (http only when the source itself is http: the test hook), gives up when
- * no data arrives for 60 s or when the whole download takes more than 30 minutes, and refuses more than 200 MiB; it is written to a new file with a random name that is
- * renamed into place only after the hash matches.
+ * no data arrives for 60 s or when the whole download takes more than 30 minutes, and refuses more than 200 MiB; it is
+ * written to a new file with a random name that is renamed into place only after the hash matches.
  *
  * Environment: CONDUIT_SKIP_DOWNLOAD=1 never downloads; CONDUIT_CACHE_DIR; CONDUIT_DOWNLOAD_BASE and
  * CONDUIT_DOWNLOAD_IDLE_MS and CONDUIT_DOWNLOAD_DEADLINE_MS (test hooks: another base URL for the assets, with the
@@ -41,6 +44,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   unlinkSync,
 } from "node:fs";
@@ -93,8 +97,14 @@ export function cacheDir(env = process.env, platform = process.platform) {
   return join(base, `v${VERSION}`);
 }
 
-/** Root never uses the per-user cache (see the top of this file). */
-const cacheAllowed = () => EUID !== 0;
+/**
+ * The per-user cache is used only on a POSIX system and never by root (see the top of this file). On Windows there is
+ * no effective user id to tell an elevated process from an ordinary one (UAC keeps the user's profile, so a process of
+ * lower integrity can write the cache an elevated one reads), so the binary goes to the package's folder only.
+ */
+export function cacheAllowed(euid = EUID) {
+  return euid !== null && euid !== 0;
+}
 
 /** Where the binary of `assetName` is looked for, in order: the package, then (not for root) the cache. */
 export function locations(assetName) {
@@ -105,7 +115,7 @@ export function locations(assetName) {
 
 /** POSIX: `path` is not a symbolic link, belongs to the effective user and cannot be written by group or others. */
 function trusted(path) {
-  if (EUID === null) return true;
+  if (EUID === null) return false;
   try {
     const st = lstatSync(path);
     return !st.isSymbolicLink() && st.uid === EUID && (st.mode & 0o022) === 0;
@@ -114,10 +124,35 @@ function trusted(path) {
   }
 }
 
-/** The cache directories (and the file, when given) pass `trusted`. */
+/**
+ * POSIX: every directory above `dir` (symbolic links resolved) belongs to root or to the effective user and cannot be
+ * written by group or others, so that nobody else can rename a directory of the path and put their own tree in its
+ * place. A sticky directory such as /tmp may be writable by everyone: others cannot rename what is not theirs there.
+ */
+function ancestorsSafe(dir) {
+  let real;
+  try {
+    real = realpathSync(dir);
+  } catch {
+    return false;
+  }
+  for (let p = dirname(real); ; p = dirname(p)) {
+    try {
+      const st = lstatSync(p);
+      const ownedByUsOrRoot = st.uid === 0 || st.uid === EUID;
+      const openToOthers = (st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0;
+      if (!ownedByUsOrRoot || openToOthers) return false;
+    } catch {
+      return false;
+    }
+    if (dirname(p) === p) return true;
+  }
+}
+
+/** The cache directories (and the file, when given) pass `trusted`, and so do all the directories above them. */
 function cacheTrusted(file) {
   const dir = cacheDir();
-  return [dirname(dir), dir, ...(file ? [file] : [])].every(trusted);
+  return [dirname(dir), dir, ...(file ? [file] : [])].every(trusted) && ancestorsSafe(dir);
 }
 
 function baseUrl() {
@@ -354,9 +389,11 @@ export async function ensureBinary({ verifyExisting = false, write = (s) => proc
     throw new FetchError(
       `No native binary for ${key}, and it cannot be put in ${NATIVE_DIR}` +
         (cacheAllowed()
-          ? ` or in ${cacheDir()} (that cache must be yours and not writable by others).\n`
-          : " (the per-user cache is not used when running as root).\n") +
-        "Set CONDUIT_CACHE_DIR to a directory of yours, or install from source: cargo install lopatnov-conduit",
+          ? ` or in ${cacheDir()} (that cache must be yours and not writable by others, and so must be the directories above it).\n`
+          : " (the per-user cache is not used when running as root, nor on Windows).\n") +
+        (cacheAllowed()
+          ? "Set CONDUIT_CACHE_DIR to a directory of yours, or install from source: cargo install lopatnov-conduit"
+          : "Install the package where you can write, or install from source: cargo install lopatnov-conduit"),
     );
   }
   const url = `${baseUrl()}/${name}`;

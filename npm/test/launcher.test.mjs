@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assetFor } from "../bin/platform.js";
+import { cacheAllowed } from "../bin/binary.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
@@ -262,6 +263,23 @@ test("a cache that is a symbolic link is ignored", { skip: !cacheUsable }, async
   assert.equal(r.code, 1);
   assert.ok(!r.stdout.includes("planted"), r.stdout);
   assert.deepEqual(t.urls, []);
+});
+
+test("a cache below a directory that others can write is ignored (they could swap the tree)", { skip: !cacheUsable }, async () => {
+  const t = await setup({ nativeIsAFile: true });
+  // The package directory is on the path of the cache (it holds `cache/`): open to everyone and not sticky.
+  chmodSync(t.pkg, 0o777);
+  const r = await t.run("conduit.js");
+  t.close();
+  assert.equal(r.code, 1);
+  assert.ok(r.stderr.includes("so must be the directories above it"), r.stderr);
+  assert.deepEqual(t.urls, []);
+});
+
+test("the cache is for an ordinary POSIX user only: not for root, not where there is no effective user id (Windows)", () => {
+  assert.equal(cacheAllowed(1000), true);
+  assert.equal(cacheAllowed(0), false);
+  assert.equal(cacheAllowed(null), false);
 });
 
 test("root never uses the per-user cache", { skip: !(runnable && IS_ROOT) }, async () => {
