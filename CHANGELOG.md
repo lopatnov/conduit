@@ -7,16 +7,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Fixed
-
-- **HTTP/2 requests were rejected with `400 Bad Request: host not allowed` by every browser**
-  (Chromium negotiates h2 whenever ALPN offers it). h2 clients send no `host` header — the
-  authority rides in the `:authority` pseudo-header — so the `host`-header lookup saw an empty
-  value and, with `allowedHosts` or a site `host:` configured (secure by default since 2.3.0),
-  rejected the request. The host is now read with a fallback to `uri.authority()`, which also
-  restores host-based site routing, cache keys and `X-Forwarded-Host` for h2 requests. (The
-  upstream `Host` of an HTTP/1.1 upstream was already set from the authority by Pingora.)
-
 ---
 
 ## [2.3.0] — 2026-11-11
@@ -69,6 +59,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **HTTP/2 requests were rejected with `400 Bad Request: host not allowed` by every browser**
+  (Chromium negotiates h2 whenever ALPN offers it). h2 clients send no `host` header — the
+  authority rides in the `:authority` pseudo-header — so the `host`-header lookup saw an empty
+  value and, with `allowedHosts` or a site `host:` configured (secure by default in this release),
+  rejected the request. The host is now read with a fallback to `uri.authority()`, which also
+  restores host-based site routing, cache keys and `X-Forwarded-Host` for h2 requests. (The
+  upstream `Host` of an HTTP/1.1 upstream was already set from the authority by Pingora.)
+
 - **Six examples and the README used option names that were silently ignored**, found by the new key check: the
   `security-hardened`, `tls-h2`, `multi-site` and `api-gateway` examples set `hsts`, `contentSecurityPolicy` and
   `frameOptions` (the options are `hstsMaxAgeSecs`, `hstsIncludeSubDomains`, `hstsPreload`, `csp`, `xFrameOptions`),
@@ -109,6 +107,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Tests
 
+- Real HTTP/2 and HTTP/1.1 requests against a running Conduit (`tests/h2_authority.rs`: the request host, a `host`
+  that disagrees with `:authority`, ambiguous HTTP/1.1 hosts, a spoofed `X-Forwarded-Host`, `CONNECT`) and a Docker
+  end-to-end harness, `scripts/e2e/` (an isolated network with go-httpbin as the upstream and curl and nghttp as the
+  clients), whose first scenario is the HTTP/2 request host (issue #704).
 - The integration-test harness keeps the spawned server's stderr and prints its tail when a test cannot start the
   server or its redirect listener, and retries once, on the same ports, when the server could not bind them (issue
   #677: a listener that failed to bind under load was invisible).
