@@ -24,6 +24,4 @@ upload:
     - "application/pdf"
 
 # Proxy everything else to the API backend
-proxy:
-  targets:
-    - "http://api:4000"
+proxy: "http://api:4000"

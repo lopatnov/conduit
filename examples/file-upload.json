@@ -16,7 +16,5 @@
       "application/pdf"
     ]
   },
-  "proxy": {
-    "targets": ["http://api:4000"]
-  }
+  "proxy": "http://api:4000"
 }

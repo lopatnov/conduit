@@ -546,8 +546,7 @@ upload:
     - "image/png"
     - "application/pdf"
 
-proxy:
-  targets: ["http://api:4000"]   # remaining traffic goes to backend
+proxy: "http://api:4000"   # remaining traffic goes to backend
 ```
 
 **Upload with curl:**

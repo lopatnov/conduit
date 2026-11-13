@@ -27,7 +27,5 @@
       "path": "./response-tagger.wasm"
     }
   ],
-  "proxy": {
-    "targets": ["http://httpbin.org/anything"]
-  }
+  "proxy": "http://httpbin.org/anything"
 }

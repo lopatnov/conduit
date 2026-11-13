@@ -191,10 +191,16 @@ cross build --release --target aarch64-unknown-linux-musl
 
 # Linux RISC-V 64 (the full build, as in the release; cross compiles it from x86-64)
 cross build --release --target riscv64gc-unknown-linux-gnu --features full
+
+# 32-bit Linux: x86, ARMv7 (Raspberry Pi 2 and later with a 32-bit OS), ARMv6 (Raspberry Pi 1 and Zero), soft-float ARM
+cross build --release --target i686-unknown-linux-gnu --features full
+cross build --release --target armv7-unknown-linux-gnueabihf --features full
+cross build --release --target arm-unknown-linux-gnueabihf --features full
+cross build --release --target arm-unknown-linux-gnueabi --features full
 ```
 
 > **macOS targets** can only be built on macOS, and **Windows ARM64**
-> (`aarch64-pc-windows-msvc`, not in the releases yet) on Windows (an ARM64 host is simplest).
+> (`aarch64-pc-windows-msvc`) on Windows (an ARM64 host is simplest).
 > The [release workflow](../.github/workflows/release.yml) uses GitHub-hosted
 > macOS and Windows runners for those targets.
 
@@ -203,14 +209,48 @@ cross build --release --target riscv64gc-unknown-linux-gnu --features full
 | Target                          | Tier   | Standard | Full |
 | ------------------------------- | ------ | :------: | :--: |
 | `x86_64-unknown-linux-gnu`      | Tier 1 | ✅       | ✅   |
-| `x86_64-unknown-linux-musl`     | Tier 1 | ✅       | ✅   |
+| `x86_64-unknown-linux-musl`     | Tier 2 | ✅       | ✅   |
 | `aarch64-unknown-linux-gnu`     | Tier 1 | ✅       | ✅   |
 | `aarch64-unknown-linux-musl`    | Tier 2 | ✅       | ✅   |
 | `riscv64gc-unknown-linux-gnu`   | Tier 2 | ✅       | ✅   |
-| `x86_64-apple-darwin`           | Tier 1 | ✅       | ✅   |
+| `x86_64-apple-darwin`           | Tier 2 | ✅       | ✅   |
 | `aarch64-apple-darwin`          | Tier 1 | ✅       | ✅   |
 | `x86_64-pc-windows-msvc`        | Tier 1 | ✅       | ✅   |
-| `aarch64-pc-windows-msvc`       | Tier 2 | not released yet; built and tested in CI | |
+| `aarch64-pc-windows-msvc`       | Tier 1 | ✅       | ✅   |
+| `i686-unknown-linux-gnu`        | Tier 1 | ✅       | ✅   |
+| `armv7-unknown-linux-gnueabihf` | Tier 2 | ✅       | ✅   |
+| `arm-unknown-linux-gnueabihf`   | Tier 2 | ✅       | ✅   |
+| `arm-unknown-linux-gnueabi`     | Tier 2 | ✅       | ✅   |
+
+The tier is the one the [Rust platform support page](https://doc.rust-lang.org/rustc/platform-support.html) gives the
+target (it changes between Rust releases). A tick means the build is in the release. How far each is tested: CI runs the
+workspace tests on native runners (Linux x86-64 and ARM64 with glibc, macOS on Apple Silicon, Windows x86-64 and
+ARM64); the musl targets, RISC-V and macOS Intel are cross-compiled or built only (the musl binaries also go
+through the Debian package tests); the 32-bit x86 Linux build runs the `standard` suite in CI, and its finished `full` binary is run in an
+`i386/debian:12` container (it starts, serves a static file, proxies to another instance, takes an upload); the three
+32-bit ARM builds compile and link in CI and were run once under QEMU with the `standard` suite: 1,028 tests passed
+and 61 failed, all tests of the proxy path, because the emulator lacks the socket option Pingora sets on upstream
+connections (the same tests pass on 32-bit x86).
+A 32-bit x86 process in a Docker container cannot create a socket under the default seccomp profile of Docker 29.4.2
+(measured: `Function not implemented`, and with it a container's DNS fails; Docker 28.0.4 is fine). Docker's write-up of
+its fix for CVE-2026-31431 says why: 29.4.2 blocked the `socketcall` system call, which older 32-bit libc uses for every
+socket operation (moby/moby#52506), and 29.4.3 reverted that and enforces the same limit in AppArmor and SELinux instead
+(moby/moby#52537; we have not run 29.4.3). Options, safest first: use Docker 29.4.3 or later, or run the binary outside a
+container. Both of the other two options allow `socketcall`, and through it `AF_ALG` sockets, which is what the 29.4.2
+block was for: use them only on a kernel that includes the fix for CVE-2026-31431 (Docker's write-up says Debian and
+RHEL 9 have one and Ubuntu did not yet when it was written; check yours), because on an unpatched kernel a compromised
+container can use that bug to gain privileges inside the container. The first is the workaround that
+Docker's 29.4.2 release notes recommend: the `seccomp/v0.2.1` profile of the `moby/profiles` repository, which allows
+`socketcall` but keeps `AF_ALG` closed for `socket()` (the notes themselves say the `socketcall` path stays open, and
+warn against the `v0.2.0` profile); start the container with `--security-opt seccomp=<that profile file>` (not run
+here; we know it from the release notes). The second, a last resort that Docker's notes advise against, is
+`--security-opt seccomp=unconfined`: it works (measured), but it turns off the container's whole syscall filter, one of
+the limits on what an exploited network-facing process can do, so use it only for a throw-away or test container and
+never for one that faces untrusted traffic (issue #708). The CI jobs that run 32-bit code in a container are pinned to `ubuntu-24.04`
+(Docker 28) for this reason until the `ubuntu-latest` runner has Docker 29.4.3 or later.
+`i686-pc-windows-msvc` is not in the table: `pingora-core` does not compile for 32-bit Windows yet
+([cloudflare/pingora#1119](https://github.com/cloudflare/pingora/issues/1119)). Android does not build either
+and is not supported by Pingora.
 
 ---
 

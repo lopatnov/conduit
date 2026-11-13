@@ -31,8 +31,8 @@ jobs:
       fail-fast: false
       matrix:
         # ubuntu-24.04-arm and windows-11-arm are native arm64 runners. The first tests the aarch64-unknown-linux-gnu
-        # build that the release publishes; the second only shows whether Windows ARM64 builds and passes the tests
-        # (the release does not publish it yet: see the issue about Windows ARM64).
+        # build that the release publishes; the second tests the default build on Windows ARM64, whose four release
+        # builds are made natively on the same kind of runner by release.yml.
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
 
     steps:
@@ -1204,6 +1204,15 @@ jobs:
           - target: aarch64-unknown-linux-musl
             features: full
             deb: arm64
+          # 32-bit Linux (issue #696): the full build compiles and links for all four; i686 is also tested below.
+          - target: i686-unknown-linux-gnu
+            features: full
+          - target: armv7-unknown-linux-gnueabihf
+            features: full
+          - target: arm-unknown-linux-gnueabihf
+            features: full
+          - target: arm-unknown-linux-gnueabi
+            features: full
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1228,6 +1237,16 @@ jobs:
       - name: Build (cross, ${{ matrix.features }})
         run: cross build --release --target ${{ matrix.target }} --features ${{ matrix.features }}
 
+      # The finished 32-bit x86 binary is run in a 32-bit Debian container by the `smoke-i686` job.
+      - name: Upload the 32-bit x86 binary
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: bin-i686
+          path: target/i686-unknown-linux-gnu/release/conduit
+          if-no-files-found: error
+          retention-days: 3
+
       # The static musl full builds are what the release packs into the .deb (scripts/build-deb.sh); the package is
       # built here the same way and tested in Debian containers by the `deb-test` job.
       - name: Build the Debian package
@@ -1244,6 +1263,69 @@ jobs:
           path: deb-out/*.deb
           if-no-files-found: error
           retention-days: 3
+
+  # ── The tests on a 32-bit target (issue #696) ───────────────────────────────
+  # Compiling for a 32-bit target (the job above) catches what does not build, such as a constant that overflows a
+  # 32-bit `usize`; this job runs the `standard` tests of the 32-bit x86 build, natively in the cross container, to
+  # catch what builds and then misbehaves. The 32-bit ARM targets are not tested here: under QEMU user-mode Pingora's
+  # `IP_BIND_ADDRESS_NO_PORT` option is not implemented, so every test in which the proxy connects to an upstream
+  # fails there although the same tests pass on i686 (probe run 42975317527).
+  #
+  # `ubuntu-24.04`, not `ubuntu-latest`: `ubuntu-latest` is Ubuntu 26.04 with Docker 29.4.2, whose default seccomp
+  # profile (it blocks `socketcall`; fixed in Docker 29.4.3, moby/moby#52506) refuses `socket()` to 32-bit x86 processes in a container ("Function not implemented"; the same container works with
+  # `seccomp=unconfined`, and with Docker 28 on ubuntu-24.04 and ubuntu-22.04): a 32-bit test in the cross container
+  # could not open a socket and `tests/acme.rs` hung for 40 minutes (measured by a diagnostic run, issue #708).
+  test-i686:
+    name: Test i686-unknown-linux-gnu
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+          targets: i686-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          key: test-i686
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Install cross
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
+        with:
+          tool: cross
+
+      - name: test (standard features, 32-bit x86)
+        run: cross test --locked --target i686-unknown-linux-gnu -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features standard
+
+  # ── The finished i686 binary, run in a 32-bit Debian container (issue #696) ──
+  # `test-i686` runs the tests in the build image (Ubuntu 16.04's glibc). The release ships the finished `full` binary,
+  # so this job runs that one in i386/debian:12, a different 32-bit distribution, and checks the things a user does with
+  # it: start, serve a static file, proxy to another instance, take an upload. See scripts/smoke-binary.sh.
+  # On `ubuntu-24.04` for the reason given at `test-i686`: with Docker 29.4.2 a 32-bit process in a container cannot open a socket.
+  smoke-i686:
+    name: Smoke test i686 binary (i386/debian:12)
+    needs: cross-compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: bin-i686
+          path: bin
+
+      - name: Run it in i386/debian:12
+        run: |
+          chmod +x bin/conduit
+          scripts/smoke-binary.sh bin/conduit i386/debian:12
 
   # ── The Debian package, installed in clean Debian containers ────────────────
   # scripts/test-deb.sh installs the package built by `cross-compile` in debian:12 and debian:13 on its own
