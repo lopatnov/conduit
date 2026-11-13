@@ -132,11 +132,15 @@ impl ProxyHttp for RedirectProxy {
             return Ok(true);
         }
 
-        let host_header = session
-            .req_header()
+        // h2 clients (a browser with prior knowledge of an h2 endpoint) carry the
+        // authority in `:authority` instead of a `host` header — Pingora stores
+        // it in `uri.authority()`, so use it as the fallback.
+        let req = session.req_header();
+        let host_header = req
             .headers
             .get("host")
-            .and_then(|v| v.to_str().ok());
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| req.uri.authority().map(|a| a.as_str()));
         let path_and_query = session
             .req_header()
             .uri

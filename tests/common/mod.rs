@@ -132,6 +132,7 @@ impl TestServer {
         // Insecure client for self-signed certs used in TLS tests.
         let insecure = reqwest::blocking::Client::builder()
             .danger_accept_invalid_certs(true)
+            .no_proxy()
             .build()
             .expect("insecure client");
 
@@ -196,7 +197,7 @@ impl TestServer {
 
     /// POST to `POST /reload` and return the parsed JSON response.
     pub fn reload(&self) -> serde_json::Value {
-        let client = reqwest::blocking::Client::new();
+        let client = local_client();
         client
             .post(self.admin_url("/reload"))
             .send()
@@ -263,7 +264,9 @@ fn probe_proxy(
     if raw_tcp {
         return bare_connect();
     }
-    let http_ok = reqwest::blocking::get(http)
+    let http_ok = local_client()
+        .get(http)
+        .send()
         .map(is_ready_status)
         .unwrap_or(false);
     let https_ok = insecure
@@ -317,9 +320,21 @@ fn requires_raw_tcp(config: &serde_json::Value, port: u16) -> bool {
 fn probe_admin(url: &str) -> bool {
     // Accept both 200 (no auth) and 401 (auth required) as "admin is ready".
     // 401 means the admin server is up and responding, it just requires a token.
-    reqwest::blocking::get(url)
+    local_client()
+        .get(url)
+        .send()
         .map(|r| r.status().is_success() || r.status().as_u16() == 401)
         .unwrap_or(false)
+}
+
+/// A blocking client for the servers of the tests, which are all on the loopback. It never uses a proxy from the
+/// environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`): a probe that went to a proxy could not tell that the server
+/// is up, and every test would fail with "server did not become ready" (issue #709).
+pub fn local_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("local client")
 }
 
 /// Start a minimal HTTP echo server on an OS-assigned free port.
