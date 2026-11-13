@@ -29,6 +29,10 @@ if "BADKEY" in text:
 elif "OTHERWARN" in text:
     print("warning: something else, not about a key", file=sys.stderr)
     print("Config is valid - 1 site, 0 routes.")
+elif "BADROUTEKEY" in text:
+    # the way `tracing` writes a warning, with colour codes around the level
+    print("2026-11-13T15:07:47.920896Z \\x1b[33m WARN\\x1b[0m conduit_proxy_http::validate: sites[0].proxy[\\"targets\\"]: the key 'targets' is not a path (it does not start with '/'), so it never matches", file=sys.stderr)
+    print("Config is valid - 1 site, 1 route.")
 elif "BADVALUE" in text:
     print("error at sites[0].x: broken", file=sys.stderr); sys.exit(1)
 else:
@@ -176,6 +180,12 @@ class Run(unittest.TestCase):
         _, _, failures, _ = self.check(md("```yaml", "BADKEY: 1", "```"))
         self.assertEqual(len(failures), 1)
         self.assertIn("not a recognized configuration key", failures[0][1])
+
+    def test_a_proxy_key_that_is_not_a_path_fails_the_block(self):
+        """The warning of issue #706, written by `tracing` with colour codes, fails the block."""
+        _, _, failures, _ = self.check(md("```yaml", "BADROUTEKEY: 1", "```"))
+        self.assertEqual(len(failures), 1)
+        self.assertIn("is not a path", failures[0][1])
 
     def test_another_warning_does_not_fail_the_block(self):
         """Another warning does not fail the block."""

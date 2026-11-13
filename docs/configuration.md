@@ -617,7 +617,11 @@ to every client, so leave it off if you do not want to expose timings.
 
 ## Proxy
 
-The `proxy` object maps URL path prefixes to upstream targets.
+The `proxy` object maps URL path prefixes to upstream targets. Each key is a path and starts with `/` (an empty key means `/`); a key that
+does not can never match a request, and `conduit validate` warns about it. In particular `proxy: { targets: [...] }` is
+**one route named `targets`**, not "these are the targets": to send every request to one upstream write
+`proxy: "http://host:port"` or `proxy: { "/": [...] }`. (`targets` is a field of a *route's* object, as in
+`proxy: { "/api": { targets: [...] } }`.)
 
 ### Single upstream (shorthand)
 
@@ -4045,10 +4049,28 @@ upload:
 | `path`              | string   | —        | URL path for upload endpoint — **required**     |
 | `dir`               | string   | —        | Directory to save uploaded files — **required** |
 | `maxFileSizeBytes`  | number   | —        | Max size per individual file                    |
-| `maxTotalSizeBytes` | number   | —        | Max total size of all files in one request      |
+| `maxTotalSizeBytes` | number   | 5 GiB (see below) | Max total size of all files in one request |
 | `maxFiles`          | number   | —        | Max number of files per request                 |
 | `allowedMimeTypes`  | string[] | all      | Allowed MIME types (e.g. `"image/jpeg"`)        |
 | `fieldName`         | string   | `"file"` | Multipart field name to read                    |
+
+**How large one request may be.** Both size limits are enforced while the body streams to disk, and a file that goes
+over its limit is removed again, and so are the files an earlier part of a refused request had already saved. A site that
+sets no `maxTotalSizeBytes` is still bounded per request: one request may carry up to the larger of **5 GiB** and
+`maxFileSizeBytes`. That bound is for one request, not a storage quota: many successful uploads can still fill the
+disk, so put the upload directory on a volume with its own limit or quota. To accept bigger uploads (AI model files are tens of gigabytes), set the limit you want:
+`maxFileSizeBytes: 53687091200` accepts one 50 GiB file, and `maxTotalSizeBytes` sets the bound for the whole request.
+A request whose `Content-Length` is already more than 1 MiB plus 0.1% above that bound is refused with `413` before its
+body is read (that margin is the room for the multipart framing). The whole body is counted as it arrives, whatever the
+field names are and whether or not there is a `Content-Length` (a chunked body has none), and a body that passes the
+bound plus that margin is cut off with `413`. The limits are 64-bit numbers on every platform.
+
+A saved file is named by a random UUID. It keeps the extension of the uploaded name only when that is ASCII letters
+and digits (16 at most); any other extension is dropped, so a client cannot put a `:` (an NTFS alternate data
+stream on Windows), a space or a control character into a file name on the server. A request that is refused, or
+that is cancelled because the client went away, keeps none of the files it had saved. (The removal of a cancelled
+request is handed to a background thread; if the server itself is shutting down at that moment it may not run, as when
+the process is killed in the middle of a write.)
 
 ---
 

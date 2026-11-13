@@ -1,0 +1,23 @@
+FROM ghcr.io/cross-rs/aarch64-linux-android:0.2.5
+
+# libz-ng-sys (a dependency of async-compression, through the `compression` feature) builds zlib-ng with CMake. In
+# the stock image CMake switches to its own Android mode, cannot use the old standalone NDK toolchain
+# ("CMAKE_MAKE_PROGRAM is not set", issue #668). A plain Linux toolchain file that names the image's cross compiler
+# gets past it, the way ci/Dockerfile.riscv64 does for RISC-V. The image already ships CMake 3.23.
+RUN printf '%s\n' \
+    'set(CMAKE_SYSTEM_NAME Linux)' \
+    'set(CMAKE_SYSTEM_PROCESSOR aarch64)' \
+    'set(CMAKE_C_COMPILER aarch64-linux-android-gcc)' \
+    'set(CMAKE_CXX_COMPILER aarch64-linux-android-g++)' \
+    'set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)' \
+    'set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)' \
+    'set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)' \
+    > /android-toolchain.cmake
+
+# The Rust cmake crate picks CMAKE_TOOLCHAIN_FILE up from the environment.
+ENV CMAKE_TOOLCHAIN_FILE=/android-toolchain.cmake
+
+# The image's old NDK toolchain has no libunwind, but the Rust standard library for this target links `-lunwind`
+# ("ld: cannot find -lunwind" when linking the binary; the ARMv7 image links fine). An archive-named linker script
+# that pulls in libgcc, which carries the unwinder, is the usual workaround.
+RUN printf 'INPUT(-lgcc)\n' > /android-ndk/lib/gcc/aarch64-linux-android/4.9.x/libunwind.a

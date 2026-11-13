@@ -97,6 +97,51 @@ jobs:
             asset_name: conduit-riscv64gc-unknown-linux-gnu
             archive_ext: tar.gz
 
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            bundle: full
+            features: "full"
+            no_default_features: false
+            asset_name: conduit-i686-unknown-linux-gnu
+            archive_ext: tar.gz
+
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            use_cross: true
+            bundle: full
+            features: "full"
+            no_default_features: false
+            asset_name: conduit-armv7-unknown-linux-gnueabihf
+            archive_ext: tar.gz
+
+          - target: arm-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            use_cross: true
+            bundle: full
+            features: "full"
+            no_default_features: false
+            asset_name: conduit-arm-unknown-linux-gnueabihf
+            archive_ext: tar.gz
+
+          - target: arm-unknown-linux-gnueabi
+            os: ubuntu-latest
+            use_cross: true
+            bundle: full
+            features: "full"
+            no_default_features: false
+            asset_name: conduit-arm-unknown-linux-gnueabi
+            archive_ext: tar.gz
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            use_cross: false
+            bundle: full
+            features: "full"
+            no_default_features: false
+            asset_name: conduit-aarch64-pc-windows-msvc.exe
+            archive_ext: zip
+
           # ── standard (`standard` feature bundle: jwt, consumers, forward-auth, cache, acme — see Cargo.toml
           # [features]): asset names end in "-standard". Also built for RISC-V, which has no other build. ──
           - target: x86_64-unknown-linux-gnu
@@ -171,6 +216,51 @@ jobs:
             no_default_features: false
             asset_name: conduit-riscv64gc-unknown-linux-gnu-standard
             archive_ext: tar.gz
+
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            bundle: standard
+            features: "standard"
+            no_default_features: false
+            asset_name: conduit-i686-unknown-linux-gnu-standard
+            archive_ext: tar.gz
+
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            use_cross: true
+            bundle: standard
+            features: "standard"
+            no_default_features: false
+            asset_name: conduit-armv7-unknown-linux-gnueabihf-standard
+            archive_ext: tar.gz
+
+          - target: arm-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            use_cross: true
+            bundle: standard
+            features: "standard"
+            no_default_features: false
+            asset_name: conduit-arm-unknown-linux-gnueabihf-standard
+            archive_ext: tar.gz
+
+          - target: arm-unknown-linux-gnueabi
+            os: ubuntu-latest
+            use_cross: true
+            bundle: standard
+            features: "standard"
+            no_default_features: false
+            asset_name: conduit-arm-unknown-linux-gnueabi-standard
+            archive_ext: tar.gz
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            use_cross: false
+            bundle: standard
+            features: "standard"
+            no_default_features: false
+            asset_name: conduit-aarch64-pc-windows-msvc-standard.exe
+            archive_ext: zip
 
 
           # ── gateway (`--no-default-features --features gateway`): the API-gateway bundle, no static files and no
@@ -248,6 +338,51 @@ jobs:
             asset_name: conduit-riscv64gc-unknown-linux-gnu-gateway
             archive_ext: tar.gz
 
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            bundle: gateway
+            features: "gateway"
+            no_default_features: true
+            asset_name: conduit-i686-unknown-linux-gnu-gateway
+            archive_ext: tar.gz
+
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            use_cross: true
+            bundle: gateway
+            features: "gateway"
+            no_default_features: true
+            asset_name: conduit-armv7-unknown-linux-gnueabihf-gateway
+            archive_ext: tar.gz
+
+          - target: arm-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            use_cross: true
+            bundle: gateway
+            features: "gateway"
+            no_default_features: true
+            asset_name: conduit-arm-unknown-linux-gnueabihf-gateway
+            archive_ext: tar.gz
+
+          - target: arm-unknown-linux-gnueabi
+            os: ubuntu-latest
+            use_cross: true
+            bundle: gateway
+            features: "gateway"
+            no_default_features: true
+            asset_name: conduit-arm-unknown-linux-gnueabi-gateway
+            archive_ext: tar.gz
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            use_cross: false
+            bundle: gateway
+            features: "gateway"
+            no_default_features: true
+            asset_name: conduit-aarch64-pc-windows-msvc-gateway.exe
+            archive_ext: zip
+
           # ── static (`--no-default-features --features static-server`): a file server that does not proxy. Asset
           # names end in "-static". ──
           - target: x86_64-unknown-linux-gnu
@@ -321,6 +456,51 @@ jobs:
             no_default_features: true
             asset_name: conduit-riscv64gc-unknown-linux-gnu-static
             archive_ext: tar.gz
+
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            use_cross: true
+            bundle: static
+            features: "static-server"
+            no_default_features: true
+            asset_name: conduit-i686-unknown-linux-gnu-static
+            archive_ext: tar.gz
+
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            use_cross: true
+            bundle: static
+            features: "static-server"
+            no_default_features: true
+            asset_name: conduit-armv7-unknown-linux-gnueabihf-static
+            archive_ext: tar.gz
+
+          - target: arm-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            use_cross: true
+            bundle: static
+            features: "static-server"
+            no_default_features: true
+            asset_name: conduit-arm-unknown-linux-gnueabihf-static
+            archive_ext: tar.gz
+
+          - target: arm-unknown-linux-gnueabi
+            os: ubuntu-latest
+            use_cross: true
+            bundle: static
+            features: "static-server"
+            no_default_features: true
+            asset_name: conduit-arm-unknown-linux-gnueabi-static
+            archive_ext: tar.gz
+
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            use_cross: false
+            bundle: static
+            features: "static-server"
+            no_default_features: true
+            asset_name: conduit-aarch64-pc-windows-msvc-static.exe
+            archive_ext: zip
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

@@ -3380,6 +3380,7 @@ version = "2.3.0"
 dependencies = [
  "async-trait",
  "axum",
+ "futures",
  "lopatnov-conduit-config-core",
  "mime_guess",
  "pingora-core",

@@ -170,8 +170,8 @@
           "properties": {
             "path":               { "type": "string" },
             "dir":                { "type": "string" },
-            "maxFileSizeBytes":   { "type": "integer", "minimum": 0 },
-            "maxTotalSizeBytes":  { "type": "integer", "minimum": 0 },
+            "maxFileSizeBytes":   { "type": "integer", "minimum": 0, "description": "Max size of one file. When maxTotalSizeBytes is not set, a larger value also raises the per-request bound above the 5 GiB default" },
+            "maxTotalSizeBytes":  { "type": "integer", "minimum": 0, "description": "Max file bytes in one request, and the per-request bound. When unset the bound is the larger of 5 GiB and maxFileSizeBytes" },
             "maxFiles":           { "type": "integer", "minimum": 1 },
             "allowedMimeTypes":   { "type": "array", "items": { "type": "string" } },
             "fieldName":          { "type": "string" }

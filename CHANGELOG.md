@@ -27,9 +27,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (connect, send and the first line of the answer), default 5000, minimum 1 (`validate` refuses 0). The docs had
   listed an option that did not exist; the probe used a fixed 5 seconds for each of the three steps, so an upstream
   that hangs took up to 15 seconds to count as failed, and now takes `timeoutMs` at most (5 seconds by default).
+- **Release builds for 32-bit Linux and for Windows ARM64** (issues #696, #671): `i686-unknown-linux-gnu`,
+  `armv7-unknown-linux-gnueabihf`, `arm-unknown-linux-gnueabihf` (ARMv6, Raspberry Pi 1 and Zero),
+  `arm-unknown-linux-gnueabi` and `aarch64-pc-windows-msvc`, each in the four builds (full without a suffix, as a bare
+  binary and an archive; `-standard`, `-gateway`, `-static` as archives), and in the npm package for `linux-ia32`,
+  `linux-arm` (the ARMv7 build where Node reports ARMv7, the ARMv6 build otherwise, which runs on both) and
+  `win32-arm64`. CI builds the full build of the four Linux targets on every pull request
+  and runs the `standard` tests of the 32-bit x86 one, then runs its finished binary in an `i386/debian:12` container
+  (start, static file, proxy, upload). The three 32-bit ARM builds are built and unit-tested only: the proxy-path tests
+  cannot run under QEMU. A 32-bit x86 process in a container under the default seccomp profile of Docker 29.4.2 cannot
+  create a socket (a regression that Docker 29.4.3 fixes; Docker 28 is fine; Docker's notes recommend the
+  `seccomp/v0.2.1` profile as the workaround; `seccomp=unconfined` works but turns off the container's syscall filter, and
+  both allow `socketcall`, so they need a kernel with the CVE-2026-31431 fix: see `docs/building.md`, issue #708). See the platform tables in the README and `docs/building.md`.
+  `i686-pc-windows-msvc` and Android are not released (Pingora does not compile for them; cloudflare/pingora#1119).
 
 ### Changed
 
+- **`conduit validate` warns about a `proxy` key that is not a path** (issue #706): `proxy: { targets: [...] }` is one
+  route named `targets`, which no request path can match, so every request got the site's fallback (a 404) and nothing
+  said so. The warning names the key and the two forms that send every request to one upstream
+  (`proxy: "http://host:port"`, `proxy: { "/": [...] }`); an empty key is the catch-all and is not warned about. `examples/file-upload`, `examples/middleware-demo` (YAML and
+  JSON) and a recipe in `docs/recipes.md` were written in that shape and now use a form that works;
+  `scripts/check_doc_configs.py` fails a documentation block that gets this warning.
 - **`conduit validate` warns about a mistyped key outside a site** (issue #681): under `global`
   (`global.workerz`), under `global.admin` (`global.admin.tokn`, which would leave the Admin API without a token)
   and at the top of a full configuration (`globl`). Until now only keys inside a site were reported and the rest
@@ -62,6 +81,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of an enum field is not echoed in the error message.
 - A health probe reads at most 8 KiB of the status line (a hostile upstream could stream bytes for the whole
   `timeoutMs`).
+- **The upload server's 5 GiB request ceiling can be raised** (issue #700). A fixed router-wide limit of 5 GiB, not
+  documented anywhere, capped every request before the site's own limits were consulted, so `maxFileSizeBytes:
+  53687091200` still got a `413` at 5 GiB. The bound is now worked out per request from the site's config: the
+  larger of 5 GiB and `maxFileSizeBytes` when `maxTotalSizeBytes` is not set (a site with no limits at all keeps the
+  5 GiB safety net), `maxTotalSizeBytes` when it is. It is enforced on the whole body as it arrives (every field,
+  chunked bodies included), and from `Content-Length` before the body is read. See the Upload section of
+  `docs/configuration.md`.
+- **The tier column of `docs/building.md` and the RISC-V line of the npm Readme were out of date**: `x86_64-unknown-linux-musl`
+  and `x86_64-apple-darwin` are Tier 2 and `aarch64-pc-windows-msvc` is Tier 1 on the Rust platform support page;
+  the npm Readme said RISC-V had the standard build only, since 2.2.1 it has all four.
+- **`--features upload` (so `full`) compiles on 32-bit targets** (issue #696): the 5 GiB constant was a `usize`
+  and overflowed there. The bound is a `u64` now.
+- **An upload request that is refused keeps none of its files**: a request that failed after it had saved a file (a
+  later file over its limit, a body over its bound, a multipart error, or a client that went away) used to leave the
+  completed files on disk although the status said nothing was kept. They are removed now. A saved file's extension
+  is kept only when it is ASCII letters and digits (16 at most), so a name like `x.a:b` cannot make an NTFS
+  alternate data stream on Windows. The removal runs on the blocking pool, not on an async worker, because a large
+  file can take long to unlink (issue #702); for a request cancelled while the server is shutting down it may not
+  run, as when the process is killed.
 
 ### Internal
 

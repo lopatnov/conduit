@@ -35,7 +35,10 @@ LANGS = {"yaml": ".yaml", "yml": ".yaml", "json": ".json"}
 FENCE = re.compile(r"^(?P<indent>[ \t]*)(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 MARKER = re.compile(r"^\s*<!--\s*docs-check:\s*skip\b(?:\s*\((?P<why>.*)\))?\s*-->\s*$")
 # Warnings that make a block fail even though `conduit validate` exits 0 for them.
-FATAL_WARNINGS = ("is not a recognized configuration key",)
+# The second is the `proxy` key that is not a path (issue #706: `proxy: { targets: [...] }` is a route named
+# "targets" that never matches), which `conduit validate` logs through `tracing`.
+FATAL_WARNINGS = ("is not a recognized configuration key", "is not a path (it does not start with '/')")
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
 TIMEOUT_SECS = 60
 
 
@@ -132,8 +135,12 @@ def validate_file(conduit, path):
         )
     except subprocess.TimeoutExpired:
         return False, f"timed out after {TIMEOUT_SECS} s"
-    output = (done.stdout + done.stderr).strip()
-    fatal = [l for l in output.splitlines() if l.lower().startswith("warning") and any(w in l for w in FATAL_WARNINGS)]
+    output = ANSI.sub("", done.stdout + done.stderr).strip()
+    # a warning is a line that starts with "warning" or one `tracing` wrote (`<time>  WARN <target>: <message>`)
+    fatal = [
+        l for l in output.splitlines()
+        if (l.lower().startswith("warning") or " WARN " in l) and any(w in l for w in FATAL_WARNINGS)
+    ]
     if done.returncode != 0 or fatal:
         keep = fatal if done.returncode == 0 else output.splitlines()
         return False, "\n".join(keep[:6])

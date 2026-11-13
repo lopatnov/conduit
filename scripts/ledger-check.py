@@ -10,7 +10,8 @@ It prints the open ledger items as a to-do ("do we do #N?") and exits 1 when
   * a ledger line that says it was found in this PR (its "Found in" column names `#<pr>`) is open and not in the PR table,
   * a ledger line marked done in this PR is not in the PR table,
   * an open `fast-follow` issue created since the given day is not in the ledger at all,
-  * an open issue that is in the PR table but neither in the ledger nor closed by the PR (a deferral nobody recorded).
+  * an open issue that is in the PR table but neither in the ledger nor closed by the PR (a deferral nobody recorded),
+  * a ledger line whose "Found in" or "Status" cell has a reference glued to a word (`PR#50`), which is not read.
 Without `--pr` only the last check and the to-do list run.  `gh` is called in one place (`gh_json`), so the tests need no network.
 """
 import argparse
@@ -37,7 +38,29 @@ HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)(?:\s+|:\s*)#([0-9]{1,9})(?![0-9])", re.I)
 # the most issues the PR table is checked against GitHub for: a PR description is written by anyone who can edit it
 MAX_LOOKUPS = 50
-GH = shutil.which("gh") or "gh"
+# a reference glued to a word (`PR#50`) is not read by `ISSUE`; a token that has a `/` (`owner/repo#5`, also with `-` or `.`
+# in the repository name) is a reference to another repository and is fine
+GLUED = re.compile(r"(?<![\w/.-])[A-Za-z][\w.-]*#[0-9]{1,9}")
+# the longest a single `gh` call may take; a hung `gh` must not hang the check
+GH_TIMEOUT = 60
+
+
+def find_gh(path_env=None, cwd=None):
+    """The `gh` executable found on `PATH`, never in the current directory (Windows looks there first, so a `gh.exe` planted
+    in a checkout would run). Empty and relative entries (`.`, `bin`, `node_modules/.bin`: each means a directory of the
+    checkout) and the working directory itself are skipped. `None` when there is none."""
+    cwd = os.path.realpath(cwd or os.getcwd())
+    names = ["gh"]
+    if os.name == "nt":
+        names = ["gh" + ext.lower() for ext in os.environ.get("PATHEXT", ".EXE;.CMD;.BAT").split(";") if ext]
+    for entry in (os.environ.get("PATH", "") if path_env is None else path_env).split(os.pathsep):
+        if not entry or not os.path.isabs(entry) or os.path.realpath(entry) == cwd:
+            continue
+        for name in names:
+            candidate = os.path.join(entry, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return os.path.abspath(candidate)
+    return None
 
 
 def clean(text, limit=120):
@@ -87,10 +110,18 @@ def closed_by(body):
     return {int(n) for n in CLOSES.findall(body)}
 
 
+def glued_references(rows):
+    """`(number, text)` for each reference glued to a word (`PR#50`) in the "Found in" or "Status" cell of a ledger line."""
+    return [(number, m.group()) for number, _what, found_in, status in rows
+            for m in GLUED.finditer(found_in + " " + status)]
+
+
 def check(rows, pr, table, fast_follow):
     """The list of problems; `pr` is a number or None, `table` the issues in the PR table, `fast_follow` the recent issues."""
     problems = []
     in_ledger = {number for number, *_ in rows}
+    for number, text in glued_references(rows):
+        problems.append(f"#{number}: \"{clean(text, 40)}\" has no space before the number, so it is not read as a reference: write \"PR #N\"")
     if pr is not None:
         for number, _what, found_in, status in rows:
             if number in table:
@@ -116,13 +147,19 @@ class GhError(Exception):
 def gh_json(args):
     """Run `gh` and parse its JSON. A failure raises `GhError`; `main` turns it into one stderr line and exit status 2."""
     what = f"gh {' '.join(args[:2])}"
+    exe = find_gh()
+    if exe is None:
+        raise GhError(f"{what} failed: gh was not found on PATH")
     try:
-        done = subprocess.run([GH, *args], check=True, capture_output=True, text=True, encoding="utf-8")
+        done = subprocess.run([exe, *args], check=True, capture_output=True, text=True, encoding="utf-8",
+                              timeout=GH_TIMEOUT)
         return json.loads(done.stdout)
     except subprocess.CalledProcessError as e:
         stderr = e.stderr or ""
         raise GhError(f"{what} failed ({e.returncode}): {clean(stderr, 300)}", missing="HTTP 404" in stderr) from None
-    except (OSError, ValueError) as e:
+    except subprocess.TimeoutExpired:
+        raise GhError(f"{what} failed: no answer in {GH_TIMEOUT} s") from None
+    except (OSError, ValueError, RecursionError) as e:  # RecursionError: a document nested tens of thousands of levels deep
         raise GhError(f"{what} failed: {clean(str(e), 300)}") from None
 
 

@@ -21,10 +21,25 @@ pub fn validate_proxy(proxy: &ProxyConfig, prefix: &str, errors: &mut Vec<Valida
         ProxyConfig::Routes(routes) => {
             for (route, target) in routes {
                 let route_prefix = format!("{prefix}[\"{route}\"]");
+                warn_route_key_is_not_a_path(route, &route_prefix);
                 validate_proxy_route_target(target, &route_prefix, errors);
             }
         }
     }
+}
+
+/// Issue #706: the keys of a `proxy` map are path prefixes, and a request path always starts with `/`. A key that
+/// does not can never match, so its upstreams are never used. The usual cause is `proxy: { targets: [...] }`, which
+/// reads like "these are the targets" but is one route named `targets`: every request then gets the site's fallback
+/// (a 404), and nothing said so. A key that is empty once its trailing `/` is trimmed (`""`, `/`, `//`) is the
+/// catch-all: `find_route` (resolve.rs) matches every path with it, so it is not warned about.
+fn warn_route_key_is_not_a_path(route: &str, prefix: &str) {
+    if route.starts_with('/') || route.trim_end_matches('/').is_empty() {
+        return;
+    }
+    tracing::warn!(
+        "{prefix}: the key '{route}' is not a path (it does not start with '/'), so it never matches a request and its upstreams are never used; to send every request to one upstream write `proxy: \"http://host:port\"` or `proxy: {{ \"/\": [...] }}`"
+    );
 }
 
 fn validate_proxy_route_target(
@@ -339,6 +354,54 @@ mod tests {
         });
         let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
         text.lines().map(str::to_owned).collect()
+    }
+
+    /// Everything `validate_proxy` logs at warn level for `proxy`.
+    fn proxy_warnings_for(proxy: &ProxyConfig) -> Vec<String> {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(captured.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let mut errors = Vec::new();
+            validate_proxy(proxy, "sites[0].proxy", &mut errors);
+        });
+        let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        text.lines().map(str::to_owned).collect()
+    }
+
+    fn routes_map(key: &str) -> ProxyConfig {
+        let mut routes = indexmap::IndexMap::new();
+        routes.insert(
+            key.to_owned(),
+            ProxyRouteTarget::RoundRobin(vec!["http://api:4000".to_owned()]),
+        );
+        ProxyConfig::Routes(routes)
+    }
+
+    /// Issue #706: `proxy: { targets: [...] }` is a route named `targets`, which no request path can match.
+    #[test]
+    fn a_proxy_route_key_that_is_not_a_path_is_warned_about() {
+        let lines = proxy_warnings_for(&routes_map("targets"));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("'targets'") && l.contains("never matches")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_proxy_route_key_that_is_a_path_gives_no_warning() {
+        // "" and "//" are the catch-all too (`find_route` trims the trailing slashes: an empty key matches everything)
+        for key in ["/", "", "//", "/api", "/api/**"] {
+            let lines = proxy_warnings_for(&routes_map(key));
+            assert!(lines.is_empty(), "{key}: {lines:?}");
+        }
+        // the string shorthand has no key at all
+        assert!(proxy_warnings_for(&ProxyConfig::Single("http://api:4000".to_owned())).is_empty());
     }
 
     fn route(

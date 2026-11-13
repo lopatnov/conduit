@@ -1,0 +1,212 @@
+name: Probe targets
+
+# Issue #696: which 32-bit and Android targets does Conduit build for, bundle by bundle? Each job builds one bundle
+# for one target and reports whether it builds (and, if it does not, the first errors in the job summary). Nothing
+# here is a merge gate and nothing is released from it. It was the working tool of #696: the Linux 32-bit targets
+# and Windows ARM64 it showed to build are now in `ci.yml` (`cross-compile`, `test-i686`) and `release.yml`; what is
+# left for it are the targets that do not build without a patch of pingora-core, which are probed here with the
+# patch applied to the unpacked copy: i686 Windows (cloudflare/pingora#1119) and Android (not supported by Pingora).
+# Run it by hand (Actions, "Probe targets", Run workflow) when Pingora changes or to see whether a target works.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  probe:
+    name: Probe ${{ matrix.target }} ${{ matrix.bundle }}
+    # `windows-11-arm` is a native ARM64 runner (the `ci` job of ci.yml tests on it); i686 Windows runs on x86-64.
+    runs-on: ${{ matrix.target == 'aarch64-pc-windows-msvc' && 'windows-11-arm' || (contains(matrix.target, 'windows') && 'windows-latest' || 'ubuntu-latest') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - i686-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+          - arm-unknown-linux-gnueabihf
+          - arm-unknown-linux-gnueabi
+          - i686-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+          - aarch64-linux-android
+          - armv7-linux-androideabi
+        bundle:
+          - standard
+          - gateway
+          - static-server
+          - full
+        exclude:
+          # `full` needs wasmtime, which has no Cranelift back end for 32-bit x86 (Pulley, its interpreter, is the
+          # fallback); it is probed on the targets that build the lighter bundles first, so not on Android yet.
+          - target: aarch64-linux-android
+            bundle: full
+          - target: armv7-linux-androideabi
+            bundle: full
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          key: probe-${{ matrix.target }}-${{ matrix.bundle }}
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Install cross
+        if: ${{ !contains(matrix.target, 'windows') }}
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
+        with:
+          tool: cross
+
+      # pingora-core 0.9.1 defines `group_id` in `server/daemon.rs` for macOS, FreeBSD and Linux only and uses it under
+      # a wider cfg, so no Android target compiles (#668). The probe patches the unpacked registry copy (cross mounts
+      # the cargo home into its container) to learn what else breaks; a fix for it goes to Pingora, not into a release.
+      - name: Patch pingora-core for Android (probe only)
+        if: ${{ contains(matrix.target, 'android') }}
+        shell: bash
+        run: |
+          cargo fetch --locked
+          file=$(ls "$HOME"/.cargo/registry/src/*/pingora-core-0.9.1/src/server/daemon.rs)
+          perl -0pi -e 's/#\[cfg\(target_os = "linux"\)\]\n(\s*let group_id)/#[cfg(any(target_os = "linux", target_os = "android"))]\n$1/' "$file"
+          grep -n 'target_os = "android"' "$file"
+
+      # pingora-core 0.9.1, `listeners/l4.rs`: `TcpStream::from_raw_socket(fd as u64)`, but a `RawSocket` is a `u32` on
+      # 32-bit Windows, so the crate does not compile there (probe run 42927045801). `fd as _` takes the target's type.
+      - name: Patch pingora-core for 32-bit Windows (probe only)
+        if: ${{ matrix.target == 'i686-pc-windows-msvc' }}
+        shell: bash
+        run: |
+          cargo fetch --locked
+          file=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/pingora-core-0.9.1/src/listeners/l4.rs)
+          perl -0pi -e 's/from_raw_socket\(fd as u64\)/from_raw_socket(fd as _)/' "$file"
+          grep -n 'from_raw_socket' "$file"
+
+      - name: Build (cross)
+        if: ${{ !contains(matrix.target, 'windows') }}
+        shell: bash
+        run: |
+          set -o pipefail
+          cross build --release --locked --target ${{ matrix.target }} --no-default-features --features ${{ matrix.bundle }} 2>&1 | tee build.log
+
+      - name: Build (native)
+        if: ${{ contains(matrix.target, 'windows') }}
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features ${{ matrix.bundle }} 2>&1 | tee build.log
+
+      - name: Size of the binary
+        shell: bash
+        run: |
+          bin=target/${{ matrix.target }}/release/conduit
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          ls -l "$bin"
+          echo "Built ${{ matrix.target }} ${{ matrix.bundle }}: $(wc -c < "$bin") bytes" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: First errors
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.target }} ${{ matrix.bundle }}: does not build"
+            echo '```'
+            grep -n -E "^(error|warning: unused)|error\[|could not compile|failed to run custom build|CMake Error|fatal error" build.log | head -25
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Does it run? The same packages and features as the `standard` job of `ci.yml` (`cargo test ... --features
+  # standard`), on the targets that build: i686 Linux natively in the cross container, the ARM targets under QEMU
+  # user-mode (the integration tests start the built `conduit`, so the host registers QEMU in binfmt_misc too), and
+  # i686 Windows natively (WoW64). A red job names a 32-bit bug in our code or in a dependency (#696).
+  test:
+    name: Test ${{ matrix.target }} ${{ matrix.bundle }}
+    runs-on: ${{ contains(matrix.target, 'windows') && 'windows-latest' || 'ubuntu-latest' }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - i686-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+          - arm-unknown-linux-gnueabihf
+          - arm-unknown-linux-gnueabi
+          - i686-pc-windows-msvc
+        bundle:
+          - standard
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          key: probe-test-${{ matrix.target }}-${{ matrix.bundle }}
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Install cross
+        if: ${{ !contains(matrix.target, 'windows') }}
+        uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
+        with:
+          tool: cross
+
+      - name: QEMU user-mode for the ARM targets
+        if: ${{ startsWith(matrix.target, 'arm') }}
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends qemu-user-static
+          ls /proc/sys/fs/binfmt_misc | grep -i arm
+
+      - name: Patch pingora-core for 32-bit Windows (probe only)
+        if: ${{ matrix.target == 'i686-pc-windows-msvc' }}
+        shell: bash
+        run: |
+          cargo fetch --locked
+          file=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/pingora-core-0.9.1/src/listeners/l4.rs)
+          perl -0pi -e 's/from_raw_socket\(fd as u64\)/from_raw_socket(fd as _)/' "$file"
+
+      # Under QEMU user-mode the tests that make the proxy connect to an upstream fail with `failed to set socket
+      # opts IP_BIND_ADDRESS_NO_PORT`: Pingora sets that option on every upstream connection and the emulator does not
+      # implement it (the same tests pass natively on i686). So the ARM legs run every test (`--no-fail-fast`), are
+      # not red on the pull request, and report the counts below; the i686 legs and Windows stay strict.
+      - name: Test (cross)
+        if: ${{ !contains(matrix.target, 'windows') }}
+        continue-on-error: ${{ startsWith(matrix.target, 'arm') }}
+        shell: bash
+        run: |
+          set -o pipefail
+          cross test --locked --no-fail-fast --target ${{ matrix.target }} -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features ${{ matrix.bundle }} 2>&1 | tee test.log
+
+      - name: Test (native)
+        if: ${{ contains(matrix.target, 'windows') }}
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --target ${{ matrix.target }} -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features ${{ matrix.bundle }} 2>&1 | tee test.log
+
+      - name: Test results
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.target }} ${{ matrix.bundle }}: tests"
+            echo '```'
+            grep -a -E "^test result|FAILED|panicked|^error|could not compile|failures:" test.log | sort | uniq -c | sort -rn | head -30
+            echo '```'
+            echo "passed: $(grep -a -E '^test result' test.log | sed -E 's/.* ([0-9]+) passed.*/\1/' | awk '{s+=$1} END{print s+0}'), failed: $(grep -a -E '^test result' test.log | sed -E 's/.* ([0-9]+) failed.*/\1/' | awk '{s+=$1} END{print s+0}')"
+            echo "tests that failed: $(grep -a -c -E '^test .* FAILED' test.log); lines naming IP_BIND_ADDRESS_NO_PORT (the QEMU limitation): $(grep -a -c 'IP_BIND_ADDRESS_NO_PORT' test.log)"
+          } >> "$GITHUB_STEP_SUMMARY"

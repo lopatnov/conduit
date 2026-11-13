@@ -10,3 +10,11 @@
 # Using a custom Dockerfile (rather than pre-build + env.set) because
 # cross env.set is not supported in the version installed by taiki-e/install-action.
 dockerfile = { file = "ci/Dockerfile.riscv64", context = "." }
+
+# Android (issue #696, probe builds only): the stock images' CMake cannot configure libz-ng-sys in its Android mode;
+# the Dockerfiles give it a plain Linux toolchain file naming the image's compiler (see them for the details).
+[target.aarch64-linux-android]
+dockerfile = { file = "ci/Dockerfile.aarch64-android", context = "." }
+
+[target.armv7-linux-androideabi]
+dockerfile = { file = "ci/Dockerfile.armv7-android", context = "." }

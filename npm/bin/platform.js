@@ -17,6 +17,15 @@ const ASSETS = {
   "darwin-x64":       "conduit-x86_64-apple-darwin",
   "darwin-arm64":     "conduit-aarch64-apple-darwin",
   "win32-x64":        "conduit-x86_64-pc-windows-msvc.exe",
+  "win32-arm64":      "conduit-aarch64-pc-windows-msvc.exe",
+  // 32-bit: Node reports `ia32` and `arm`. `arm` is both ARMv7 (the official Node builds) and ARMv6 (Raspberry Pi OS's
+  // own Node on a Raspberry Pi 1 or Zero), and an ARMv7-only binary dies with an illegal instruction on ARMv6, so
+  // `assetFor` tells them apart by Node's `arm_version`: "linux-arm" is the ARMv7 build, "linux-armv6" (not a Node
+  // platform name, only a key of this table) the ARMv6 hard-float one, which also runs on ARMv7.
+  // There are no musl builds for the 32-bit pair, so an Alpine system gets the "unsupported" message.
+  "linux-ia32":       "conduit-i686-unknown-linux-gnu",
+  "linux-arm":        "conduit-armv7-unknown-linux-gnueabihf",
+  "linux-armv6":      "conduit-arm-unknown-linux-gnueabihf",
 };
 
 export const SUPPORTED = Object.keys(ASSETS);
@@ -48,7 +57,15 @@ export function isMusl(platform = process.platform, { exists = existsSync, repor
 }
 
 /** The table key and the asset name of this machine (name is undefined on an unsupported platform). */
-export function assetFor(platform = process.platform, arch = process.arch, musl = isMusl(platform)) {
-  const key = platform === "linux" && musl ? `${platform}-${arch}-musl` : `${platform}-${arch}`;
+export function assetFor(
+  platform = process.platform,
+  arch = process.arch,
+  musl = isMusl(platform),
+  armVersion = process.config?.variables?.arm_version,
+) {
+  let key = platform === "linux" && musl ? `${platform}-${arch}-musl` : `${platform}-${arch}`;
+  // The ARMv7 build only where Node says it is an ARMv7 build; anything else (ARMv6, or no answer) gets the ARMv6
+  // build, which runs on both.
+  if (key === "linux-arm" && String(armVersion) !== "7") key = "linux-armv6";
   return { key, name: ASSETS[key] };
 }
