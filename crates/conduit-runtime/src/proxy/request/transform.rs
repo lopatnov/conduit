@@ -188,15 +188,9 @@ pub(super) fn append_forwarded_headers(
         upstream_request.insert_header("x-forwarded-host", client_host.as_str())?;
     }
 
-    // HTTP/2 requests carry no `host` header, but every HTTP/1.1 upstream needs one.
-    // Restore it from the h2 `:authority` (Pingora stores it in `uri.authority()`),
-    // preferring an existing header — Pingora already rejects h2 requests whose
-    // `host` and `:authority` disagree.
-    if upstream_request.headers.get("host").is_none() {
-        if let Some(authority) = upstream_request.uri.authority().map(|a| a.as_str().to_owned()) {
-            upstream_request.insert_header("host", &authority)?;
-        }
-    }
+    // No `host` is restored here for an h2 client: an HTTP/1.1 upstream needs one, and Pingora sets it from the
+    // request authority itself (`set_h1_host_from_authority`, pingora-proxy 0.9.1). `tests/h2_authority.rs` checks that
+    // the upstream gets it, so a Pingora that stopped doing so would be noticed.
 
     // Via: RFC 7230 §5.7 — identify the proxy hop.
     // Append to any existing Via header rather than replacing it.
@@ -538,12 +532,12 @@ mod tests {
     fn request_host_falls_back_to_h2_authority() {
         use pingora_http::RequestHeader;
         let (parts, _) = http::Request::builder()
-            .uri("https://snff.cc/index.html")
+            .uri("https://app.test/index.html")
             .body(())
             .unwrap()
             .into_parts();
         let req = RequestHeader::from(parts);
-        assert_eq!(request_host_of(&req), "snff.cc");
+        assert_eq!(request_host_of(&req), "app.test");
     }
 
     /// HTTP/1.1 keeps its precedence: the `host` header wins over whatever the
@@ -552,8 +546,8 @@ mod tests {
     fn request_host_prefers_the_host_header() {
         use pingora_http::RequestHeader;
         let mut req = RequestHeader::build("GET", b"/", None).unwrap();
-        req.insert_header("host", "snff.cc:8443").unwrap();
-        assert_eq!(request_host_of(&req), "snff.cc:8443");
+        req.insert_header("host", "app.test:8443").unwrap();
+        assert_eq!(request_host_of(&req), "app.test:8443");
     }
 
     /// An h2 `:authority` may carry an explicit port; it is preserved for
@@ -563,13 +557,13 @@ mod tests {
     fn request_host_keeps_an_explicit_h2_authority_port() {
         use pingora_http::RequestHeader;
         let (parts, _) = http::Request::builder()
-            .uri("https://snff.cc:8443/")
+            .uri("https://app.test:8443/")
             .body(())
             .unwrap()
             .into_parts();
         let req = RequestHeader::from(parts);
-        assert_eq!(request_host_of(&req), "snff.cc:8443");
-        assert_eq!(host_without_port(&request_host_of(&req)), "snff.cc");
+        assert_eq!(request_host_of(&req), "app.test:8443");
+        assert_eq!(host_without_port(&request_host_of(&req)), "app.test");
     }
 
     /// No host header and no authority (a bare origin-form HTTP/1.0 request)
