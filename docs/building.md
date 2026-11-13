@@ -232,9 +232,14 @@ through the Debian package tests); the 32-bit x86 Linux build runs the `standard
 and 61 failed, all tests of the proxy path, because the emulator lacks the socket option Pingora sets on upstream
 connections (the same tests pass on 32-bit x86).
 A 32-bit x86 process in a Docker container cannot create a socket under the default seccomp profile of Docker 29
-(measured with 29.4.2: `Function not implemented`, and with it a container's DNS fails; Docker 28.0.4 is fine): start
-such a container with `--security-opt seccomp=unconfined` (issue #708). The CI jobs that run 32-bit code in a container
-are pinned to `ubuntu-24.04` for this reason.
+(measured with 29.4.2: `Function not implemented`, and with it a container's DNS fails; Docker 28.0.4 is fine). Options,
+safest first: run the container on Docker 28, or run the binary outside a container; or start from Docker's default
+seccomp profile (the `default.json` of the moby repository), add the 32-bit x86 socket system calls to it and start the
+container with `--security-opt seccomp=profile.json` (not tested here); as a last resort `--security-opt
+seccomp=unconfined` works (measured), but it turns off the container's whole syscall filter, one of the limits on what
+an exploited network-facing process can do, so use it only for a throw-away or test container and never for one that
+faces untrusted traffic (issue #708). The CI jobs that run 32-bit code in a container are pinned to `ubuntu-24.04` for
+this reason.
 `i686-pc-windows-msvc` is not in the table: `pingora-core` does not compile for 32-bit Windows yet
 ([cloudflare/pingora#1119](https://github.com/cloudflare/pingora/issues/1119)). Android does not build either
 and is not supported by Pingora.
