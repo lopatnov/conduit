@@ -4068,7 +4068,9 @@ bound plus that margin is cut off with `413`. The limits are 64-bit numbers on e
 A saved file is named by a random UUID. It keeps the extension of the uploaded name only when that is ASCII letters
 and digits (16 at most); any other extension is dropped, so a client cannot put a `:` (an NTFS alternate data
 stream on Windows), a space or a control character into a file name on the server. A request that is refused, or
-that is cancelled because the client went away, keeps none of the files it had saved.
+that is cancelled because the client went away, keeps none of the files it had saved. (The removal of a cancelled
+request is handed to a background thread; if the server itself is shutting down at that moment it may not run, as when
+the process is killed in the middle of a write.)
 
 ---
 

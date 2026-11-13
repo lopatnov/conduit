@@ -85,7 +85,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   completed files on disk although the status said nothing was kept. They are removed now. A saved file's extension
   is kept only when it is ASCII letters and digits (16 at most), so a name like `x.a:b` cannot make an NTFS
   alternate data stream on Windows. The removal runs on the blocking pool, not on an async worker, because a large
-  file can take long to unlink (issue #702).
+  file can take long to unlink (issue #702); for a request cancelled while the server is shutting down it may not
+  run, as when the process is killed.
 
 ### Internal
 
