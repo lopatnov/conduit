@@ -1270,9 +1270,15 @@ jobs:
   # catch what builds and then misbehaves. The 32-bit ARM targets are not tested here: under QEMU user-mode Pingora's
   # `IP_BIND_ADDRESS_NO_PORT` option is not implemented, so every test in which the proxy connects to an upstream
   # fails there although the same tests pass on i686 (probe run 42975317527).
+  #
+  # `ubuntu-24.04`, not `ubuntu-latest`: `ubuntu-latest` is Ubuntu 26.04 with Docker 29, whose default seccomp profile
+  # refuses `socket()` to 32-bit x86 processes in a container ("Function not implemented"; the same container works with
+  # `seccomp=unconfined`, and with Docker 28 on ubuntu-24.04 and ubuntu-22.04): a 32-bit test in the cross container
+  # could not open a socket and `tests/acme.rs` hung for 40 minutes (measured by a diagnostic run, issue #708).
   test-i686:
     name: Test i686-unknown-linux-gnu
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1300,10 +1306,12 @@ jobs:
   # `test-i686` runs the tests in the build image (Ubuntu 16.04's glibc). The release ships the finished `full` binary,
   # so this job runs that one in i386/debian:12, a different 32-bit distribution, and checks the things a user does with
   # it: start, serve a static file, proxy to another instance, take an upload. See scripts/smoke-binary.sh.
+  # On `ubuntu-24.04` for the reason given at `test-i686`: with Docker 29 a 32-bit process in a container cannot open a socket.
   smoke-i686:
     name: Smoke test i686 binary (i386/debian:12)
     needs: cross-compile
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
