@@ -29,16 +29,25 @@ jobs:
       # with "Not authorized or organization not found" (issue #710). Then nothing is analysed, so the steps below are
       # skipped (the coverage run alone is ~10 minutes) and the run says so in an annotation. The job is green in that
       # case but its steps are skipped and the annotation says that no analysis ran: do not read it as "Sonar passed".
+      # An empty token anywhere else (a push to main, a pull request from a branch of this repository) is not expected:
+      # the secret is missing or revoked, the analysis would stop without anyone noticing, so the job fails there.
       - name: Is there a SonarCloud token?
         id: token
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
         run: |
           if [ -n "$SONAR_TOKEN" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$EVENT" = "pull_request" ] && { [ "$HEAD_REPO" != "$REPO" ] || [ "$ACTOR" = "dependabot[bot]" ]; }; then
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=SonarCloud analysis skipped::This run has no SONAR_TOKEN (a pull request from a fork or by Dependabot gets no secrets), so nothing was analysed and no quality gate was computed."
+          else
+            echo "::error title=SonarCloud token missing::SONAR_TOKEN is empty on a run that should have it ($EVENT, head $HEAD_REPO): the secret is missing or revoked."
+            exit 1
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

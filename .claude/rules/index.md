@@ -85,7 +85,9 @@ it**. Table of what is where: `.claude/archive/reference-sources.md`.
 - `SonarCloud analysis` has no secrets on a fork PR or a Dependabot PR (`pull_request` runs of those get none). Until #710 it
   failed there ("Not authorized or organization not found"): expected, not a regression, not required by branch protection.
   Since #710 the job checks for the token and skips the scan with a notice (`::notice title=SonarCloud analysis skipped`):
-  a green job whose steps are skipped means **no analysis ran** and no quality gate was computed, not "Sonar passed".
+  a green job whose steps are skipped means **no analysis ran** and no quality gate was computed, not "Sonar passed". On
+  `main` or a PR from a branch of this repository an empty token is not expected, and there the job **fails** (the secret is
+  missing or revoked).
 - A listing that surfaces something outside the current task (`gh pr list`) is not attended to just by being seen: triage it, or say
   in one line why it is deferred.
 - **Before creating any issue** (bug or not), search existing issues — as its own call — read the result, then create. Never
