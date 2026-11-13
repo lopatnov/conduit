@@ -8,7 +8,7 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
-| #710 | CI: SonarCloud analysis fails on every fork and Dependabot PR (no `SONAR_TOKEN`) | the merge of #703 (Gitar) | open: asked to the owner (recommendation: skip the scan step with a notice) |
+| #710 | CI: SonarCloud analysis fails on every fork and Dependabot PR (no `SONAR_TOKEN`) | the merge of #703 (Gitar) | done in PR #703 (owner: "хорошая идея"): the job checks for the token and skips the scan with a notice |
 | #709 | tests: the integration-test harness honours `HTTP_PROXY`/`HTTPS_PROXY`, so every test fails behind a proxy | CodeRabbit on #703 | partly done in PR #703: the readiness probes and `reload` use `common::local_client()` (no proxy); open: the ~240 call sites of other test files and a note in the test instructions (asked to the owner) |
 | #704 | h2 integration tests are absent, but should be | owner, 2026-11-12 | done in PR #703: `tests/h2_authority.rs` and the Docker end-to-end harness `scripts/e2e/` |
 | #700 | upload: the 5 GiB request ceiling is hard-coded, undocumented and silently caps a larger per-site limit | owner's question during #696 | done in PR #699 |

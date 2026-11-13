@@ -25,20 +25,40 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      # A pull request from a fork, or by Dependabot, gets no secrets: the token is empty and the scanner would stop
+      # with "Not authorized or organization not found" (issue #710). Then nothing is analysed, so the steps below are
+      # skipped (the coverage run alone is ~10 minutes) and the run says so in an annotation. The job is green in that
+      # case but its steps are skipped and the annotation says that no analysis ran: do not read it as "Sonar passed".
+      - name: Is there a SonarCloud token?
+        id: token
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=SonarCloud analysis skipped::This run has no SONAR_TOKEN (a pull request from a fork or by Dependabot gets no secrets), so nothing was analysed and no quality gate was computed."
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: steps.token.outputs.present == 'true'
         with:
           fetch-depth: 0  # full history required for blame / new-code detection
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        if: steps.token.outputs.present == 'true'
         with:
           toolchain: stable
           components: llvm-tools-preview  # required by cargo-llvm-cov
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        if: steps.token.outputs.present == 'true'
         continue-on-error: true
 
       - name: Install cargo-llvm-cov
+        if: steps.token.outputs.present == 'true'
         uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32  # v2.88.0
         with:
           tool: cargo-llvm-cov
@@ -48,6 +68,7 @@ jobs:
       # long under instrumentation and can hang the job for hours.
       # Unit tests alone give reliable coverage data in < 2 minutes.
       - name: Generate coverage (LCOV, unit tests only)
+        if: steps.token.outputs.present == 'true'
         run: |
           cargo llvm-cov \
             --lib \
@@ -60,6 +81,7 @@ jobs:
           RUST_LOG: "error"  # silence tracing output so coverage stats stay clean
 
       - name: SonarCloud scan
+        if: steps.token.outputs.present == 'true'
         uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304  # v8.4.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
