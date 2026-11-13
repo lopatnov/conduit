@@ -104,6 +104,8 @@ impl Fixture {
         let addr: SocketAddr = ([127, 0, 0, 1], self.tls_port).into();
         let builder = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
+            // the fixture is on the loopback: a proxy from the environment (HTTPS_PROXY) must not get in between
+            .no_proxy()
             .resolve(host, addr)
             .timeout(Duration::from_secs(10));
         let builder = if http1_only {
@@ -267,23 +269,48 @@ fn h2_request_with_a_host_header_that_disagrees_with_the_authority_is_refused() 
 }
 
 /// Host header injection over HTTP/1.1, with bytes a normal client does not send. Each is refused with 400 and none
-/// reaches the upstream (the echo server would have answered 200).
+/// reaches the upstream (the echo server would have answered 200). The two cases that mix two names use two names the
+/// site allows, so that only the ambiguity can be the reason for the refusal; the controls come first: each name alone,
+/// and an absolute-form target that agrees with `Host`, are served.
 #[test]
 #[serial]
 fn ambiguous_http1_hosts_are_refused() {
     let f = Fixture::start();
     let port = f.plain_port;
+    let controls: [(&str, String); 3] = [
+        (
+            "the site host alone",
+            format!("GET / HTTP/1.1\r\nHost: {SITE_HOST}:{port}\r\nConnection: close\r\n\r\n"),
+        ),
+        (
+            "the second allowed host alone",
+            format!("GET / HTTP/1.1\r\nHost: {ALSO_ALLOWED_HOST}:{port}\r\nConnection: close\r\n\r\n"),
+        ),
+        (
+            "an absolute-form target that agrees with Host",
+            format!(
+                "GET http://{SITE_HOST}:{port}/ HTTP/1.1\r\nHost: {SITE_HOST}:{port}\r\nConnection: close\r\n\r\n"
+            ),
+        ),
+    ];
+    for (what, request) in controls {
+        let answer = f.raw(request.as_bytes());
+        assert!(
+            answer.starts_with("HTTP/1.1 200"),
+            "control: {what} must be served; the answer was: {answer}"
+        );
+    }
     let cases: [(&str, String); 4] = [
         (
             "an absolute-form target that disagrees with Host (RFC 9112 §3.2.2)",
             format!(
-                "GET http://{OTHER_HOST}:{port}/ HTTP/1.1\r\nHost: {SITE_HOST}:{port}\r\nConnection: close\r\n\r\n"
+                "GET http://{ALSO_ALLOWED_HOST}:{port}/ HTTP/1.1\r\nHost: {SITE_HOST}:{port}\r\nConnection: close\r\n\r\n"
             ),
         ),
         (
             "two Host headers (RFC 9112 §3.2)",
             format!(
-                "GET / HTTP/1.1\r\nHost: {SITE_HOST}:{port}\r\nHost: {OTHER_HOST}\r\nConnection: close\r\n\r\n"
+                "GET / HTTP/1.1\r\nHost: {SITE_HOST}:{port}\r\nHost: {ALSO_ALLOWED_HOST}\r\nConnection: close\r\n\r\n"
             ),
         ),
         (
