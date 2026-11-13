@@ -25,9 +25,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `win32-arm64`. CI builds the full build of the four Linux targets on every pull request
   and runs the `standard` tests of the 32-bit x86 one, then runs its finished binary in an `i386/debian:12` container
   (start, static file, proxy, upload). The three 32-bit ARM builds are built and unit-tested only: the proxy-path tests
-  cannot run under QEMU. A 32-bit x86 process in a container under Docker 29's default seccomp profile cannot create a
-  socket (Docker 28 is fine; `seccomp=unconfined` works but turns off the container's syscall filter, so it is for test
-  containers only: see `docs/building.md`, issue #708). See the platform tables in the README and `docs/building.md`.
+  cannot run under QEMU. A 32-bit x86 process in a container under the default seccomp profile of Docker 29.4.2 cannot
+  create a socket (a regression that Docker 29.4.3 fixes; Docker 28 is fine; `seccomp=unconfined` works but turns off the
+  container's syscall filter, so it is for test containers only: see `docs/building.md`, issue #708). See the platform tables in the README and `docs/building.md`.
   `i686-pc-windows-msvc` and Android are not released (Pingora does not compile for them; cloudflare/pingora#1119).
 
 ### Changed
