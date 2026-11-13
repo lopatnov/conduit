@@ -1454,6 +1454,32 @@ jobs:
       - name: Run the scenarios
         run: scripts/e2e/run.sh target/debug/conduit
 
+  # ── The npm package (issues #711, #712) ──────────────────────────────────────
+  # npm/test is the checksum check of the download, the platform table for all 13 targets, the launcher's download at
+  # run time, and the proof that the packed package carries no binary (the registry refused 2.3.0, 208.7 MB). Node 18
+  # is the oldest the package supports (`engines`), 24 the one the release publishes with. Linux runs every test: the
+  # ones that start a downloaded program need a Unix shell.
+  npm-package:
+    name: npm package (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18", "24"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Test the package
+        working-directory: npm
+        run: npm test
+
   # ── Workspace publish pre-flight (issue #114/#148) ──────────────────────────
   # release.yml's publish-crates job (see scripts/publish-workspace.sh) does a
   # real `cargo publish --workspace` on every tag. This job proves that would

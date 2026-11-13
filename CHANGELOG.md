@@ -7,6 +7,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The npm package no longer carries the binaries, so it can be published again** (issue #712). `npm publish` of
+  `@lopatnov/conduit` 2.3.0 failed with `413 Payload Too Large`: the package held the binaries of all 13 platforms in
+  `bin/native/` (31-46 MB each, 208.7 MB packed, 466.1 MB unpacked; 2.2.1 was 129.1 MB with 8 platforms), so 2.3.0 is
+  not on npm (nor on GitHub Packages) and the latest there is 2.2.1. The release job now downloads the binaries only to
+  hash them into `checksums.json`; the package is about 12 kB, and a check before the publish fails the job if it holds
+  a binary or grows past 200 kB.
+
+### Changed
+
+- **The npm launcher downloads the binary when it is missing** (issue #712). The binary of the platform comes from the
+  GitHub release of the package's version, is verified against `checksums.json`, and is fetched after the install (as
+  before: a prefetch, which npm hides unless `--foreground-scripts` is given) and at any run where it is not there, so an
+  install with `--ignore-scripts` or one whose download failed works at the first `conduit`. Every download prints, on
+  stderr, the source URL, the destination file, the progress and the verification. The binary is stored in the package's
+  `bin/native/`, or, when that directory cannot be written (a global install owned by root), in a per-user cache
+  (`CONDUIT_CACHE_DIR` replaces its base); the cache is for its owner only, on Linux and macOS (an entry is used only
+  when it is not a link, belongs to the running user, cannot be written by others, and every directory above it is
+  root's or the user's and not open to others; root never uses it, because `sudo` can keep the user's `HOME`, and
+  Windows never does, because it cannot tell an elevated process), and a binary found there is checked against its hash
+  at every run and replaced when it differs. A download follows redirects only to https, gives up after 60 s without
+  data or 30 minutes in all, and refuses more than 200 MiB. `CONDUIT_SKIP_DOWNLOAD=1` never downloads. See
+  `npm/Readme.md`.
+
+### Tests
+
+- The tests of the npm package (`npm/test`) run in CI, on Node 18 and 24 (issue #711); until now no job ran them. New:
+  the launcher's download at run time (source and destination on stderr, nothing on stdout, a second run downloads
+  nothing, the cache fallback, a tampered or unreachable download, `CONDUIT_SKIP_DOWNLOAD`) and the proof that the packed
+  package carries no binary.
+
 ---
 
 ## [2.3.0] — 2026-11-11

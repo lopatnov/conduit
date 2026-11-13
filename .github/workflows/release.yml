@@ -936,30 +936,45 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      # Download all bare binaries so we can vendor them into the npm package.
-      # This way `npx conduit` works offline and without a postinstall network hit
-      # if the user already has the matching platform binary cached by npm.
-      - name: Download the full-build binaries
+      # The binaries are downloaded here only to be hashed. They are NOT put into the npm package (issue #712: with the
+      # binaries of 13 platforms the package was 208.7 MB and the registry answered 413): the package downloads the
+      # binary of the user's platform from this release when it is installed or first run (npm/bin/binary.js) and
+      # verifies it against the hashes written below.
+      - name: Download the full-build binaries (to hash them, not to pack them)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: binary-full-*
-          path: npm/bin/native/
+          path: ${{ runner.temp }}/native/
           merge-multiple: true
 
-      - name: Set executable bit on Unix binaries
-        run: chmod +x npm/bin/native/conduit-*-linux-* npm/bin/native/conduit-*-darwin* 2>/dev/null || true
-
-      # download.js verifies its fallback download against these hashes (#571).
+      # binary.js verifies every download against these hashes (#571).
       - name: Write npm/bin/checksums.json
+        env:
+          NATIVE_DIR: ${{ runner.temp }}/native
         run: |
           python3 - <<'PY'
-          import hashlib, json, pathlib
-          d = pathlib.Path("npm/bin/native")
+          import hashlib, json, os, pathlib
+          d = pathlib.Path(os.environ["NATIVE_DIR"])
           sums = {f.name: hashlib.sha256(f.read_bytes()).hexdigest()
                   for f in sorted(d.iterdir()) if f.is_file()}
           assert sums, "no binaries found to checksum"
           pathlib.Path("npm/bin/checksums.json").write_text(json.dumps(sums, indent=2) + "\n")
           print(json.dumps(sums, indent=2))
+          PY
+
+      # A regression guard: the package must stay small and carry no binary (issue #712).
+      - name: Check that the package carries no binary
+        working-directory: npm
+        run: |
+          npm pack --dry-run --json > "$RUNNER_TEMP/pack.json"
+          python3 - <<'PY'
+          import json, os
+          info = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "pack.json")))[0]
+          paths = [f["path"] for f in info["files"]]
+          print(f"{len(paths)} files, {info['unpackedSize']} bytes unpacked: {paths}")
+          assert not [p for p in paths if p.startswith("bin/native")], "a binary is in the package"
+          assert "bin/checksums.json" in paths, "checksums.json is missing from the package"
+          assert info["unpackedSize"] < 200 * 1024, "the package is not small any more"
           PY
 
       - name: Set package version

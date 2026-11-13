@@ -42,14 +42,44 @@ conduit init
 conduit
 ```
 
-> **How it works:** when the package is installed, a `postinstall` script downloads the native
-> binary for your platform from
-> [GitHub Releases](https://github.com/lopatnov/conduit/releases). Nothing is compiled. Node.js is
-> needed for that download and for the small `conduit` launcher script that starts the binary;
-> the server itself is the Rust executable and does not run on Node.js. Set
-> `CONDUIT_SKIP_DOWNLOAD=1` to skip the download (for example when you provide the binary
-> yourself). If the download fails, `npm install` still succeeds and `conduit` tells you the
-> binary is missing.
+> **How it works:** the package itself is small (about 12 kB) and carries no binary. The native
+> binary for your platform is downloaded from
+> [GitHub Releases](https://github.com/lopatnov/conduit/releases), from the release of the same
+> version, and checked against the SHA-256 in the package's `checksums.json`; nothing is compiled.
+> It is fetched when the package is installed (a `postinstall` prefetch) and again, if it is
+> missing, the first time you run `conduit`, so an install with `--ignore-scripts`, or one whose
+> download failed, still works. Node.js is needed for that download and for the small `conduit`
+> launcher script that starts the binary; the server itself is the Rust executable and does not
+> run on Node.js.
+>
+> **You always see where it comes from and where it goes.** A download prints, on stderr (stdout
+> stays the server's), the source URL, the destination file, the progress and the verification:
+>
+> ```text
+> [conduit] Downloading the native binary for linux/x64 (conduit v2.3.1).
+> [conduit] From: https://github.com/lopatnov/conduit/releases/download/v2.3.1/conduit-x86_64-unknown-linux-gnu
+> [conduit] To:   /usr/lib/node_modules/@lopatnov/conduit/bin/native/conduit-x86_64-unknown-linux-gnu
+> [conduit] Downloading 100% (41.3 of 41.3 MB)
+> [conduit] SHA-256 verified (…).
+> ```
+>
+> npm hides the output of install scripts unless you add `--foreground-scripts`; the first run
+> shows it either way. The binary is stored in the package's `bin/native/` when that directory
+> can be written, otherwise (on Linux and macOS) in a per-user cache (`~/.cache/conduit` or
+> `$XDG_CACHE_HOME/conduit` on Linux, `~/Library/Caches/conduit` on macOS, in a `v<version>` folder;
+> `CONDUIT_CACHE_DIR` replaces the base), so a global install owned by root still works for an
+> ordinary user. The cache is for its owner only, on Linux and macOS: an entry is used only when it is not a
+> link, belongs to you, cannot be written by others, and every directory above it belongs to you or
+> to root and is not open to others; root never uses it, and neither does Windows (a process with
+> more privilege than the cache's owner must not run what that user can replace; on Windows the
+> binary goes to the package's folder only); and a binary found there is checked against its
+> SHA-256 at every run and downloaded again if it differs; what is checked is what is run (the path
+> with its links resolved). A download follows redirects only to https, gives up when no data
+> arrives for 60 seconds or after 30 minutes in all, and refuses more than 200 MiB.
+>
+> Set `CONDUIT_SKIP_DOWNLOAD=1` to never download (for example when you provide the binary
+> yourself): `conduit` then says where it looked. A failed download does not fail `npm install`;
+> a binary whose checksum does not match is discarded and fails it.
 
 ---
 

@@ -439,10 +439,10 @@ conduit validate
 conduit
 ```
 
-The npm package downloads the native binary for your platform from
-[GitHub Releases](https://github.com/lopatnov/conduit/releases) when it is installed (set
-`CONDUIT_SKIP_DOWNLOAD=1` to skip that). Node.js is only needed for the download and for the
-`conduit` launcher script; the server itself is the Rust binary. Since 2.0.0 the package installs
+The npm package is small and carries no binary: it downloads the native binary for your platform from
+[GitHub Releases](https://github.com/lopatnov/conduit/releases) when it is installed, and again at the first run if it
+is missing, printing where it comes from and where it goes (set `CONDUIT_SKIP_DOWNLOAD=1` to never download).
+Node.js is only needed for the download and for the `conduit` launcher script; the server itself is the Rust binary. Since 2.0.0 the package installs
 the **full** build; platforms: Linux x64, arm64, x86 and 32-bit ARM, ARMv7 or ARMv6 as Node reports it (glibc), macOS Intel and Apple Silicon,
 Windows x64 and ARM64. See the [npm package page](npm/Readme.md) for details.
 
