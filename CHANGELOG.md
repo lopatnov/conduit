@@ -31,7 +31,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **`conduit validate` warns about a `proxy` key that is not a path** (issue #706): `proxy: { targets: [...] }` is one
-  route named `targets`, which no request path can match, so every request got the site's fallback (a 404) and nothing
+  route named `targets` (an empty key is the catch-all and is not warned about), which no request path can match, so every request got the site's fallback (a 404) and nothing
   said so. The warning names the key and the two forms that send every request to one upstream
   (`proxy: "http://host:port"`, `proxy: { "/": [...] }`). `examples/file-upload`, `examples/middleware-demo` (YAML and
   JSON) and a recipe in `docs/recipes.md` were written in that shape and now use a form that works;

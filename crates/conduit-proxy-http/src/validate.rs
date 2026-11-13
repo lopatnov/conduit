@@ -31,9 +31,10 @@ pub fn validate_proxy(proxy: &ProxyConfig, prefix: &str, errors: &mut Vec<Valida
 /// Issue #706: the keys of a `proxy` map are path prefixes, and a request path always starts with `/`. A key that
 /// does not can never match, so its upstreams are never used. The usual cause is `proxy: { targets: [...] }`, which
 /// reads like "these are the targets" but is one route named `targets`: every request then gets the site's fallback
-/// (a 404), and nothing said so.
+/// (a 404), and nothing said so. A key that is empty once its trailing `/` is trimmed (`""`, `/`, `//`) is the
+/// catch-all: `find_route` (resolve.rs) matches every path with it, so it is not warned about.
 fn warn_route_key_is_not_a_path(route: &str, prefix: &str) {
-    if route.starts_with('/') {
+    if route.starts_with('/') || route.trim_end_matches('/').is_empty() {
         return;
     }
     tracing::warn!(
@@ -394,7 +395,8 @@ mod tests {
 
     #[test]
     fn a_proxy_route_key_that_is_a_path_gives_no_warning() {
-        for key in ["/", "/api", "/api/**"] {
+        // "" and "//" are the catch-all too (`find_route` trims the trailing slashes: an empty key matches everything)
+        for key in ["/", "", "//", "/api", "/api/**"] {
             let lines = proxy_warnings_for(&routes_map(key));
             assert!(lines.is_empty(), "{key}: {lines:?}");
         }
