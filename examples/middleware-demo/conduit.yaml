@@ -51,6 +51,4 @@ middleware:
   - type: wasm
     path: ./response-tagger.wasm
 
-proxy:
-  targets:
-    - http://httpbin.org/anything   # public echo endpoint for demo
+proxy: http://httpbin.org/anything   # public echo endpoint for demo

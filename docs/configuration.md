@@ -617,7 +617,11 @@ to every client, so leave it off if you do not want to expose timings.
 
 ## Proxy
 
-The `proxy` object maps URL path prefixes to upstream targets.
+The `proxy` object maps URL path prefixes to upstream targets. Each key is a path and starts with `/`; a key that does
+not can never match a request, and `conduit validate` warns about it. In particular `proxy: { targets: [...] }` is
+**one route named `targets`**, not "these are the targets": to send every request to one upstream write
+`proxy: "http://host:port"` or `proxy: { "/": [...] }`. (`targets` is a field of a *route's* object, as in
+`proxy: { "/api": { targets: [...] } }`.)
 
 ### Single upstream (shorthand)
 
