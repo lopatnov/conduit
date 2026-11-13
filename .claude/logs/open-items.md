@@ -9,6 +9,8 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
 | #714 | kube 5.0.0 (#694): needs `k8s-openapi` 0.29, a Kubernetes minimum-version decision (`v1_32` is gone) and a fix of `conduit-k8s` | the Dependabot triage of 2026-11-13 | open: asked to the owner (which minimum Kubernetes version) |
+| #712 | npm: the package of 2.3.0 was refused by the registry (413, 208.7 MB): the binaries leave the package, the launcher downloads them | the release of 2.3.0 (owner) | done in this PR (2.3.1): the package is ~12 kB, the binary is fetched at install and at the first run, with source and destination shown |
+| #711 | CI: the tests of the npm package (`npm/test`) are not run by any job | the same investigation | done in this PR: the job `npm-package` (Node 18 and 24) runs them |
 | #710 | CI: SonarCloud analysis fails on every fork and Dependabot PR (no `SONAR_TOKEN`) | the merge of #703 (Gitar) | done in PR #703 (owner: "хорошая идея"): the job checks for the token and skips the scan with a notice |
 | #709 | tests: the integration-test harness honours `HTTP_PROXY`/`HTTPS_PROXY`, so every test fails behind a proxy | CodeRabbit on #703 | partly done in PR #703: the readiness probes and `reload` use `common::local_client()` (no proxy); open: the ~240 call sites of other test files and a note in the test instructions (asked to the owner) |
 | #704 | h2 integration tests are absent, but should be | owner, 2026-11-12 | done in PR #703: `tests/h2_authority.rs` and the Docker end-to-end harness `scripts/e2e/` |

@@ -1,5 +1,6 @@
 // Run with: node --test npm/test/download.test.mjs
-// Covers the checksum verification of the postinstall download (issue #571).
+// Covers the checksum verification of the postinstall download (issue #571). The launcher's download at run time is
+// in launcher.test.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -30,8 +31,7 @@ const sha = (b) => createHash("sha256").update(b).digest("hex");
 async function run(served, expectedBody, seed = null, platformKey = null) {
   const pkg = mkdtempSync(join(tmpdir(), "conduit-npm-"));
   mkdirSync(join(pkg, "bin"));
-  cpSync(join(here, "..", "bin", "download.js"), join(pkg, "bin", "download.js"));
-  cpSync(join(here, "..", "bin", "platform.js"), join(pkg, "bin", "platform.js"));
+  for (const f of ["download.js", "binary.js", "platform.js"]) cpSync(join(here, "..", "bin", f), join(pkg, "bin", f));
   writeFileSync(join(pkg, "package.json"), JSON.stringify({ version: "0.0.0", type: "module" }));
   if (expectedBody !== null) {
     const sums = Object.fromEntries(ASSETS.map((a) => [a, sha(expectedBody)]));
@@ -51,7 +51,12 @@ async function run(served, expectedBody, seed = null, platformKey = null) {
   const code = await new Promise((resolve) => {
     const preload = platformKey ? ["-r", join(here, "platform-preload.cjs")] : [];
     const p = spawn(process.execPath, [...preload, join(pkg, "bin", "download.js")], {
-      env: { ...process.env, CONDUIT_DOWNLOAD_BASE: base, CONDUIT_TEST_PLATFORM: platformKey ?? "" },
+      env: {
+        ...process.env,
+        CONDUIT_DOWNLOAD_BASE: base,
+        CONDUIT_CACHE_DIR: join(pkg, "cache"),
+        CONDUIT_TEST_PLATFORM: platformKey ?? "",
+      },
       stdio: "ignore",
     });
     p.on("exit", resolve);
@@ -125,12 +130,13 @@ for (const [key, asset] of Object.entries(PLATFORM_ASSETS)) {
   test(`the launcher looks for ${asset} on ${key}`, async () => {
     const pkg = mkdtempSync(join(tmpdir(), "conduit-npm-"));
     mkdirSync(join(pkg, "bin"));
-    for (const f of ["conduit.js", "platform.js"]) cpSync(join(here, "..", "bin", f), join(pkg, "bin", f));
+    for (const f of ["conduit.js", "binary.js", "platform.js"]) cpSync(join(here, "..", "bin", f), join(pkg, "bin", f));
     writeFileSync(join(pkg, "package.json"), JSON.stringify({ version: "0.0.0", type: "module" }));
     const preload = join(here, "platform-preload.cjs");
     const { code, stderr } = await new Promise((resolve) => {
       const p = spawn(process.execPath, ["-r", preload, join(pkg, "bin", "conduit.js")], {
-        env: { ...process.env, CONDUIT_TEST_PLATFORM: key },
+        // downloading is switched off: the launcher then only says where it looked
+        env: { ...process.env, CONDUIT_TEST_PLATFORM: key, CONDUIT_SKIP_DOWNLOAD: "1", CONDUIT_CACHE_DIR: join(pkg, "cache") },
         stdio: ["ignore", "ignore", "pipe"],
       });
       let err = "";

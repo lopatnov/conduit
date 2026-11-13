@@ -41,14 +41,16 @@
   "author": "lopatnov",
   "type": "module",
   "bin": {
-    "conduit": "./bin/conduit.js"
+    "conduit": "bin/conduit.js"
   },
   "files": [
     "bin/",
+    "!bin/native/",
     "Readme.md"
   ],
   "scripts": {
-    "postinstall": "node bin/download.js"
+    "postinstall": "node bin/download.js",
+    "test": "node --test test/download.test.mjs test/launcher.test.mjs"
   },
   "engines": {
     "node": ">=18.0.0"
