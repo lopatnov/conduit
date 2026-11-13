@@ -28,7 +28,8 @@ fi
 failed=()
 for name in "${scenarios[@]}"; do
   echo "=== $name"
-  if [ ! -f "$here/$name.sh" ]; then
+  # a scenario is a file of this directory: a name with a path in it is not one
+  if [[ ! "$name" =~ ^[A-Za-z0-9_-]+$ ]] || [ ! -f "$here/$name.sh" ]; then
     echo "no scenario named $name" >&2
     failed+=("$name")
     continue
