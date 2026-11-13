@@ -23,7 +23,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binary and an archive; `-standard`, `-gateway`, `-static` as archives), and in the npm package for `linux-ia32`,
   `linux-arm` (the ARMv7 build where Node reports ARMv7, the ARMv6 build otherwise, which runs on both) and
   `win32-arm64`. CI builds the full build of the four Linux targets on every pull request
-  and runs the `standard` tests of the 32-bit x86 one. See the platform tables in the README and `docs/building.md`.
+  and runs the `standard` tests of the 32-bit x86 one, then runs its finished binary in an `i386/debian:12` container
+  (start, static file, proxy, upload). The three 32-bit ARM builds are built and unit-tested only: the proxy-path tests
+  cannot run under QEMU. See the platform tables in the README and `docs/building.md`.
   `i686-pc-windows-msvc` and Android are not released (Pingora does not compile for them; cloudflare/pingora#1119).
 
 ### Changed
@@ -76,7 +78,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   later file over its limit, a body over its bound, a multipart error, or a client that went away) used to leave the
   completed files on disk although the status said nothing was kept. They are removed now. A saved file's extension
   is kept only when it is ASCII letters and digits (16 at most), so a name like `x.a:b` cannot make an NTFS
-  alternate data stream on Windows.
+  alternate data stream on Windows. The removal runs on the blocking pool, not on an async worker, because a large
+  file can take long to unlink (issue #702).
 
 ### Internal
 

@@ -10,7 +10,7 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 |---|---|---|---|
 | #700 | upload: the 5 GiB request ceiling is hard-coded, undocumented and silently caps a larger per-site limit | owner's question during #696 | done in PR #699 |
 | #696 | 32-bit targets (i686 Linux/Windows, ARMv6/ARMv7) and the Android targets: probe builds, then ship what builds | owner's question on rustc and targets, 2026-11-11 | done in PR #699: the four 32-bit Linux targets and Windows ARM64 ship; i686 Windows waits for Pingora (#701, cloudflare/pingora#1119 and cloudflare/pingora#1120); Android is not supported by Pingora |
-| #702 | upload: removing the files of a refused request unlinks large files on an async worker (`SavedFiles::drop`) | security review of #699 (LOW) | open: put to the owner as "do we do #702?" |
+| #702 | upload: removing the files of a refused request unlinks large files on an async worker (`SavedFiles::drop`) | security review of #699 (LOW) | done in PR #699 (owner: "Конечно"): the error path awaits `discard()` on the blocking pool, the `Drop` of a cancelled request hands the paths to it |
 | #701 | release: add i686-pc-windows-msvc once a Pingora release compiles on 32-bit Windows | #696 | open, waits for Pingora |
 | #697 | ledger-check hardening: Windows cwd lookup of `gh`, no subprocess timeout, `RecursionError`, glued `PR#N` | security review of #686 | done in PR #699 |
 | #677 | flaky server start in the integration tests | full test run for #678 | harness improved in PR #683 (stderr kept, one retry); open until the cause is named |

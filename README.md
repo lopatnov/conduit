@@ -479,7 +479,8 @@ Each archive holds one file, named like the archive without `.tar.gz` or `.zip`.
 | Linux ARM (32-bit, soft-float) | `arm-unknown-linux-gnueabi` | full, standard, gateway, static |
 
 The 32-bit Linux builds compile and link in CI on every pull request, and the 32-bit x86 build also passes the
-`standard` test suite there, integration tests included. The three 32-bit ARM builds are not run in CI: they were
+`standard` test suite there, integration tests included; its finished `full` binary is also run in an `i386/debian:12`
+container (start, static file, proxy, upload). The three 32-bit ARM builds are not run in CI: they were
 checked once under QEMU with the `standard` test suite: 1,028 tests passed and 61 failed, all of them tests of the
 proxy path (caching, forward auth, retries, mirroring, routes to an upstream), because the emulator does not
 implement the socket option Pingora sets on upstream connections, so the proxy cannot connect to an upstream in it
