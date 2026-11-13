@@ -1347,12 +1347,12 @@ jobs:
           CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-ca.pem
         run: cargo test --test acme --features acme -- --nocapture
 
-  # ── HTTP/2 and Host-header tests with real clients and a real upstream (issue #704) ──
-  # scripts/test-h2-docker.sh runs the binary in a Docker network with no route to the Internet (192.0.2.0/24,
-  # RFC 5737; `.test` names, RFC 6761), with go-httpbin as the upstream and curl and nghttp as the clients. The
-  # in-process tests are in tests/h2_authority.rs.
-  h2-docker:
-    name: HTTP/2 host tests (Docker)
+  # ── End-to-end tests with real clients and a real upstream, in Docker (issue #704) ──
+  # scripts/e2e/run.sh runs every scenario of scripts/e2e/ (the first is HTTP/2 and the request host): the binary in a
+  # Docker network with no route to the Internet (192.0.2.0/24, RFC 5737; `.test` names, RFC 6761), go-httpbin as the
+  # upstream, curl and nghttp as the clients. A new scenario is a new file there. The in-process tests are in tests/.
+  e2e:
+    name: End-to-end tests (Docker)
     runs-on: ubuntu-24.04  # the binary is built here and run in ubuntu:24.04: the same glibc
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1369,8 +1369,8 @@ jobs:
       - name: Build (debug, standard features)
         run: cargo build --features standard
 
-      - name: Run the tests in Docker
-        run: scripts/test-h2-docker.sh target/debug/conduit
+      - name: Run the scenarios
+        run: scripts/e2e/run.sh target/debug/conduit
 
   # ── Workspace publish pre-flight (issue #114/#148) ──────────────────────────
   # release.yml's publish-crates job (see scripts/publish-workspace.sh) does a
