@@ -8,6 +8,9 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
+| #710 | CI: SonarCloud analysis fails on every fork and Dependabot PR (no `SONAR_TOKEN`) | the merge of #703 (Gitar) | open: asked to the owner (recommendation: skip the scan step with a notice) |
+| #709 | tests: the integration-test harness honours `HTTP_PROXY`/`HTTPS_PROXY`, so every test fails behind a proxy | CodeRabbit on #703 | partly done in PR #703: the readiness probes and `reload` use `common::local_client()` (no proxy); open: the ~240 call sites of other test files and a note in the test instructions (asked to the owner) |
+| #704 | h2 integration tests are absent, but should be | owner, 2026-11-12 | done in PR #703: `tests/h2_authority.rs` and the Docker end-to-end harness `scripts/e2e/` |
 | #700 | upload: the 5 GiB request ceiling is hard-coded, undocumented and silently caps a larger per-site limit | owner's question during #696 | done in PR #699 |
 | #696 | 32-bit targets (i686 Linux/Windows, ARMv6/ARMv7) and the Android targets: probe builds, then ship what builds | owner's question on rustc and targets, 2026-11-11 | done in PR #699: the four 32-bit Linux targets and Windows ARM64 ship; i686 Windows waits for Pingora (#701, cloudflare/pingora#1119 and cloudflare/pingora#1120); Android is not supported by Pingora |
 | #702 | upload: removing the files of a refused request unlinks large files on an async worker (`SavedFiles::drop`) | security review of #699 (LOW) | done in PR #699 (owner: "Конечно"): the error path awaits `discard()` on the blocking pool, the `Drop` of a cancelled request hands the paths to it |
