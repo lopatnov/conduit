@@ -24,12 +24,12 @@
  * Messages go to stderr: stdout belongs to the program that is run.
  *
  * A download follows redirects only to https (http only when the source itself is http: the test hook), gives up when
- * no data arrives for 60 s, and refuses more than 200 MiB; it is written to a new file with a random name that is
+ * no data arrives for 60 s or when the whole download takes more than 30 minutes, and refuses more than 200 MiB; it is written to a new file with a random name that is
  * renamed into place only after the hash matches.
  *
  * Environment: CONDUIT_SKIP_DOWNLOAD=1 never downloads; CONDUIT_CACHE_DIR; CONDUIT_DOWNLOAD_BASE and
- * CONDUIT_DOWNLOAD_IDLE_MS (test hooks: another base URL for the assets, with the checksum still enforced, and another
- * idle limit).
+ * CONDUIT_DOWNLOAD_IDLE_MS and CONDUIT_DOWNLOAD_DEADLINE_MS (test hooks: another base URL for the assets, with the
+ * checksum still enforced, and other time limits).
  */
 
 import {
@@ -204,12 +204,32 @@ function download(url, dest, write) {
   const httpSource = url.startsWith("http:");
   const idle = idleLimit();
 
-  return new Promise((resolve, reject) => {
+  // The idle limit stops a stall, not a server that trickles a byte at a time: the whole download, redirects included,
+  // has a deadline too (30 minutes: the largest asset is about 47 MB, which a link of 30 kB/s still fetches).
+  const deadline = Number(process.env.CONDUIT_DOWNLOAD_DEADLINE_MS) || 30 * 60_000;
+
+  return new Promise((resolveOuter, rejectOuter) => {
     let redirects = 0;
+    let inFlight = null; // the request, the response and the file that are open now
+    const timer = setTimeout(() => {
+      inFlight?.req.destroy();
+      inFlight?.res?.destroy();
+      inFlight?.file?.destroy();
+      rejectOuter(new Error(`the download took longer than ${deadline / 1000} s`));
+    }, deadline);
+    const resolve = (value) => {
+      clearTimeout(timer);
+      resolveOuter(value);
+    };
+    const reject = (err) => {
+      clearTimeout(timer);
+      rejectOuter(err);
+    };
 
     function request(target) {
       const get = target.startsWith("http:") ? httpGet : httpsGet;
       const req = get(target, { headers: { "User-Agent": `conduit-npm/${VERSION}` }, timeout: idle }, (res) => {
+        inFlight.res = res;
         if ([301, 302, 307, 308].includes(res.statusCode)) {
           res.resume();
           if (++redirects > MAX_REDIRECTS) return reject(new Error(`too many redirects (>${MAX_REDIRECTS}) for ${target}`));
@@ -239,6 +259,7 @@ function download(url, dest, write) {
         let received = 0;
         // "wx": a file or a symbolic link that is already there makes the download fail instead of being followed.
         const file = createWriteStream(dest, { flags: "wx", mode: 0o700 });
+        inFlight.file = file;
         const fail = (err) => {
           res.destroy();
           file.destroy();
@@ -264,6 +285,7 @@ function download(url, dest, write) {
         });
         res.pipe(file);
       });
+      inFlight = { req };
       req.on("timeout", () => req.destroy(new Error(`no answer for ${idle / 1000} s`)));
       req.on("error", reject);
     }

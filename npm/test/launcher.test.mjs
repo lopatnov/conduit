@@ -58,6 +58,13 @@ async function setup({ served = PROGRAM, body = PROGRAM, nativeIsAFile = false, 
       res.write("x");
       return;
     }
+    if (answer === "trickle") {
+      // a byte every 100 ms: never idle for long, never finished
+      res.writeHead(200, { "Content-Length": "100000" });
+      const tick = setInterval(() => res.write("x"), 100);
+      res.on("close", () => clearInterval(tick));
+      return;
+    }
     if (redirect && req.url === `/${ASSET}`) {
       res.writeHead(302, { Location: `/storage/${ASSET}` });
       res.end();
@@ -217,10 +224,10 @@ test("the packed package carries no binary, even when bin/native exists, and is 
   // a 5 MB stand-in for a binary: it must not be packed
   writeFileSync(join(pkg, "bin", "native", "conduit-x86_64-unknown-linux-gnu"), Buffer.alloc(5 * 1024 * 1024));
   const r = spawnSync("npm", ["pack", "--dry-run", "--json"], { cwd: pkg, encoding: "utf8", shell: process.platform === "win32" });
-  if (r.error || r.status !== 0) {
-    test.skip?.("npm is not available");
-    return;
-  }
+  // Only a missing npm skips the check: a pack that fails is a failure of the package, not of the environment.
+  if (r.error?.code === "ENOENT") return;
+  assert.equal(r.error, undefined, String(r.error));
+  assert.equal(r.status, 0, `npm pack failed: ${r.stderr}`);
   const info = JSON.parse(r.stdout.slice(r.stdout.indexOf("[")))[0];
   const paths = info.files.map((f) => f.path);
   assert.ok(!paths.some((p) => p.startsWith("bin/native")), paths.join(", "));
@@ -286,6 +293,16 @@ test("an answer longer than any release asset is refused at once", { skip: !runn
   t.close();
   assert.equal(r.code, 1);
   assert.ok(r.stderr.includes("refusing 300000000 bytes"), r.stderr);
+  const native = join(t.pkg, "bin", "native");
+  assert.deepEqual(existsSync(native) ? readdirSync(native) : [], []);
+});
+
+test("a download that trickles is cut off by the overall deadline", { skip: !runnable }, async () => {
+  const t = await setup({ answer: "trickle" });
+  const r = await t.run("conduit.js", [], { CONDUIT_DOWNLOAD_DEADLINE_MS: "1200" });
+  t.close();
+  assert.equal(r.code, 1);
+  assert.ok(r.stderr.includes("took longer than 1.2 s"), r.stderr);
   const native = join(t.pkg, "bin", "native");
   assert.deepEqual(existsSync(native) ? readdirSync(native) : [], []);
 });
