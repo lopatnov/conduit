@@ -1017,6 +1017,11 @@ required-features = ["fault-injection"]
 name = "forward_auth"
 required-features = ["forward-auth"]
 
+# Every test of tests/h2_authority.rs proxies to an upstream: without `proxy` there is nothing to look at.
+[[test]]
+name = "h2_authority"
+required-features = ["proxy"]
+
 [[test]]
 name = "static_files"
 required-features = ["static"]
