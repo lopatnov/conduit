@@ -8,6 +8,7 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
+| #714 | kube 5.0.0 (#694): needs `k8s-openapi` 0.29, a Kubernetes minimum-version decision (`v1_32` is gone) and a fix of `conduit-k8s` | the Dependabot triage of 2026-11-13 | open: asked to the owner (which minimum Kubernetes version) |
 | #710 | CI: SonarCloud analysis fails on every fork and Dependabot PR (no `SONAR_TOKEN`) | the merge of #703 (Gitar) | done in PR #703 (owner: "хорошая идея"): the job checks for the token and skips the scan with a notice |
 | #709 | tests: the integration-test harness honours `HTTP_PROXY`/`HTTPS_PROXY`, so every test fails behind a proxy | CodeRabbit on #703 | partly done in PR #703: the readiness probes and `reload` use `common::local_client()` (no proxy); open: the ~240 call sites of other test files and a note in the test instructions (asked to the owner) |
 | #704 | h2 integration tests are absent, but should be | owner, 2026-11-12 | done in PR #703: `tests/h2_authority.rs` and the Docker end-to-end harness `scripts/e2e/` |
