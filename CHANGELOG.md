@@ -14,8 +14,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   authority rides in the `:authority` pseudo-header — so the `host`-header lookup saw an empty
   value and, with `allowedHosts` or a site `host:` configured (secure by default since 2.3.0),
   rejected the request. The host is now read with a fallback to `uri.authority()`, which also
-  restores host-based site routing, cache keys, `X-Forwarded-Host`, and a `host` header on
-  upstream HTTP/1.1 requests.
+  restores host-based site routing, cache keys and `X-Forwarded-Host` for h2 requests. (The
+  upstream `Host` of an HTTP/1.1 upstream was already set from the authority by Pingora.)
 
 ---
 

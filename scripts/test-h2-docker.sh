@@ -4,8 +4,8 @@
 #
 #   scripts/test-h2-docker.sh BINARY               BINARY: a conduit built with `--features standard` or more
 #   CONDUIT_IMAGE=debian:13 scripts/test-h2-docker.sh BINARY
-#                                                  the image the binary runs in (default ubuntu:24.04: the binary of
-#                                                  the CI job is built on its glibc)
+#                                                  the image the binary runs in (default: ubuntu:24.04 by digest; the
+#                                                  binary of the CI job is built on its glibc)
 #
 # What is in the network (192.0.2.0/24 is TEST-NET-1, RFC 5737; `.test` names are reserved for tests, RFC 6761):
 #   upstream.test   192.0.2.10   go-httpbin (pinned by digest): echoes the headers it received
@@ -24,7 +24,7 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 BIN=$(realpath "$1")
-CONDUIT_IMAGE="${CONDUIT_IMAGE:-ubuntu:24.04}"
+CONDUIT_IMAGE="${CONDUIT_IMAGE:-ubuntu@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5}"
 HTTPBIN=mccutchen/go-httpbin@sha256:3992f3763e9ce5a4307eae0a869a78b4df3931dc8feba74ab823dd2444af6a6b
 ID=$$
 NET="conduit-h2-test-$ID"
@@ -46,7 +46,7 @@ trap cleanup EXIT
 
 # The client image is built first: it needs the Internet, the network below does not have it.
 docker build -q -t conduit-h2-client - >/dev/null <<'EOF'
-FROM debian:12-slim
+FROM debian@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends curl ca-certificates nghttp2-client jq >/dev/null \
  && rm -rf /var/lib/apt/lists/*

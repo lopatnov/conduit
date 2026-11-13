@@ -352,3 +352,24 @@ fn h2_request_for_the_second_allowed_host_is_served() {
     });
     assert_eq!(status, 200);
 }
+
+/// An authority-form `CONNECT` is not served: Pingora answers 405 and nothing reaches the upstream. With the h2
+/// `:authority` fallback a CONNECT carries a host that `allowedHosts` accepts, so this is what keeps it out.
+#[test]
+#[serial]
+fn connect_is_not_served() {
+    let f = Fixture::start();
+    let port = f.plain_port;
+    let answer = f.raw(
+        format!(
+            "CONNECT {SITE_HOST}:{port} HTTP/1.1
+Host: {SITE_HOST}:{port}
+Connection: close
+
+"
+        )
+        .as_bytes(),
+    );
+    assert!(answer.starts_with("HTTP/1.1 405"), "{answer}");
+    assert!(!answer.contains("\"headers\""), "{answer}");
+}
