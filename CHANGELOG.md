@@ -26,9 +26,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and runs the `standard` tests of the 32-bit x86 one, then runs its finished binary in an `i386/debian:12` container
   (start, static file, proxy, upload). The three 32-bit ARM builds are built and unit-tested only: the proxy-path tests
   cannot run under QEMU. A 32-bit x86 process in a container under the default seccomp profile of Docker 29.4.2 cannot
-  create a socket (a regression that Docker 29.4.3 fixes; Docker 28 is fine; `seccomp=unconfined` works but turns off the
-  container's syscall filter and allows `socketcall`, so it is for test containers on a kernel with the CVE-2026-31431
-  fix only: see `docs/building.md`, issue #708). See the platform tables in the README and `docs/building.md`.
+  create a socket (a regression that Docker 29.4.3 fixes; Docker 28 is fine; Docker's notes recommend the
+  `seccomp/v0.2.1` profile as the workaround; `seccomp=unconfined` works but turns off the container's syscall filter, and
+  both allow `socketcall`, so they need a kernel with the CVE-2026-31431 fix: see `docs/building.md`, issue #708). See the platform tables in the README and `docs/building.md`.
   `i686-pc-windows-msvc` and Android are not released (Pingora does not compile for them; cloudflare/pingora#1119).
 
 ### Changed

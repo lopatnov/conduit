@@ -239,12 +239,14 @@ socket operation (moby/moby#52506), and 29.4.3 reverted that and enforces the sa
 container. Both of the other two options allow `socketcall`, and through it `AF_ALG` sockets, which is what the 29.4.2
 block was for: use them only on a kernel that includes the fix for CVE-2026-31431 (Docker's write-up says Debian and
 RHEL 9 have one and Ubuntu did not yet when it was written; check yours), because on an unpatched kernel a compromised
-container can use that bug to gain privileges inside the container. The first is Docker's default seccomp profile (the
-`default.json` of the moby repository) with the 32-bit x86 socket system calls added, started with `--security-opt
-seccomp=profile.json` (not tested here). The second, a last resort, is `--security-opt seccomp=unconfined`: it works
-(measured), but it turns off the container's whole syscall filter, one of the limits on what an exploited
-network-facing process can do, so use it only for a throw-away or test container and never for one that faces
-untrusted traffic (issue #708). The CI jobs that run 32-bit code in a container are pinned to `ubuntu-24.04`
+container can use that bug to gain privileges inside the container. The first is the workaround that
+Docker's 29.4.2 release notes recommend: the `seccomp/v0.2.1` profile of the `moby/profiles` repository, which allows
+`socketcall` but keeps `AF_ALG` closed for `socket()` (the notes themselves say the `socketcall` path stays open, and
+warn against the `v0.2.0` profile); start the container with `--security-opt seccomp=<that profile file>` (not run
+here; we know it from the release notes). The second, a last resort that Docker's notes advise against, is
+`--security-opt seccomp=unconfined`: it works (measured), but it turns off the container's whole syscall filter, one of
+the limits on what an exploited network-facing process can do, so use it only for a throw-away or test container and
+never for one that faces untrusted traffic (issue #708). The CI jobs that run 32-bit code in a container are pinned to `ubuntu-24.04`
 (Docker 28) for this reason until the `ubuntu-latest` runner has Docker 29.4.3 or later.
 `i686-pc-windows-msvc` is not in the table: `pingora-core` does not compile for 32-bit Windows yet
 ([cloudflare/pingora#1119](https://github.com/cloudflare/pingora/issues/1119)). Android does not build either
