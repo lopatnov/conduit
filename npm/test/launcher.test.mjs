@@ -251,11 +251,12 @@ test("a cache that others can write is ignored: its binary is not run and nothin
   assert.deepEqual(t.urls, []);
 });
 
-test("a cache that is a symbolic link is ignored", { skip: !cacheUsable }, async () => {
+test("a cache that is a link to a directory that others can write is ignored", { skip: !cacheUsable }, async () => {
   const t = await setup({ nativeIsAFile: true });
   const elsewhere = join(t.pkg, "elsewhere");
   mkdirSync(elsewhere);
   writeFileSync(join(elsewhere, ASSET), "#!/bin/sh\necho planted\n", { mode: 0o755 });
+  chmodSync(elsewhere, 0o777); // the target is open to others, so the link leads to a place that is not safe
   mkdirSync(t.cache, { recursive: true });
   symlinkSync(elsewhere, join(t.cache, `v${VERSION}`));
   const r = await t.run("conduit.js");
@@ -263,6 +264,20 @@ test("a cache that is a symbolic link is ignored", { skip: !cacheUsable }, async
   assert.equal(r.code, 1);
   assert.ok(!r.stdout.includes("planted"), r.stdout);
   assert.deepEqual(t.urls, []);
+});
+
+test("a cached binary that others can write is not used even when its content is the genuine one", { skip: !cacheUsable }, async () => {
+  // The hash alone is not enough: a file others can write may be changed after the check.
+  const t = await setup({ nativeIsAFile: true });
+  mkdirSync(join(t.cache, `v${VERSION}`), { recursive: true, mode: 0o700 });
+  writeFileSync(t.cached, PROGRAM);
+  chmodSync(t.cached, 0o777);
+  const r = await t.run("conduit.js", ["g"]);
+  t.close();
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, "hello-from-conduit g\n");
+  assert.ok(r.stderr.includes("Ignoring"), r.stderr);
+  assert.deepEqual(t.urls, [`/${ASSET}`]);
 });
 
 test("a cache below a directory that others can write is ignored (they could swap the tree)", { skip: !cacheUsable }, async () => {
@@ -276,9 +291,21 @@ test("a cache below a directory that others can write is ignored (they could swa
   assert.deepEqual(t.urls, []);
 });
 
-test("a link above the cache is resolved once and the resolved path is the one that is run", { skip: !cacheUsable }, async () => {
-  // CONDUIT_CACHE_DIR goes through a link (`alias`): the checks and the run must use the resolved path, because the
-  // original could be pointed somewhere else after the check.
+test("a link to a directory of the user is resolved once, and the resolved path is the one that is checked and run", { skip: !cacheUsable }, async () => {
+  // The cache directory itself may be a link to a safe directory: everything is then done on the target.
+  const t0 = await setup({ nativeIsAFile: true });
+  const target = join(t0.pkg, "target");
+  mkdirSync(target, { mode: 0o700 });
+  mkdirSync(t0.cache, { recursive: true });
+  symlinkSync(target, join(t0.cache, `v${VERSION}`));
+  const r0 = await t0.run("conduit.js", ["v"]);
+  t0.close();
+  assert.equal(r0.code, 0, r0.stderr);
+  assert.equal(r0.stdout, "hello-from-conduit v\n");
+  assert.ok(r0.stderr.includes(`To:   ${join(target, ASSET)}`), r0.stderr);
+
+  // And so may a directory above it, reached through CONDUIT_CACHE_DIR (`alias`): the checks and the run must use the
+  // resolved path, because the original could be pointed somewhere else after the check.
   const t = await setup({ nativeIsAFile: true });
   const real = join(t.pkg, "real");
   mkdirSync(real);

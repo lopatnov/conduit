@@ -53,7 +53,7 @@ import { get as httpGet } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assetFor, SUPPORTED } from "./platform.js";
 
@@ -126,17 +126,11 @@ function trusted(path) {
 }
 
 /**
- * POSIX: every directory above `dir` (symbolic links resolved) belongs to root or to the effective user and cannot be
+ * POSIX: every directory above `real`, a path whose links are already resolved, belongs to root or to the effective user and cannot be
  * written by group or others, so that nobody else can rename a directory of the path and put their own tree in its
  * place. A sticky directory such as /tmp may be writable by everyone: others cannot rename what is not theirs there.
  */
-function ancestorsSafe(dir) {
-  let real;
-  try {
-    real = realpathSync(dir);
-  } catch {
-    return false;
-  }
+function ancestorsSafe(real) {
   for (let p = dirname(real); ; p = dirname(p)) {
     try {
       const st = lstatSync(p);
@@ -150,15 +144,27 @@ function ancestorsSafe(dir) {
   }
 }
 
-/** `place` with the links of the directories above it resolved (the cache directory itself is never a link). */
-function resolvedCachePath(place) {
-  return join(realpathSync(dirname(place)), basename(place));
-}
-
-/** The cache directories (and the file, when given) pass `trusted`, and so do all the directories above them. */
-function cacheTrusted(file) {
-  const dir = cacheDir();
-  return [dirname(dir), dir, ...(file ? [file] : [])].every(trusted) && ancestorsSafe(dir);
+/**
+ * The cache directory of this version with its links resolved ONCE, and what can be said of it: `dirTrusted` (the
+ * directory and the one above it are the effective user's and closed to others, and so is everything above them) and
+ * `fileTrusted` (the binary, if there is one, is a regular entry of the user's that is closed to others). Every check
+ * and the run use these resolved paths and nothing else, so the path that was checked is, by construction, the path
+ * that is run. null when the cache directory does not exist.
+ */
+function cacheEntry(assetName) {
+  let dir;
+  try {
+    dir = realpathSync(cacheDir());
+  } catch {
+    return null;
+  }
+  const file = join(dir, assetName);
+  return {
+    dir,
+    file,
+    dirTrusted: trusted(dirname(dir)) && trusted(dir) && ancestorsSafe(dir),
+    fileTrusted: !existsSync(file) || trusted(file),
+  };
 }
 
 function baseUrl() {
@@ -359,18 +365,17 @@ export async function ensureBinary({ verifyExisting = false, write = (s) => proc
   const places = locations(name);
   const inPackage = places[0];
   let found;
-  for (const place of places.filter((p) => existsSync(p))) {
-    if (place === inPackage) {
-      found = place;
-      break;
+  if (existsSync(inPackage)) {
+    found = inPackage;
+  } else if (cacheAllowed()) {
+    const entry = cacheEntry(name);
+    if (entry && existsSync(entry.file)) {
+      if (entry.dirTrusted && entry.fileTrusted) {
+        found = entry.file;
+      } else {
+        say(`[conduit] Ignoring ${entry.file}: it is not yours, or others can write it or the directories above it.`);
+      }
     }
-    if (cacheTrusted(place)) {
-      // What was checked is what is run: the path with its links resolved, since the original may go through a link
-      // that could be pointed elsewhere after the check.
-      found = resolvedCachePath(place);
-      break;
-    }
-    say(`[conduit] Ignoring ${place}: it is not owned by you, or it can be written by others, or it is a link.`);
   }
   if (found) {
     // A binary in the package is as safe as the package. One in the cache can be replaced by the user's own processes,
@@ -394,8 +399,9 @@ export async function ensureBinary({ verifyExisting = false, write = (s) => proc
   let dir;
   if (writable(NATIVE_DIR)) {
     dir = NATIVE_DIR;
-  } else if (cacheAllowed() && writable(cacheDir(), 0o700) && cacheTrusted()) {
-    dir = realpathSync(cacheDir());
+  } else if (cacheAllowed() && writable(cacheDir(), 0o700)) {
+    const entry = cacheEntry(name);
+    if (entry?.dirTrusted) dir = entry.dir;
   }
   if (!dir) {
     throw new FetchError(
