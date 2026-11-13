@@ -1347,6 +1347,31 @@ jobs:
           CONDUIT_ACME_EXTRA_ROOT: /tmp/pebble-ca.pem
         run: cargo test --test acme --features acme -- --nocapture
 
+  # ── HTTP/2 and Host-header tests with real clients and a real upstream (issue #704) ──
+  # scripts/test-h2-docker.sh runs the binary in a Docker network with no route to the Internet (192.0.2.0/24,
+  # RFC 5737; `.test` names, RFC 6761), with go-httpbin as the upstream and curl and nghttp as the clients. The
+  # in-process tests are in tests/h2_authority.rs.
+  h2-docker:
+    name: HTTP/2 host tests (Docker)
+    runs-on: ubuntu-24.04  # the binary is built here and run in ubuntu:24.04: the same glibc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Build (debug, standard features)
+        run: cargo build --features standard
+
+      - name: Run the tests in Docker
+        run: scripts/test-h2-docker.sh target/debug/conduit
+
   # ── Workspace publish pre-flight (issue #114/#148) ──────────────────────────
   # release.yml's publish-crates job (see scripts/publish-workspace.sh) does a
   # real `cargo publish --workspace` on every tag. This job proves that would
