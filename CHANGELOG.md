@@ -24,8 +24,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   install with `--ignore-scripts` or one whose download failed works at the first `conduit`. Every download prints, on
   stderr, the source URL, the destination file, the progress and the verification. The binary is stored in the package's
   `bin/native/`, or, when that directory cannot be written (a global install owned by root), in a per-user cache
-  (`CONDUIT_CACHE_DIR` replaces its base); a binary in the cache is checked against its hash at every run and replaced
-  when it differs, because any process of the user can write there and root may run conduit with that user's `HOME`. `CONDUIT_SKIP_DOWNLOAD=1` never downloads. See `npm/Readme.md`.
+  (`CONDUIT_CACHE_DIR` replaces its base); the cache is for its owner only (an entry is used only when it is not a link, belongs to the
+  running user and cannot be written by others; root never uses it, because `sudo` can keep the user's `HOME`), and a
+  binary found there is checked against its hash at every run and replaced when it differs. A download follows
+  redirects only to https, gives up after 60 s without data and refuses more than 200 MiB. `CONDUIT_SKIP_DOWNLOAD=1` never downloads. See `npm/Readme.md`.
 
 ### Tests
 

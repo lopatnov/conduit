@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,9 +22,12 @@ const sha = (b) => createHash("sha256").update(b).digest("hex");
 // The "binary" is a shell script that echoes its arguments, so the test can see that the launcher ran what it fetched.
 const PROGRAM = Buffer.from('#!/bin/sh\necho "hello-from-conduit $@"\n');
 const runnable = process.platform !== "win32" && ASSET !== undefined;
+// Root never uses the per-user cache (binary.js): the tests of the cache need an ordinary user (CI is one).
+const IS_ROOT = process.geteuid?.() === 0;
+const cacheUsable = runnable && !IS_ROOT;
 
 /** A package directory with the scripts and a checksums.json that knows `body`, and a server that serves `served`. */
-async function setup({ served = PROGRAM, body = PROGRAM, nativeIsAFile = false, serverUp = true, redirect = false } = {}) {
+async function setup({ served = PROGRAM, body = PROGRAM, nativeIsAFile = false, serverUp = true, redirect = false, answer = null } = {}) {
   const pkg = mkdtempSync(join(tmpdir(), "conduit-launcher-"));
   mkdirSync(join(pkg, "bin"));
   for (const f of ["conduit.js", "download.js", "binary.js", "platform.js"]) {
@@ -39,6 +42,22 @@ async function setup({ served = PROGRAM, body = PROGRAM, nativeIsAFile = false, 
   const server = createServer((req, res) => {
     urls.push(req.url);
     // GitHub answers a release asset with a redirect to its own storage: the download must follow it
+    // `answer` shapes the reply to test what the download refuses: a redirect off https, a size that no asset has, a stall
+    if (answer === "ftp") {
+      res.writeHead(302, { Location: "ftp://example.invalid/conduit" });
+      res.end();
+      return;
+    }
+    if (answer === "huge") {
+      res.writeHead(200, { "Content-Length": "300000000" });
+      res.write("x");
+      return;
+    }
+    if (answer === "stall") {
+      res.writeHead(200, { "Content-Length": "1000" });
+      res.write("x");
+      return;
+    }
     if (redirect && req.url === `/${ASSET}`) {
       res.writeHead(302, { Location: `/storage/${ASSET}` });
       res.end();
@@ -111,7 +130,7 @@ test("the second run downloads nothing", { skip: !runnable }, async () => {
   assert.equal(t.urls.length, 1);
 });
 
-test("a package directory that cannot be written falls back to the cache directory", { skip: !runnable }, async () => {
+test("a package directory that cannot be written falls back to the cache directory", { skip: !cacheUsable }, async () => {
   const t = await setup({ nativeIsAFile: true });
   const first = await t.run("conduit.js", ["x"]);
   assert.equal(first.code, 0, first.stderr);
@@ -125,7 +144,7 @@ test("a package directory that cannot be written falls back to the cache directo
   assert.equal(t.urls.length, 1);
 });
 
-test("a binary in the cache that does not match its checksum is not run: it is replaced by a verified download", { skip: !runnable }, async () => {
+test("a binary in the cache that does not match its checksum is not run: it is replaced by a verified download", { skip: !cacheUsable }, async () => {
   // The cache is writable by any process of the user, so conduit must not run what it finds there unchecked (conduit
   // may be started by root with that user's HOME).
   const t = await setup({ nativeIsAFile: true });
@@ -170,7 +189,8 @@ test("CONDUIT_SKIP_DOWNLOAD=1 never touches the network and says where the binar
   assert.equal(r.code, 1);
   assert.deepEqual(t.urls, []);
   assert.ok(r.stderr.includes(t.native), r.stderr);
-  assert.ok(r.stderr.includes(t.cached), r.stderr);
+  // root does not use the cache, so there it is not among the places looked in
+  assert.equal(r.stderr.includes(t.cached), !IS_ROOT, r.stderr);
 });
 
 test("the install script prefetches, and a failed prefetch does not fail the install", { skip: !runnable }, async () => {
@@ -205,4 +225,77 @@ test("the packed package carries no binary, even when bin/native exists, and is 
   const paths = info.files.map((f) => f.path);
   assert.ok(!paths.some((p) => p.startsWith("bin/native")), paths.join(", "));
   assert.ok(info.unpackedSize < 200 * 1024, `unpacked ${info.unpackedSize} bytes`);
+});
+
+// --- The cache belongs to its user, and only to that user (security review of the package, issue #712) -------------
+
+test("a cache that others can write is ignored: its binary is not run and nothing is downloaded into it", { skip: !cacheUsable }, async () => {
+  const t = await setup({ nativeIsAFile: true });
+  mkdirSync(join(t.cache, `v${VERSION}`), { recursive: true });
+  writeFileSync(t.cached, "#!/bin/sh\necho planted\n", { mode: 0o755 });
+  chmodSync(join(t.cache, `v${VERSION}`), 0o777);
+  const r = await t.run("conduit.js");
+  t.close();
+  assert.equal(r.code, 1);
+  assert.ok(!r.stdout.includes("planted"), r.stdout);
+  assert.ok(r.stderr.includes("Ignoring"), r.stderr);
+  assert.ok(r.stderr.includes("must be yours and not writable by others"), r.stderr);
+  assert.deepEqual(t.urls, []);
+});
+
+test("a cache that is a symbolic link is ignored", { skip: !cacheUsable }, async () => {
+  const t = await setup({ nativeIsAFile: true });
+  const elsewhere = join(t.pkg, "elsewhere");
+  mkdirSync(elsewhere);
+  writeFileSync(join(elsewhere, ASSET), "#!/bin/sh\necho planted\n", { mode: 0o755 });
+  mkdirSync(t.cache, { recursive: true });
+  symlinkSync(elsewhere, join(t.cache, `v${VERSION}`));
+  const r = await t.run("conduit.js");
+  t.close();
+  assert.equal(r.code, 1);
+  assert.ok(!r.stdout.includes("planted"), r.stdout);
+  assert.deepEqual(t.urls, []);
+});
+
+test("root never uses the per-user cache", { skip: !(runnable && IS_ROOT) }, async () => {
+  const t = await setup({ nativeIsAFile: true });
+  mkdirSync(join(t.cache, `v${VERSION}`), { recursive: true });
+  writeFileSync(t.cached, PROGRAM, { mode: 0o755 });
+  const r = await t.run("conduit.js");
+  t.close();
+  assert.equal(r.code, 1);
+  assert.ok(!r.stdout.includes("hello-from-conduit"), r.stdout);
+  assert.ok(r.stderr.includes("not used when running as root"), r.stderr);
+  assert.deepEqual(t.urls, []);
+});
+
+// --- What a download refuses ---------------------------------------------------------------------------------------
+
+test("a redirect off https is refused with a clear message, not an exception", { skip: !runnable }, async () => {
+  const t = await setup({ answer: "ftp" });
+  const r = await t.run("conduit.js");
+  t.close();
+  assert.equal(r.code, 1);
+  assert.ok(r.stderr.includes("refusing a redirect to ftp:"), r.stderr);
+  assert.ok(!/\n\s+at /.test(r.stderr), `no stack trace expected: ${r.stderr}`);
+});
+
+test("an answer longer than any release asset is refused at once", { skip: !runnable }, async () => {
+  const t = await setup({ answer: "huge" });
+  const r = await t.run("conduit.js");
+  t.close();
+  assert.equal(r.code, 1);
+  assert.ok(r.stderr.includes("refusing 300000000 bytes"), r.stderr);
+  const native = join(t.pkg, "bin", "native");
+  assert.deepEqual(existsSync(native) ? readdirSync(native) : [], []);
+});
+
+test("a download that stalls gives up and leaves no file behind", { skip: !runnable }, async () => {
+  const t = await setup({ answer: "stall" });
+  const r = await t.run("conduit.js", [], { CONDUIT_DOWNLOAD_IDLE_MS: "500" });
+  t.close();
+  assert.equal(r.code, 1);
+  assert.ok(r.stderr.includes("no data for 0.5 s"), r.stderr);
+  const native = join(t.pkg, "bin", "native");
+  assert.deepEqual(existsSync(native) ? readdirSync(native) : [], []);
 });
