@@ -101,6 +101,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Internal
 
+- The SonarCloud job checks for `SONAR_TOKEN` and skips the coverage run and the scan, with an annotation, when there is
+  none (a pull request from a fork or by Dependabot gets no secrets); it used to fail there with "Not authorized"
+  (issue #710). A green job with skipped steps means that no analysis ran.
 - `ConfigFile::Full` of the (internal, decision #32) crate `lopatnov-conduit-config` now holds a `Box<AppConfig>`:
   `AppConfig` grew the maps of unknown keys and the enum became large (clippy `large_enum_variant`). Code that
   builds `ConfigFile::Full(app)` by hand needs `Box::new(app)`; `normalize()` and the parse functions are unchanged.
