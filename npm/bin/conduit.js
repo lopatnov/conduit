@@ -2,50 +2,19 @@
 /**
  * Conduit — platform wrapper.
  *
- * Resolves the native binary for the current OS/arch and spawns it,
- * passing all CLI arguments and stdio through transparently.
+ * Resolves the native binary for the current OS/arch (downloading it first, with a message that says from where and
+ * to where, when this machine has none: see binary.js) and spawns it, passing all CLI arguments and stdio through
+ * transparently.
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import { assetFor, SUPPORTED } from "./platform.js";
+import { ensureBinary } from "./binary.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// --------------------------------------------------------------------------
-// Platform → binary name mapping (matches GitHub Release asset names)
-// --------------------------------------------------------------------------
-function getPlatformBinary() {
-  // The table is shared with download.js (platform.js); on Linux it picks the musl build on a musl libc.
-  const { key, name } = assetFor();
-
-  if (!name) {
-    console.error(
-      `[conduit] Unsupported platform: ${key}\n` +
-      `Supported: ${SUPPORTED.join(", ")}\n` +
-      `Install from source: cargo install lopatnov-conduit`
-    );
-    process.exit(1);
-  }
-
-  return name;
-}
-
-// --------------------------------------------------------------------------
-// Locate binary
-// --------------------------------------------------------------------------
-const nativeDir = join(__dirname, "native");
-const binaryName = getPlatformBinary();
-const binaryPath = join(nativeDir, binaryName);
-
-if (!existsSync(binaryPath)) {
-  console.error(
-    `[conduit] Native binary not found: ${binaryPath}\n` +
-    `Try reinstalling: npm install @lopatnov/conduit\n` +
-    `Or install from source: cargo install lopatnov-conduit`
-  );
+let binaryPath;
+try {
+  ({ path: binaryPath } = await ensureBinary());
+} catch (err) {
+  console.error(`[conduit] ${err.message}`);
   process.exit(1);
 }
 

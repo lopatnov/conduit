@@ -162,17 +162,28 @@ class ReleaseMatrix(unittest.TestCase):
             key: f"conduit-{target}{'.exe' if 'windows' in target else ''}" for key, target in NPM_PLATFORMS.items()
         }
         self.assertEqual(npm_table("npm/bin/platform.js"), expected)
-        for script in ("npm/bin/download.js", "npm/bin/conduit.js"):
+        # binary.js (which finds and downloads the binary) uses the table; the launcher and the install script use binary.js
+        self.assertIn('from "./platform.js"', read("npm/bin/binary.js"), "binary.js must use the shared table")
+        for script in ("npm/bin/binary.js", "npm/bin/download.js", "npm/bin/conduit.js"):
             text = read(script)
-            self.assertIn('from "./platform.js"', text, f"{script} must use the shared table")
             self.assertNotIn('"conduit-', text, f"{script} must not carry a table of its own")
+        for script in ("npm/bin/download.js", "npm/bin/conduit.js"):
+            self.assertIn('from "./binary.js"', read(script), f"{script} must use binary.js")
         published = {e["asset_name"] for e in matrix_entries() if e["bundle"] == "full"}
         self.assertTrue(set(expected.values()) <= published, "npm asks for a file the release does not publish")
 
-    def test_npm_vendors_exactly_the_full_binaries(self):
-        """The npm job's artifact pattern matches the full builds' artifact names and no other build's."""
+    def test_npm_hashes_exactly_the_full_binaries_and_packs_none(self):
+        """The npm job's artifact pattern matches the full builds' artifact names and no other build's, the binaries are
+        downloaded outside the package (to be hashed, issue #712: 13 binaries made the package 208.7 MB and the
+        registry refused it), and a step checks the package before it is published."""
         text = workflow()
-        found = re.search(r"pattern: (\S+)", step_body(text, "Download the full-build binaries"))
+        step = step_body(text, "Download the full-build binaries (to hash them, not to pack them)")
+        self.assertNotIn("npm/", re.search(r"path: (\S+)", step).group(1), "the binaries must not be put into the package")
+        guard = step_body(text, "Check that the package carries no binary")
+        self.assertIn("npm pack --dry-run --json", guard)
+        self.assertIn("bin/native", guard)
+        self.assertLess(text.index("Check that the package carries no binary"), text.index("Publish to npmjs.com"))
+        found = re.search(r"pattern: (\S+)", step)
         self.assertIsNotNone(found, "the npm job's download step has no `pattern:` line")
         pattern = found.group(1)
         self.assertIn("name: binary-${{ matrix.bundle }}-${{ matrix.target }}", text)

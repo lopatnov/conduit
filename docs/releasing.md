@@ -47,7 +47,7 @@ Pushing a `v*` tag starts `.github/workflows/release.yml`, which:
 | GitHub Release | Release notes, an archive of every build, the bare full binaries, the `.deb` packages and `SHA256SUMS.txt` |
 | crates.io | All `lopatnov-conduit-*` crates, in dependency order |
 | GHCR | Multi-architecture (amd64, arm64) Docker images (full as the plain tags; `-standard`, `-gateway`, `-static`), each architecture scanned with Trivy |
-| npm | `@lopatnov/conduit`, with a `checksums.json` for the postinstall download |
+| npm | `@lopatnov/conduit`: about 12 kB, no binary (the registry refused 208.7 MB, issue #712); a `checksums.json` for the download the package makes at install and at the first run |
 
 Required repository secrets: `CARGO_REGISTRY_TOKEN` (crates.io) and `NPM_TOKEN` (npm). The image
 push uses the workflow's own token.
