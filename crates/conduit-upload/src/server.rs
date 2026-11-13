@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Extension, Multipart, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRequest, Multipart, Request, State};
 use axum::http::{header::CONTENT_LENGTH, HeaderMap, StatusCode};
-use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use axum::Router;
@@ -101,20 +100,16 @@ pub fn make_upload_router<S: UploadConfigSource>(state: Arc<S>) -> Router {
         // service's root got a 404 instead of reaching `upload_handler`.
         // The explicit `/` route below covers that case; `{*path}` still
         // covers every non-root path as before.
-        .route("/", post(upload_handler))
-        .route("/{*path}", post(upload_handler))
+        .route("/", post(upload_handler::<S>))
+        .route("/{*path}", post(upload_handler::<S>))
         // No router-wide body limit: axum's own default (2 MiB) would cap every upload, and a fixed ceiling here
         // (it used to be 5 GiB, issues #277 and #700) is decided before the site, and so its configured limits,
         // is known: it capped a site that asked for more. The bound is applied per request from the site's config
-        // (`request_body_ceiling`): `bound_request_body` counts every byte of the body, whatever the field and
+        // (`request_body_ceiling`): `upload_handler` counts every byte of the body, whatever the field and
         // whether or not there is a `Content-Length` (chunked), and the handler refuses early on `Content-Length`
         // and chunk by chunk (`check_chunk_limits`, issue #277), so a site with no limits at all still cannot
         // fill the disk or hold a connection with an endless body.
         .layer(DefaultBodyLimit::disable())
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            bound_request_body::<S>,
-        ))
         .with_state(state)
 }
 
@@ -163,15 +158,6 @@ pub async fn run_upload_server<S: UploadConfigSource>(listener: TcpListener, sta
     }
 }
 
-/// What `bound_request_body` decided for this request, for the handler: the site's config, looked up once (a hot
-/// reload between two lookups could otherwise give the counter and the handler different limits), and the flag the
-/// byte counter sets when the body went over its bound.
-#[derive(Clone)]
-struct RequestState {
-    over: Arc<AtomicBool>,
-    cfg: Option<UploadConfig>,
-}
-
 /// The site this request is for, from the header the proxy injects (0 when absent or not a number).
 fn site_index(headers: &HeaderMap) -> usize {
     headers
@@ -181,43 +167,48 @@ fn site_index(headers: &HeaderMap) -> usize {
         .unwrap_or(0)
 }
 
-/// Looks up the site's config once, and bounds the whole request body (issue #700): counts every byte that is read,
-/// in `u64`, and fails the body when the count passes the site's ceiling plus the room for the multipart framing. The
-/// handler's own checks only count the bytes of the field it saves, so without this a field with another name, or a
-/// body with no `Content-Length` (chunked), could be pushed through without any bound. The error multer reports for
-/// that is turned into a `413` by `upload_handler`.
-async fn bound_request_body<S: UploadConfigSource>(
-    State(state): State<Arc<S>>,
-    mut req: Request,
-    next: Next,
-) -> Response {
-    let over = Arc::new(AtomicBool::new(false));
-    let cfg = state.upload_config(site_index(req.headers()));
-    if let Some(cfg) = &cfg {
-        let limit = request_body_bound(request_body_ceiling(cfg));
-        let flag = over.clone();
-        let mut seen: u64 = 0;
-        let body = std::mem::take(req.body_mut());
-        let counted = body.into_data_stream().map(move |chunk| {
-            let chunk = chunk?;
-            seen = seen.saturating_add(chunk.len() as u64);
-            if seen > limit {
-                flag.store(true, Ordering::Relaxed);
-                return Err(axum::Error::new("request body is over its bound"));
-            }
-            Ok(chunk)
-        });
-        *req.body_mut() = Body::from_stream(counted);
-    }
-    req.extensions_mut().insert(RequestState { over, cfg });
-    next.run(req).await
+/// Bounds the whole request body (issue #700): the body is replaced by a stream that counts every byte that is read,
+/// in `u64`, and fails when the count passes `limit` (the site's ceiling plus the room for the multipart framing),
+/// setting `over`. The handler's own checks only count the bytes of the field it saves, so without this a field with
+/// another name, or a body with no `Content-Length` (chunked), could be pushed through without any bound. The error
+/// multer reports for that is turned into a `413` by `bound_response`.
+fn bound_request_body(req: Request, limit: u64, over: Arc<AtomicBool>) -> Request {
+    let (parts, body) = req.into_parts();
+    let mut seen: u64 = 0;
+    let counted = body.into_data_stream().map(move |chunk| {
+        let chunk = chunk?;
+        seen = seen.saturating_add(chunk.len() as u64);
+        if seen > limit {
+            over.store(true, Ordering::Relaxed);
+            return Err(axum::Error::new("request body is over its bound"));
+        }
+        Ok(chunk)
+    });
+    Request::from_parts(parts, Body::from_stream(counted))
 }
 
-async fn upload_handler(
-    headers: HeaderMap,
-    Extension(RequestState { over, cfg }): Extension<RequestState>,
-    multipart: Multipart,
+/// The upload endpoint. The site's config is looked up once, here: a hot reload between two lookups could otherwise
+/// give the byte counter and the rest of the handler different limits. It comes from the server's own state, never
+/// from the request.
+async fn upload_handler<S: UploadConfigSource>(
+    State(state): State<Arc<S>>,
+    req: Request,
 ) -> Response {
+    let cfg = state.upload_config(site_index(req.headers()));
+    let over = Arc::new(AtomicBool::new(false));
+    let req = match &cfg {
+        Some(cfg) => bound_request_body(
+            req,
+            request_body_bound(request_body_ceiling(cfg)),
+            over.clone(),
+        ),
+        None => req,
+    };
+    let headers = req.headers().clone();
+    let multipart = match Multipart::from_request(req, &state).await {
+        Ok(m) => m,
+        Err(rejection) => return rejection.into_response(),
+    };
     // The flag is read after the request has been handled: it is set while the body is read.
     let response = handle_upload(cfg, headers, multipart).await;
     bound_response(over.load(Ordering::Relaxed), response)
@@ -235,10 +226,13 @@ fn bound_response(body_went_over: bool, response: Response) -> Response {
     response
 }
 
-/// The files a request has saved so far. They are removed when this is dropped unless `keep` was called: an error
-/// status means nothing was kept, the same as for the file that was being written when the error came
-/// (`process_upload_field`), and a request that is cancelled (the client goes away, the task is dropped) is cleaned
-/// up too, which an explicit cleanup on the error path would not cover.
+/// The files a request has saved so far. An error status means nothing was kept, the same as for the file that was
+/// being written when the error came (`process_upload_field`), so they are removed unless `keep` was called.
+///
+/// Removing a completed file can be slow (a multi-GiB file on a network or slow disk, issue #702), so it never runs
+/// on an async worker: the error path awaits `discard`, which removes them on the blocking pool while only this
+/// request waits; a request that is cancelled instead (the client goes away, the task is dropped) cannot await, so
+/// its `Drop` hands the paths to the blocking pool and does not wait for them.
 #[derive(Default)]
 struct SavedFiles {
     paths: Vec<PathBuf>,
@@ -254,14 +248,39 @@ impl SavedFiles {
     fn keep(mut self) {
         self.keep = true;
     }
+
+    /// The request failed: remove the files, off the async workers, and wait until they are gone, so that the
+    /// error response is sent only after the cleanup.
+    async fn discard(&mut self) {
+        let paths = std::mem::take(&mut self.paths);
+        if paths.is_empty() {
+            return;
+        }
+        // A join error means the blocking task was cancelled, which only happens when the runtime shuts down.
+        let _ = tokio::task::spawn_blocking(move || remove_files(&paths)).await;
+    }
+}
+
+fn remove_files(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 impl Drop for SavedFiles {
+    /// Only a cancelled request, or a panic, gets here with files left: the paths go to the blocking pool without
+    /// waiting. Without a runtime (a plain unit test) they are removed on the spot. A runtime that is shutting down
+    /// may drop the task, which is no different from the process being killed in the middle of a write.
     fn drop(&mut self) {
-        if !self.keep {
-            for path in &self.paths {
-                let _ = std::fs::remove_file(path);
+        if self.keep || self.paths.is_empty() {
+            return;
+        }
+        let paths = std::mem::take(&mut self.paths);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                drop(handle.spawn_blocking(move || remove_files(&paths)));
             }
+            Err(_) => remove_files(&paths),
         }
     }
 }
@@ -321,8 +340,8 @@ async fn handle_upload(
         }
     }
     .await;
-    // On an error `saved` is dropped here and takes the files with it.
     if let Err(response) = outcome {
+        saved.discard().await;
         return response;
     }
 
@@ -667,6 +686,42 @@ mod tests {
         let mut gone = SavedFiles::default();
         gone.push(dir.path().join("never-existed"));
         drop(gone);
+    }
+
+    #[tokio::test]
+    async fn discard_removes_the_files_before_it_returns() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut saved = SavedFiles::default();
+        for name in ["a", "b"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            saved.push(path);
+        }
+        saved.discard().await;
+        // gone at once, with no waiting: the error response is sent only after this
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        // and the guard has nothing left to do when it is dropped
+        assert!(saved.paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_guard_dropped_inside_a_runtime_removes_its_files_on_the_blocking_pool() {
+        // The cancelled-request case: nothing can be awaited in a `Drop`, so the removal is not immediate.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut saved = SavedFiles::default();
+        let path = dir.path().join("a");
+        std::fs::write(&path, b"x").unwrap();
+        saved.push(path.clone());
+        drop(saved);
+        let mut waited = 0;
+        while path.exists() && waited < 50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            waited += 1;
+        }
+        assert!(
+            !path.exists(),
+            "the file must be removed by the blocking pool"
+        );
     }
 
     #[test]
