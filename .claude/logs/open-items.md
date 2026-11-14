@@ -8,6 +8,7 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
+| #724 | limits.maxBodyBytes: a chunked body over the limit is truncated and forwarded instead of refused with 413 | filed by the owner, 2026-11-14 | open (not mine; listed so the ledger and the fast-follow issues agree) |
 | #737 | feature warnings and `conduit features` miss a `cache` block on `routes[].proxy` and a `redis://` cache store | the `disk-cache` gate (#645) | done in the disk-cache PR (2026-11-14, pulled in at the end): one walk over every proxy route of a site (`proxy` map and `routes[]`), a `redis://` cache store needs `redis` |
 | #725 | tcp proxy: a connect failure drops the client's connection instead of trying the next target | filed by the owner, 2026-11-14 | open (not mine; listed so the ledger and the fast-follow issues agree) |
 | #645 | disk-cache is a marker feature | balancer work (#631) | done in the disk-cache PR (2026-11-14): the disk store is behind `disk-cache`, which is in `standard`, `gateway` and `full` |
