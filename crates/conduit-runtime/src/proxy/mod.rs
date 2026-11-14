@@ -11,7 +11,6 @@ pub mod service;
 // Paths the moved files use through `crate::proxy::…`; in the root crate these are one-line facades over the
 // Layer-1 crates, here they are module re-exports of the same modules.
 pub use conduit_cache::cache;
-#[cfg(feature = "disk-cache")]
 pub use conduit_cache::disk as cache_disk;
 pub use conduit_proxy_http::routes;
 pub use conduit_upstream::health;

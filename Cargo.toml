@@ -861,16 +861,10 @@ cache = [
     "lopatnov-conduit-runtime/cache",
     "lopatnov-conduit-server/cache",
 ]
-# Disk cache backend (cache.store: "disk:/path"), issue #645. Gates the `disk` module of `crates/conduit-cache` (the
-# code that writes cache files under a configured path): a `cache` build without it is a memory (and, with `redis`,
-# Redis) cache, and a route with a `disk:` store is not cached, with a start-up warning, the way a `redis://`
-# store is without `redis`. In `gateway`, `standard` and `full`, so the published builds keep the disk store.
-disk-cache = [
-    "cache",
-    "lopatnov-conduit-cache/disk-cache",
-    "lopatnov-conduit-runtime/disk-cache",
-    "lopatnov-conduit-server/disk-cache",
-]
+# Disk cache backend (cache.store: "disk:/path"). Forwards into
+# `crates/conduit-cache`'s own `disk-cache` feature (also a marker feature —
+# the `disk` module itself has no feature gate, matching pre-extraction).
+disk-cache = ["cache", "lopatnov-conduit-cache/disk-cache"]
 
 # ── Auto-TLS ──────────────────────────────────────────────────────────────────
 # ACME / Let's Encrypt automatic certificate provisioning (tls.acme config).
