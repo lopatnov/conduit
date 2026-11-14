@@ -97,11 +97,12 @@ echo "$out" | grep -q 'last words' || fail "after the client closed its write si
 ok "half-close: the reply arrives after the client has shut down its write side"
 
 # 5. a target that never answers: the connection is dropped around connectTimeoutMs, the client does not hang
-start=$(date +%s)
-client sh -c 'printf "x\n" | nc -w 8 app.test 9002 >/dev/null' || true
-took=$(( $(date +%s) - start ))
-[ "$took" -le 2 ] || fail "a blackhole target held the client for ${took}s with connectTimeoutMs 1000"
-ok "a target that never answers is cut off in ${took}s (connectTimeoutMs: 1000)"
+# Timed inside the client container, in milliseconds, so the start-up of `docker run` is not part of it. An address that
+# nobody owns on the bridge fails in about 3 s by itself (ARP), so a bound under that tells a connect timeout of 1 s
+# from the kernel giving up.
+ms=$(client sh -c 's=$(date +%s%3N); printf "x\n" | nc -w 8 app.test 9002 >/dev/null; echo $(( $(date +%s%3N) - s ))' || true)
+[ -n "$ms" ] && [ "$ms" -le 2500 ] || fail "a blackhole target held the client for ${ms:-?} ms with connectTimeoutMs 1000"
+ok "a target that never answers is cut off in ${ms} ms (connectTimeoutMs: 1000)"
 
 # 6. one upstream goes down: round-robin keeps serving through the other one, or reports it, never hangs
 docker stop "conduit-e2e-tcp-tcp1-$E2E_ID" >/dev/null
