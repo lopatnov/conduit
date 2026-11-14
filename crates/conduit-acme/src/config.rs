@@ -67,10 +67,10 @@ pub const DEFAULT_RETRY_AFTER_MIN_SECS: u64 = 5 * 60;
 pub const DEFAULT_RETRY_AFTER_MAX_SECS: u64 = 24 * 3600;
 /// How often the certificates are checked at most.
 pub const DEFAULT_CHECK_INTERVAL_SECS: u64 = 12 * 3600;
-/// The least `checkIntervalSecs` allowed (5 minutes, which is what the check could never be faster than before the
-/// interval became configurable): a check that finds a due certificate and fails is repeated after one interval, and a CA
-/// limits failed orders (Let's Encrypt: about 5 failed validations an hour), so a shorter period would re-order every few
-/// seconds and lock issuance out.
+/// The least `checkIntervalSecs` allowed (5 minutes, which is how seldom the check could run before the interval became
+/// configurable): a check that finds a due certificate and fails is repeated after one interval, and a CA limits failed
+/// orders (Let's Encrypt: about 5 failed validations an hour). The floor only rules out hammering the CA every few seconds;
+/// an operator who sets the interval near it still risks that limit when a due certificate keeps failing.
 pub const MIN_CHECK_INTERVAL_SECS: u64 = 5 * 60;
 /// The least `retryAfterMinSecs` allowed (one minute): the CA's `Retry-After` is never taken as shorter than this when it is
 /// asked about a certificate again.
