@@ -16,7 +16,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ACME renewal follows the CA's renewal information (ARI, RFC 9773): the 12-hour check asks the CA for the renewal window of
   each certificate and renews inside it, earlier than the lifetime rule when the CA says so and never later; the renewal
   order names the certificate it replaces (`replaces`, which Let's Encrypt exempts from its rate limits). No ARI, an
-  unreachable CA or an invalid window changes nothing. Tests run against a mock CA (#594).
+  unreachable CA or an invalid window (empty or inverted) changes nothing. The CA's `Retry-After` is honoured: it is not
+  asked about a certificate again before that (clamped to 5 minutes .. 24 hours) and the check runs sooner than every
+  12 hours when it asks to be consulted earlier. Tests run against a mock CA (#594).
 
 ### Changed
 

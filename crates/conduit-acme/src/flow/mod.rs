@@ -339,9 +339,7 @@ async fn run_acme_order(
     // that names `replaces`). A CA may also refuse the link itself (RFC 9773 section 5: the certificate was already
     // replaced, or is not ours to replace): the order is then tried once more without it.
     let replaces = match previous_cert {
-        Some(pem) => ari::advice(&account, pem, unix_now(), renewal::CHECK_INTERVAL_SECS)
-            .await
-            .map(|a| a.id),
+        Some(pem) => ari::advice(&account, pem, unix_now()).await.map(|a| a.id),
         None => None,
     };
     let place_order = |replaces| async {

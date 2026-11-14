@@ -3,7 +3,7 @@
 //! `newOrder` and which certificate identifiers were asked about, so a test can assert on the wire.
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// What the mock CA does with a renewal-information request.
@@ -34,6 +34,8 @@ pub(super) struct MockCa {
     pub hang_directory: Arc<AtomicBool>,
     /// While set, a `newOrder` request is accepted and never answered.
     pub hang_new_order: Arc<AtomicBool>,
+    /// The `Retry-After` (seconds) of every renewal-information answer; 6 hours until a test sets it.
+    pub retry_after_secs: Arc<AtomicU64>,
 }
 
 fn rfc3339(secs: i64) -> String {
@@ -148,6 +150,7 @@ fn answer(
     base: &str,
     ari: &Ari,
     seen: &Mutex<Seen>,
+    retry_after_secs: u64,
     method: &str,
     path: &str,
     body: &str,
@@ -196,7 +199,7 @@ fn answer(
             match ari {
                 Ari::Window { start, end } => (
                     "200 OK",
-                    format!("{json}Retry-After: 21600\r\n"),
+                    format!("{json}Retry-After: {retry_after_secs}\r\n"),
                     serde_json::json!({
                         "suggestedWindow": {"start": rfc3339(*start), "end": rfc3339(*end)}
                     })
@@ -224,13 +227,15 @@ impl MockCa {
         let seen = Arc::new(Mutex::new(Seen::default()));
         let hang = Arc::new(AtomicBool::new(false));
         let hang_order = Arc::new(AtomicBool::new(false));
+        let retry_after = Arc::new(AtomicU64::new(21_600));
         let (b, s, h, ho) = (base.clone(), seen.clone(), hang.clone(), hang_order.clone());
+        let ra = retry_after.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
                 let (base, ari, seen, config) =
                     (b.clone(), ari.clone(), s.clone(), tls.config.clone());
-                let (hang, hang_order) = (h.clone(), ho.clone());
+                let (hang, hang_order, ra) = (h.clone(), ho.clone(), ra.clone());
                 std::thread::spawn(move || {
                     let Ok(conn) = rustls::ServerConnection::new(config) else {
                         return;
@@ -245,7 +250,15 @@ impl MockCa {
                         std::thread::sleep(std::time::Duration::from_secs(3600));
                         return;
                     }
-                    let response = answer(&base, &ari, &seen, &method, &path, &body);
+                    let response = answer(
+                        &base,
+                        &ari,
+                        &seen,
+                        ra.load(Ordering::SeqCst),
+                        &method,
+                        &path,
+                        &body,
+                    );
                     let _ = stream.write_all(response.as_bytes());
                     stream.conn.send_close_notify();
                     let _ = stream.flush();
@@ -257,6 +270,7 @@ impl MockCa {
             seen,
             hang_directory: hang,
             hang_new_order: hang_order,
+            retry_after_secs: retry_after,
         }
     }
 }
