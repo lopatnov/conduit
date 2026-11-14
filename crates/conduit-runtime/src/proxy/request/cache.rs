@@ -79,7 +79,9 @@ pub(crate) fn request_cache_filter(
             #[cfg(not(feature = "disk-cache"))]
             {
                 let _ = dir;
-                tracing::warn!(
+                // Said once at start-up and on reload (`feature_warnings`, `disk_feature_warning`); here, per
+                // request, it is only a debug line.
+                tracing::debug!(
                     store = %cfg.store,
                     "disk cache requires --features disk-cache — caching disabled"
                 );
