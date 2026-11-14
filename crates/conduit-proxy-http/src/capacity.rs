@@ -110,8 +110,9 @@ pub(crate) fn hash_pick_bounded(ring: &[String], hash_val: u64, cap: &Capacity) 
 /// `clippy::too_many_arguments` and to keep the three call sites uniform.
 pub(crate) struct BoundedPick<'a> {
     pub strategy: Option<&'a LoadBalanceStrategy>,
-    /// FULL healthy list — the hash ring. NOT the admissible subset; hash
-    /// strategies forward-probe over this directly (see [`hash_pick_bounded`]).
+    /// FULL healthy list, NOT the admissible subset: the hash strategies score
+    /// every entry (rendezvous hashing, `pick_by_hash`) and apply the capacity
+    /// filter themselves (see [`hash_pick_bounded`]).
     pub healthy: &'a [String],
     pub capacity: &'a Capacity,
     /// `(url, weight)` pairs, already health-filtered by the caller.

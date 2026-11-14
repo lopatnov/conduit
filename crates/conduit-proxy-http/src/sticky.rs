@@ -15,8 +15,9 @@ pub(crate) enum Sticky {
     /// HMAC mode: the cookie verified against this exact upstream URL.
     ///
     /// This is a **routing target**, not a hash input (#220). Honoring it
-    /// means routing to it *directly*: hashing the URL string and taking
-    /// `% len` lands back on the pinned peer only by coincidence — measured
+    /// means routing to it *directly*: hashing the URL string lands back on the
+    /// pinned peer only by coincidence (the pick was `hash % len` then, and is
+    /// rendezvous scoring now, #377; neither knows the cookie names a peer) — measured
     /// at ~23% across 2..8-peer rings (i.e. chance), and with 4 upstreams
     /// *never*. Before #220 this variant was conflated with [`Self::HashKey`]
     /// below, so an HMAC-signed session was silently served by a different

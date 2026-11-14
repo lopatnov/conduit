@@ -782,3 +782,34 @@ fn upstreams_add_no_server_exits_nonzero() {
         "upstreams add with no server should exit nonzero"
     );
 }
+
+// ── conduit features: exit status (issue #562) ─────────────────────────────
+
+#[test]
+fn features_for_a_config_that_needs_nothing_exits_zero() {
+    let (_dir, path) = write_minimal_config();
+    let out = conduit()
+        .args(["features", "-c"])
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("required: (none)"));
+}
+
+#[test]
+fn features_exits_two_when_the_config_cannot_be_loaded() {
+    // 1 is "this binary lacks a feature the config needs"; a script must be able to tell the two apart.
+    let (_dir, path) = write_invalid_config();
+    let out = conduit()
+        .args(["features", "-c"])
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert_eq!(out.status.code(), Some(2));
+    let missing = conduit()
+        .args(["features", "-c", "no-such-config.json"])
+        .output()
+        .expect("run");
+    assert_eq!(missing.status.code(), Some(2));
+}

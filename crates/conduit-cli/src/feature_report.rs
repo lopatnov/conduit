@@ -5,7 +5,7 @@ use std::process;
 
 use conduit_server::config::validate::{compiled_features, required_features};
 
-use super::config_path::load_config_or_exit;
+use super::config_path::load_config_or_exit_with;
 
 /// The named feature bundles of the root crate, smallest first, as `(name, members)` — a copy of the
 /// `[features]` table in the root `Cargo.toml` (`standard`/`gateway`/`static-server`/`full`).
@@ -129,9 +129,15 @@ impl Report {
     }
 }
 
-/// Print the features `config_path` needs; exit non-zero when this binary lacks one of them.
+/// Exit status when the binary lacks a feature the configuration needs.
+const EXIT_MISSING_FEATURE: i32 = 1;
+/// Exit status when the configuration could not be loaded: a script can tell it from a missing feature.
+const EXIT_CONFIG_NOT_LOADED: i32 = 2;
+
+/// Print the features `config_path` needs; exit 1 when this binary lacks one of them, 2 when the
+/// configuration cannot be loaded.
 pub fn run(config_path: &str, json: bool) {
-    let app = load_config_or_exit(Path::new(config_path));
+    let app = load_config_or_exit_with(Path::new(config_path), EXIT_CONFIG_NOT_LOADED);
     let report = Report::new(required_features(&app), &compiled_features());
     if json {
         println!("{}", report.json());
@@ -143,7 +149,7 @@ pub fn run(config_path: &str, json: bool) {
             "error: this binary was built without: {}",
             report.missing.join(", ")
         );
-        process::exit(1);
+        process::exit(EXIT_MISSING_FEATURE);
     }
 }
 
@@ -181,6 +187,83 @@ mod tests {
         );
         assert!(report.missing.is_empty());
         assert_eq!(report.bundle, None);
+    }
+
+    /// The `[features]` table of the root `Cargo.toml` as `name -> members` (a line parser: the table uses only
+    /// one-name-per-entry arrays of quoted strings, with `#` comments).
+    fn root_features() -> std::collections::HashMap<String, Vec<String>> {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let text = std::fs::read_to_string(format!("{manifest}/../../Cargo.toml"))
+            .expect("root Cargo.toml");
+        let mut table = std::collections::HashMap::new();
+        let (mut in_features, mut current): (bool, Option<(String, Vec<String>)>) = (false, None);
+        for line in text.lines() {
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.starts_with('[') {
+                in_features = line == "[features]";
+                continue;
+            }
+            if !in_features || line.is_empty() {
+                continue;
+            }
+            if current.is_none() {
+                if let Some((name, rest)) = line.split_once('=') {
+                    current = Some((name.trim().to_owned(), Vec::new()));
+                    let members = rest.trim_start_matches([' ', '[']);
+                    push_members(&mut current, members);
+                }
+            } else {
+                push_members(&mut current, line);
+            }
+            if line.ends_with(']') {
+                let (name, members) = current.take().expect("an open entry");
+                table.insert(name, members);
+            }
+        }
+        table
+    }
+
+    fn push_members(current: &mut Option<(String, Vec<String>)>, text: &str) {
+        let Some((_, members)) = current else { return };
+        members.extend(text.split('"').skip(1).step_by(2).map(str::to_owned));
+    }
+
+    /// The members of `name`, with the bundles inside it expanded.
+    fn expanded(table: &std::collections::HashMap<String, Vec<String>>, name: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        for member in &table[name] {
+            if table.contains_key(member)
+                && ["standard", "gateway", "static-server", "full"].contains(&member.as_str())
+            {
+                out.extend(expanded(table, member));
+            } else {
+                out.push(member.clone());
+            }
+        }
+        out
+    }
+
+    /// `BUNDLES` is a copy of the root `[features]` table (issue #562): when a bundle gains or loses a member
+    /// there, `conduit features` would name the wrong bundle. The features of `full` that no configuration
+    /// needs (a marker, a metrics gauge, a start-up flag) are the only ones `BUNDLES` leaves out.
+    #[test]
+    fn bundles_agree_with_the_root_cargo_toml() {
+        const NOT_REPORTED: &[&str] = &["disk-cache", "tokio-metrics", "kubernetes"];
+        let table = root_features();
+        for (name, members) in BUNDLES {
+            let mut cargo: Vec<String> = expanded(&table, name)
+                .into_iter()
+                .filter(|f| !NOT_REPORTED.contains(&f.as_str()))
+                .collect();
+            let mut ours: Vec<String> = members.iter().map(|m| (*m).to_owned()).collect();
+            cargo.sort();
+            cargo.dedup();
+            ours.sort();
+            assert_eq!(
+                ours, cargo,
+                "BUNDLES[{name}] differs from Cargo.toml [features]"
+            );
+        }
     }
 
     #[test]

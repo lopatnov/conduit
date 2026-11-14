@@ -227,6 +227,15 @@ mod tests {
                     rest.split('`').next()
                 })
                 .collect();
+            // The reverse direction below reads the feature out of the warning's text: a warning that says
+            // "Recompile" but lost its "`--features X`" would make that direction pass vacuously (issue #562).
+            for w in warnings.iter().filter(|w| w.contains("Recompile")) {
+                assert!(
+                    w.contains("`--features "),
+                    "{}: a recompile warning must name its feature as `--features X`: {w}",
+                    path.display()
+                );
+            }
             for feature in &missing {
                 // Consumers that use JWT need `jwt`, but the "consumers need jwt" warning only fires
                 // in a build that has `consumers`; without it the `consumers` warning is the one shown.

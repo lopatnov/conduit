@@ -29,12 +29,18 @@ pub fn resolve_config_path(config_arg: &str) -> String {
 /// failure. Shared by every command whose first step is loading a config
 /// file, so the missing-file hint (below) stays consistent across all of them.
 pub(crate) fn load_config_or_exit(path: &Path) -> AppConfig {
+    load_config_or_exit_with(path, 1)
+}
+
+/// [`load_config_or_exit`] with the exit status of the failure chosen by the caller (`conduit features` reports
+/// "the config could not be loaded" with a status of its own, issue #562).
+pub(crate) fn load_config_or_exit_with(path: &Path, status: i32) -> AppConfig {
     match conduit_config::parse::load_config(path) {
         Ok(cfg) => cfg,
         Err(e) => {
             eprintln!("error loading config: {e:#}");
             print_missing_config_hint(path, &e);
-            process::exit(1);
+            process::exit(status);
         }
     }
 }
