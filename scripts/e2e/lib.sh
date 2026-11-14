@@ -12,7 +12,7 @@
 # a real upstream rather than the in-process fixtures of tests/ (HTTP/2 with another implementation, upstream protocol
 # behaviour, TLS with a verifying client, ...). Add a scenario as a new file here; run.sh picks it up.
 #
-# Needs Docker and openssl. Environment: CONDUIT_IMAGE, the image the binary runs in (default ubuntu:24.04 by digest: the
+# Needs Docker and openssl on the host. Environment: CONDUIT_IMAGE, the image the binary runs in (default ubuntu:24.04 by digest: the
 # binary of the CI job is built on its glibc).
 
 E2E_UBUNTU=ubuntu@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5
@@ -63,7 +63,7 @@ e2e_build_client() {
   docker build -q -t conduit-e2e-client - >/dev/null <<EOF
 FROM $E2E_DEBIAN
 RUN apt-get update -qq \\
- && apt-get install -y -qq --no-install-recommends curl ca-certificates nghttp2-client jq >/dev/null \\
+ && apt-get install -y -qq --no-install-recommends curl ca-certificates nghttp2-client jq openssl netcat-openbsd python3 >/dev/null \\
  && rm -rf /var/lib/apt/lists/*
 EOF
   docker pull -q "$E2E_HTTPBIN" >/dev/null
