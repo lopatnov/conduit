@@ -40,24 +40,33 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the validation phase (authorizations, challenge, polling until the order is ready) may take in all.
 const VALIDATION_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// ACME problem types (RFC 8555 §6.7, RFC 9773 §5) with which a CA refuses a `replaces` link it cannot honour: the
-/// certificate was already replaced, the identifier is not well formed or unknown, or the account does not own it.
-const REPLACES_REFUSALS: [&str; 3] = ["alreadyReplaced", "malformed", "unauthorized"];
-
 /// `true` when a failed `newOrder` that named the old certificate may be tried once more without it: only when the
-/// CA answered with an ACME problem document of a type that refuses the link (`REPLACES_REFUSALS`). A timeout or a
-/// transport error does not tell whether the CA acted on the request, and a second order could duplicate the first;
-/// `rateLimited`, `serverInternal` and the like say nothing about the link, and retrying at once would only add load.
+/// CA answered with an ACME problem document that identifies the `replaces` link as the cause (RFC 9773 §5). That is
+/// `alreadyReplaced`, or `malformed`/`unauthorized` whose detail names the `replaces` field; those two types are also
+/// used for unrelated faults (a deactivated account, a bad request), which a second order would only repeat. A timeout
+/// or a transport error does not tell whether the CA acted on the request, and a second order could duplicate the
+/// first; `rateLimited`, `serverInternal` and the like say nothing about the link, and retrying at once would only add
+/// load.
 fn may_retry_without_replaces(error: &anyhow::Error) -> bool {
     let Some(instant_acme::Error::Api(problem)) = error.downcast_ref::<instant_acme::Error>()
     else {
         return false;
     };
-    problem
+    let Some(kind) = problem
         .r#type
         .as_deref()
         .and_then(|t| t.strip_prefix("urn:ietf:params:acme:error:"))
-        .is_some_and(|kind| REPLACES_REFUSALS.contains(&kind))
+    else {
+        return false;
+    };
+    match kind {
+        "alreadyReplaced" => true,
+        "malformed" | "unauthorized" => problem
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.to_ascii_lowercase().contains("replaces")),
+        _ => false,
+    }
 }
 
 /// Run `fut` for at most `limit`; a timeout is an error naming the step.
@@ -476,20 +485,33 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn only_a_refusal_of_the_link_by_the_ca_is_retried_without_replaces() {
-        let problem = |kind: &str| {
+        let problem = |kind: &str, detail: &str| {
             anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {
                 r#type: Some(format!("urn:ietf:params:acme:error:{kind}")),
-                detail: Some("detail".to_owned()),
+                detail: Some(detail.to_owned()),
                 status: Some(409),
                 subproblems: Vec::new(),
             }))
         };
-        for kind in ["alreadyReplaced", "malformed", "unauthorized"] {
-            assert!(may_retry_without_replaces(&problem(kind)), "{kind}");
+        // `alreadyReplaced` is about the link whatever the detail says
+        assert!(may_retry_without_replaces(&problem(
+            "alreadyReplaced",
+            "gone"
+        )));
+        // `malformed` and `unauthorized` count only when the detail names the `replaces` field
+        for kind in ["malformed", "unauthorized"] {
+            assert!(
+                may_retry_without_replaces(&problem(kind, "invalid `Replaces` value")),
+                "{kind}"
+            );
+            assert!(
+                !may_retry_without_replaces(&problem(kind, "account is deactivated")),
+                "{kind}"
+            );
         }
         // the refusal keeps counting through added context
         assert!(may_retry_without_replaces(
-            &problem("alreadyReplaced").context("new-order")
+            &problem("alreadyReplaced", "gone").context("new-order")
         ));
         // a problem that says nothing about the link is not a reason to order again at once
         for kind in [
@@ -498,7 +520,10 @@ mod tests {
             "badNonce",
             "rejectedIdentifier",
         ] {
-            assert!(!may_retry_without_replaces(&problem(kind)), "{kind}");
+            assert!(
+                !may_retry_without_replaces(&problem(kind, "replaces")),
+                "{kind}"
+            );
         }
         // a problem without a type, or with a type from another namespace, is not one of the refusals either
         let untyped = anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {

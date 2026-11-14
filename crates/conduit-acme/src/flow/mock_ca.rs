@@ -189,7 +189,7 @@ fn answer(
             (
                 "400 Bad Request",
                 format!("Content-Type: application/problem+json\r\n{nonce}"),
-                r#"{"type":"urn:ietf:params:acme:error:malformed","detail":"the mock CA issues nothing"}"#
+                r#"{"type":"urn:ietf:params:acme:error:malformed","detail":"the mock CA issues nothing and does not know the replaces certificate"}"#
                     .to_owned(),
             )
         }
