@@ -114,7 +114,6 @@ pub(super) async fn advice(
                 interval_secs,
             );
             tracing::debug!(
-                certificate = %id,
                 window_start = %window.start,
                 window_end = %window.end,
                 renew_now,

@@ -383,10 +383,12 @@ mod tests {
         assert!(format!("{err:#}").contains("new-order"), "got: {err:#}");
 
         let seen = ca.seen.lock().unwrap();
+        // every request was about the certificate on disk and about no other (the identifiers are not printed:
+        // CodeQL treats a certificate identifier as sensitive data in a log)
         assert!(
-            seen.ari_ids.iter().all(|i| *i == id),
-            "asked about {:?}, not {id}",
-            seen.ari_ids
+            !seen.ari_ids.is_empty() && seen.ari_ids.iter().all(|i| *i == id),
+            "{} request(s), not all about the certificate on disk",
+            seen.ari_ids.len()
         );
         assert_eq!(
             seen.orders.len(),
