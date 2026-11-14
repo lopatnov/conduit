@@ -140,6 +140,67 @@ pub async fn run_renewal_loop(
     run_loop(jobs, challenges, shutdown, CHECK_INTERVAL).await;
 }
 
+/// What the loop knows about one job between checks.
+#[derive(Clone, Copy)]
+struct JobState {
+    /// Not checked before this moment: `period` after the last check, or earlier when the CA's hint asks for it.
+    next_check: Instant,
+    /// The earliest moment the CA wants to be asked about the certificate again.
+    ask_ca_at: Option<Instant>,
+}
+
+impl JobState {
+    fn new(now: Instant, period: Duration) -> Self {
+        Self {
+            next_check: now + period,
+            ask_ca_at: None,
+        }
+    }
+
+    /// Schedule the next check after one that ran at `now`: `period` away, or sooner when the CA wants to be asked
+    /// again before that. A job without a hint (no ARI, an error, a failed order) waits the full period, whatever
+    /// the other jobs do.
+    fn checked(&mut self, now: Instant, period: Duration) {
+        let wait = self
+            .ask_ca_at
+            .map_or(period, |at| at.saturating_duration_since(now).min(period));
+        self.next_check = now + wait;
+    }
+}
+
+/// Run the jobs that are due at `now`, and only those. `false` when `shutdown` fired meanwhile.
+async fn check_due(
+    jobs: &[RenewalJob],
+    challenges: &Arc<DashMap<String, String>>,
+    states: &mut [JobState],
+    period: Duration,
+    now: Instant,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    for (job, state) in jobs.iter().zip(states.iter_mut()) {
+        if state.next_check > now {
+            continue;
+        }
+        tokio::select! {
+            _ = shutdown.changed() => return false,
+            result = renew_scheduled(job, challenges, &mut state.ask_ca_at) => match result {
+                Ok(Some(_)) => tracing::info!(
+                    domain = job.domain,
+                    "ACME certificate renewed — it takes effect at the next restart"
+                ),
+                Ok(None) => {}
+                Err(e) => tracing::error!(
+                    domain = job.domain,
+                    error = %e,
+                    "ACME certificate renewal failed"
+                ),
+            },
+        }
+        state.checked(Instant::now(), period);
+    }
+    true
+}
+
 async fn run_loop(
     jobs: Vec<RenewalJob>,
     challenges: Arc<DashMap<String, String>>,
@@ -149,44 +210,31 @@ async fn run_loop(
     if jobs.is_empty() {
         return;
     }
-    // per job: the earliest moment its CA wants to be asked about the certificate again
-    let mut ask_ca_at: Vec<Option<Instant>> = vec![None; jobs.len()];
-    let mut wake_at = Instant::now() + period;
+    let mut states = vec![JobState::new(Instant::now(), period); jobs.len()];
 
     loop {
+        let wake_at = states
+            .iter()
+            .map(|s| s.next_check)
+            .min()
+            .unwrap_or_else(|| Instant::now() + period);
         tokio::select! {
             _ = shutdown.changed() => return,
             _ = tokio::time::sleep_until(wake_at) => {}
         }
-        for (job, ask_at) in jobs.iter().zip(ask_ca_at.iter_mut()) {
-            tokio::select! {
-                _ = shutdown.changed() => return,
-                result = renew_scheduled(job, &challenges, ask_at) => match result {
-                    Ok(Some(_)) => tracing::info!(
-                        domain = job.domain,
-                        "ACME certificate renewed — it takes effect at the next restart"
-                    ),
-                    Ok(None) => {}
-                    Err(e) => tracing::error!(
-                        domain = job.domain,
-                        error = %e,
-                        "ACME certificate renewal failed"
-                    ),
-                },
-            }
+        if !check_due(
+            &jobs,
+            &challenges,
+            &mut states,
+            period,
+            Instant::now(),
+            &mut shutdown,
+        )
+        .await
+        {
+            return;
         }
-        wake_at = next_wake(Instant::now(), period, &ask_ca_at);
     }
-}
-
-/// When the loop checks next: `period` from `now`, or earlier when a CA wants to be asked again before that.
-fn next_wake(now: Instant, period: Duration, ask_ca_at: &[Option<Instant>]) -> Instant {
-    let soonest = ask_ca_at
-        .iter()
-        .flatten()
-        .map(|at| at.saturating_duration_since(now))
-        .min();
-    now + soonest.map_or(period, |d| d.min(period))
 }
 
 #[cfg(test)]
@@ -591,24 +639,80 @@ mod tests {
     }
 
     #[test]
-    fn the_loop_wakes_at_the_period_or_at_the_earliest_hint_before_it() {
+    fn a_job_is_checked_again_after_the_period_or_after_the_hint_if_that_is_sooner() {
         let now = Instant::now();
         let period = Duration::from_secs(12 * 3600);
-        let h = |s| Some(now + Duration::from_secs(s));
-        assert_eq!(next_wake(now, period, &[]), now + period);
-        assert_eq!(next_wake(now, period, &[None, None]), now + period);
+        let after = |ask: Option<Instant>| {
+            let mut state = JobState::new(now, period);
+            state.ask_ca_at = ask;
+            state.checked(now, period);
+            state.next_check
+        };
+        assert_eq!(after(None), now + period);
         // a hint beyond the period does not postpone the check
-        assert_eq!(next_wake(now, period, &[h(30 * 3600)]), now + period);
-        // the earliest hint before the period wins, whichever job it belongs to
         assert_eq!(
-            next_wake(now, period, &[h(7200), None, h(3600)]),
+            after(Some(now + Duration::from_secs(30 * 3600))),
+            now + period
+        );
+        assert_eq!(
+            after(Some(now + Duration::from_secs(3600))),
             now + Duration::from_secs(3600)
         );
-        // a hint already due: wake now
-        assert_eq!(
-            next_wake(now + Duration::from_secs(5), period, &[Some(now)]),
-            now + Duration::from_secs(5)
+        // a hint already due: due again at once
+        assert_eq!(after(Some(now)), now);
+    }
+
+    #[tokio::test]
+    async fn one_cas_short_hint_does_not_bring_forward_the_check_of_the_other_jobs() {
+        // Job A's CA asks to be consulted again in 5 minutes; job B is due and its order keeps failing. B must be
+        // retried after the period, not at A's cadence (every retry is a full order against the CA's limits).
+        let (dir_a, dir_b) = (
+            tempfile::TempDir::new().unwrap(),
+            tempfile::TempDir::new().unwrap(),
         );
+        issued_pair(dir_a.path(), 10);
+        issued_pair(dir_b.path(), 75); // due by the lifetime rule
+        let ca_a = MockCa::start(Ari::Window {
+            start: now() + 20 * 86_400,
+            end: now() + 21 * 86_400,
+        })
+        .await;
+        ca_a.retry_after_secs
+            .store(300, std::sync::atomic::Ordering::SeqCst);
+        let ca_b = MockCa::start(Ari::Absent).await;
+        let jobs = vec![
+            job_for(dir_a.path(), &ca_a).await,
+            job_for(dir_b.path(), &ca_b).await,
+        ];
+        let challenges = Arc::new(DashMap::new());
+        let period = Duration::from_secs(12 * 3600);
+        let start = Instant::now();
+        let mut states = vec![JobState::new(start, period); 2];
+        states.iter_mut().for_each(|s| s.next_check = start); // both due now
+        let (_tx, mut rx) = watch::channel(false);
+
+        assert!(check_due(&jobs, &challenges, &mut states, period, start, &mut rx).await);
+        assert_eq!(ca_b.seen.lock().unwrap().orders.len(), 1, "B was tried");
+        let a_next = states[0].next_check.saturating_duration_since(start);
+        assert!(
+            (290..=300).contains(&a_next.as_secs()),
+            "A is due again in about 5 minutes, got {a_next:?}"
+        );
+        assert!(states[1].next_check >= start + period - Duration::from_secs(5));
+
+        // A's hint ran out; B's did not exist, B is not due
+        let later = start + Duration::from_secs(301);
+        assert!(check_due(&jobs, &challenges, &mut states, period, later, &mut rx).await);
+        assert_eq!(
+            ca_b.seen.lock().unwrap().orders.len(),
+            1,
+            "B is not retried at A's cadence"
+        );
+
+        // after the period B is due again
+        let much_later = start + period + Duration::from_secs(10);
+        assert!(check_due(&jobs, &challenges, &mut states, period, much_later, &mut rx).await);
+        assert_eq!(ca_b.seen.lock().unwrap().orders.len(), 2);
     }
 
     #[tokio::test]

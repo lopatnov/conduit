@@ -794,8 +794,8 @@ RFC 9773, Let's Encrypt does) the same check also asks it for the renewal window
 it, which can be earlier than the rule above (for example after a mass revocation) and never later; the renewal order
 then names the certificate it replaces (`replaces`), which Let's Encrypt exempts from its rate limits. A CA without ARI,
 an unreachable CA or a failed ARI request changes nothing: the rule above decides. The CA's `Retry-After` is honoured:
-it is not asked about a certificate again before that (5 minutes to 24 hours), and the check runs sooner than every 12
-hours when it asks to be consulted earlier. The renewed files are written to the
+it is not asked about a certificate again before that (5 minutes to 24 hours), and that certificate is checked sooner than every
+12 hours when the CA asks to be consulted earlier (the other certificates keep their own 12-hour cadence). The renewed files are written to the
 storage directory, but the running process keeps serving the certificate it
 loaded at startup — **restart Conduit within that window** (any restart
 or deploy does it) so the new certificate is picked up before the old one
