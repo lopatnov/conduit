@@ -40,14 +40,24 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the validation phase (authorizations, challenge, polling until the order is ready) may take in all.
 const VALIDATION_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// ACME problem types (RFC 8555 §6.7, RFC 9773 §5) with which a CA refuses a `replaces` link it cannot honour: the
+/// certificate was already replaced, the identifier is not well formed or unknown, or the account does not own it.
+const REPLACES_REFUSALS: [&str; 3] = ["alreadyReplaced", "malformed", "unauthorized"];
+
 /// `true` when a failed `newOrder` that named the old certificate may be tried once more without it: only when the
-/// CA answered with an ACME problem document, i.e. refused the order (or the link). A timeout or a transport error does
-/// not tell whether the CA acted on the request, and a second order could duplicate the first.
+/// CA answered with an ACME problem document of a type that refuses the link (`REPLACES_REFUSALS`). A timeout or a
+/// transport error does not tell whether the CA acted on the request, and a second order could duplicate the first;
+/// `rateLimited`, `serverInternal` and the like say nothing about the link, and retrying at once would only add load.
 fn may_retry_without_replaces(error: &anyhow::Error) -> bool {
-    matches!(
-        error.downcast_ref::<instant_acme::Error>(),
-        Some(instant_acme::Error::Api(_))
-    )
+    let Some(instant_acme::Error::Api(problem)) = error.downcast_ref::<instant_acme::Error>()
+    else {
+        return false;
+    };
+    problem
+        .r#type
+        .as_deref()
+        .and_then(|t| t.strip_prefix("urn:ietf:params:acme:error:"))
+        .is_some_and(|kind| REPLACES_REFUSALS.contains(&kind))
 }
 
 /// Run `fut` for at most `limit`; a timeout is an error naming the step.
@@ -465,16 +475,46 @@ mod tests {
     use super::*;
 
     #[tokio::test(start_paused = true)]
-    async fn only_a_refusal_by_the_ca_is_retried_without_replaces() {
-        let refusal = anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {
-            r#type: Some("urn:ietf:params:acme:error:malformed".to_owned()),
-            detail: Some("the certificate was already replaced".to_owned()),
+    async fn only_a_refusal_of_the_link_by_the_ca_is_retried_without_replaces() {
+        let problem = |kind: &str| {
+            anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {
+                r#type: Some(format!("urn:ietf:params:acme:error:{kind}")),
+                detail: Some("detail".to_owned()),
+                status: Some(409),
+                subproblems: Vec::new(),
+            }))
+        };
+        for kind in ["alreadyReplaced", "malformed", "unauthorized"] {
+            assert!(may_retry_without_replaces(&problem(kind)), "{kind}");
+        }
+        // the refusal keeps counting through added context
+        assert!(may_retry_without_replaces(
+            &problem("alreadyReplaced").context("new-order")
+        ));
+        // a problem that says nothing about the link is not a reason to order again at once
+        for kind in [
+            "rateLimited",
+            "serverInternal",
+            "badNonce",
+            "rejectedIdentifier",
+        ] {
+            assert!(!may_retry_without_replaces(&problem(kind)), "{kind}");
+        }
+        // a problem without a type, or with a type from another namespace, is not one of the refusals either
+        let untyped = anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {
+            r#type: None,
+            detail: None,
             status: Some(409),
             subproblems: Vec::new(),
         }));
-        assert!(may_retry_without_replaces(&refusal));
-        // the refusal keeps counting through added context
-        assert!(may_retry_without_replaces(&refusal.context("new-order")));
+        assert!(!may_retry_without_replaces(&untyped));
+        let foreign = anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {
+            r#type: Some("urn:example:alreadyReplaced".to_owned()),
+            detail: None,
+            status: Some(409),
+            subproblems: Vec::new(),
+        }));
+        assert!(!may_retry_without_replaces(&foreign));
 
         // a timeout, a transport failure or any other error does not say the CA refused anything
         let timed_out = bounded::<()>("ACME new-order request", Duration::from_secs(60), async {
