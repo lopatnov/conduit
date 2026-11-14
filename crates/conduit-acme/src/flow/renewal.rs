@@ -88,16 +88,27 @@ async fn ca_asks_for_renewal(job: &RenewalJob, cert_pem: &str) -> bool {
         // No account yet: the first order creates it. Asking about a certificate that is not due must not.
         return false;
     }
-    let account = match load_or_create_account(&job.acme, directory_url).await {
-        Ok(account) => account,
-        Err(e) => {
-            tracing::warn!(domain = job.domain, error = %e, "cannot ask the CA for renewal information");
-            return false;
-        }
+    let probe = async {
+        let account = match load_or_create_account(&job.acme, directory_url).await {
+            Ok(account) => account,
+            Err(e) => {
+                tracing::warn!(domain = job.domain, error = %e, "cannot ask the CA for renewal information");
+                return false;
+            }
+        };
+        ari::advice(&account, cert_pem, unix_now(), CHECK_INTERVAL_SECS)
+            .await
+            .is_some_and(|a| a.renew_now)
     };
-    ari::advice(&account, cert_pem, unix_now(), CHECK_INTERVAL_SECS)
+    tokio::time::timeout(ari::PROBE_TIMEOUT, probe)
         .await
-        .is_some_and(|a| a.renew_now)
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                domain = job.domain,
+                "the CA did not answer the renewal information probe in time"
+            );
+            false
+        })
 }
 
 /// Check every certificate every 12 hours until `shutdown` fires.
@@ -500,5 +511,29 @@ mod tests {
         let seen = ca.seen.lock().unwrap();
         assert_eq!(seen.accounts, 0);
         assert!(seen.ari_ids.is_empty() && seen.orders.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_ca_that_never_answers_does_not_stall_the_renewal_check() {
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 10);
+        let ca = MockCa::start(Ari::Window {
+            start: now() - 7200,
+            end: now() - 3600,
+        })
+        .await;
+        let job = job_for(dir.path(), &ca).await; // the account is stored, so restoring it re-fetches the directory
+        ca.hang_directory
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // virtual time: the idle runtime jumps to the probe's deadline instead of waiting 30 real seconds
+        tokio::time::pause();
+        let result = tokio::time::timeout(Duration::from_secs(120), renew(&job))
+            .await
+            .expect("the probe must give up by itself, well before the outer limit");
+        assert!(
+            matches!(result, Ok(None)),
+            "no advice means the lifetime rule decides: nothing to do"
+        );
     }
 }

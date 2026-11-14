@@ -18,6 +18,11 @@ use x509_parser::pem::parse_x509_pem;
 /// sequential renewal loop (and with it every other certificate).
 const ASK_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long the whole ARI probe may take: restoring the stored account (instant-acme fetches the directory again,
+/// with an HTTP client that has no timeout of its own) and then the request above. Without it a CA that accepts the
+/// connection and never answers would block the sequential renewal loop, and every other certificate with it.
+pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// What the CA said about one certificate.
 pub(super) struct Advice {
     /// The identifier of the certificate, to send as `replaces` with the order that renews it (RFC 9773 section 5),

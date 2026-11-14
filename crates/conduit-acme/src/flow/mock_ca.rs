@@ -3,6 +3,7 @@
 //! `newOrder` and which certificate identifiers were asked about, so a test can assert on the wire.
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// What the mock CA does with a renewal-information request.
@@ -29,6 +30,8 @@ pub(super) struct Seen {
 pub(super) struct MockCa {
     pub directory_url: String,
     pub seen: Arc<Mutex<Seen>>,
+    /// While set, a request for the directory is accepted and never answered.
+    pub hang_directory: Arc<AtomicBool>,
 }
 
 fn rfc3339(secs: i64) -> String {
@@ -217,12 +220,14 @@ impl MockCa {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("https://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Seen::default()));
-        let (b, s) = (base.clone(), seen.clone());
+        let hang = Arc::new(AtomicBool::new(false));
+        let (b, s, h) = (base.clone(), seen.clone(), hang.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
                 let (base, ari, seen, config) =
                     (b.clone(), ari.clone(), s.clone(), tls.config.clone());
+                let hang = h.clone();
                 std::thread::spawn(move || {
                     let Ok(conn) = rustls::ServerConnection::new(config) else {
                         return;
@@ -231,6 +236,10 @@ impl MockCa {
                     let Some((method, path, body)) = read_request(&mut stream) else {
                         return;
                     };
+                    if path == "/directory" && hang.load(Ordering::SeqCst) {
+                        std::thread::sleep(std::time::Duration::from_secs(3600));
+                        return;
+                    }
                     let response = answer(&base, &ari, &seen, &method, &path, &body);
                     let _ = stream.write_all(response.as_bytes());
                     stream.conn.send_close_notify();
@@ -241,6 +250,7 @@ impl MockCa {
         MockCa {
             directory_url: format!("{base}/directory"),
             seen,
+            hang_directory: hang,
         }
     }
 }
