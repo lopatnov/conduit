@@ -6,7 +6,6 @@
 
 mod common;
 
-use reqwest::blocking::Client;
 use serial_test::serial;
 
 // ── Null byte path injection ──────────────────────────────────────────────────
@@ -24,7 +23,7 @@ fn static_null_byte_in_path_is_blocked() {
     let srv = static_server(dir.path().to_str().unwrap());
 
     // Request for `secret.php%00.txt` must NOT serve `secret.php`.
-    let resp = reqwest::blocking::get(srv.url("/secret.php%00.txt")).unwrap();
+    let resp = common::get(srv.url("/secret.php%00.txt")).unwrap();
     let status = resp.status().as_u16();
     let body = resp.text().unwrap_or_default();
     assert!(
@@ -58,7 +57,7 @@ fn static_symlink_traversal_blocked() {
     let srv = static_server(root.to_str().unwrap());
 
     // The symlink must NOT be served.
-    let resp = reqwest::blocking::get(srv.url("/link.txt")).unwrap();
+    let resp = common::get(srv.url("/link.txt")).unwrap();
     let status = resp.status().as_u16();
     let body = resp.text().unwrap_or_default();
 
@@ -111,7 +110,7 @@ fn precompressed_symlink_is_not_served() {
         }),
     );
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/index.html"))
         .header("accept-encoding", "gzip")
         .send()
@@ -166,7 +165,7 @@ fn static_dotdot_path_traversal_blocked() {
         "/%2e%2e/secret.txt",
         "/%2e%2e%2fsecret.txt",
     ] {
-        let resp = reqwest::blocking::get(srv.url(traversal)).unwrap();
+        let resp = common::get(srv.url(traversal)).unwrap();
         assert_ne!(
             resp.status().as_u16(),
             200,
@@ -195,7 +194,7 @@ fn static_encoded_traversal_blocked() {
     let srv = static_server(root.to_str().unwrap());
 
     // Double-encoded traversal (should be harmless after single-pass decode).
-    let resp = reqwest::blocking::get(srv.url("/%252e%252e/leaked.txt")).unwrap();
+    let resp = common::get(srv.url("/%252e%252e/leaked.txt")).unwrap();
     let body = resp.text().unwrap_or_default();
     assert!(
         !body.contains("LEAKED"),
@@ -211,7 +210,7 @@ fn static_dotfile_hidden_by_default() {
     std::fs::write(dir.path().join("index.html"), "ok").unwrap();
 
     let srv = static_server(dir.path().to_str().unwrap());
-    let resp = reqwest::blocking::get(srv.url("/.env")).unwrap();
+    let resp = common::get(srv.url("/.env")).unwrap();
     assert_ne!(
         resp.status().as_u16(),
         200,
@@ -258,7 +257,7 @@ fn crlf_in_upstream_header_is_stripped() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    let resp = common::get(srv.url("/")).unwrap();
     // X-Evil header should be present (no CRLF in its name).
     // The key check is that no response header value contains raw \r or \n.
     for (name, value) in resp.headers() {
@@ -299,7 +298,7 @@ fn rate_limiter_bucket_cap_prevents_memory_exhaustion() {
         }),
     );
 
-    let client = Client::new();
+    let client = common::local_client();
 
     // Send a burst of requests with unique X-Tenant-Id values.
     // Each creates a new bucket.  At some point the cap kicks in.
@@ -368,7 +367,7 @@ fn mask_errors_hides_upstream_5xx_body() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    let resp = common::get(srv.url("/")).unwrap();
     assert_eq!(resp.status().as_u16(), 500, "must still return 500");
     let body = resp.text().unwrap_or_default();
     // Internal details must not leak.
@@ -421,7 +420,7 @@ fn mask_errors_false_passes_upstream_body_through() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    let resp = common::get(srv.url("/")).unwrap();
     assert_eq!(resp.status().as_u16(), 503);
     let body = resp.text().unwrap_or_default();
     assert!(
@@ -461,7 +460,7 @@ fn priority_routing_below_threshold_serves_all() {
     );
 
     // Low-priority route must be served when well below the threshold.
-    let resp = reqwest::blocking::get(srv.url("/low/test")).unwrap();
+    let resp = common::get(srv.url("/low/test")).unwrap();
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -497,7 +496,7 @@ fn priority_routing_above_threshold_sheds_low_priority() {
     );
 
     // Low-priority route → 503 Load Shedding.
-    let resp = reqwest::blocking::get(srv.url("/batch/jobs")).unwrap();
+    let resp = common::get(srv.url("/batch/jobs")).unwrap();
     assert_eq!(
         resp.status().as_u16(),
         503,
@@ -601,7 +600,7 @@ fn x_priority_header_from_client_does_not_bypass_load_shedding() {
     );
 
     // Attacker sends X-Priority: 100 to try to bypass shedding on /batch.
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.url("/batch/jobs"))
         .header("x-priority", "100")
         .send()
@@ -636,7 +635,7 @@ fn x_priority_header_stripped_before_upstream() {
         }),
     );
 
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.url("/"))
         .header("x-priority", "90")
         .send()
@@ -684,7 +683,7 @@ fn x_consumer_id_from_client_is_stripped() {
     );
 
     // Attacker sends a forged X-Consumer-ID with their own key.
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.url("/"))
         .header("x-api-key", "alice-key")
         .header("x-consumer-id", "admin-user") // forged!
@@ -732,7 +731,7 @@ fn allowed_hosts_rejects_bad_host() {
     );
 
     // Bad host → 400
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.url("/"))
         .header("host", "evil.com")
         .send()
@@ -768,7 +767,7 @@ fn allowed_hosts_passes_good_host() {
         }),
     );
 
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.url("/"))
         .send() // reqwest sends Host: 127.0.0.1:<port>
         .unwrap();
@@ -803,7 +802,7 @@ fn default_allowed_hosts_rejects_mismatched_host() {
         }),
     );
 
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.url("/"))
         .header("host", "evil.com")
         .send()
@@ -838,7 +837,7 @@ fn default_allowed_hosts_passes_matching_host() {
         }),
     );
 
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.url("/"))
         .header("host", "example.com")
         .send()
@@ -901,7 +900,7 @@ fn max_body_bytes_enforced_without_content_length() {
     // Send a POST with Content-Length that reports 10 bytes but body is 200 bytes.
     // This is the standard bypass — the LimitsGuard sees 10 (< 100) and passes.
     // The actual body enforcement should catch the 200 bytes.
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     // Case 1: over-declared Content-Length is checked at header phase → 413.
     let resp_declared = client
@@ -997,7 +996,7 @@ fn cache_does_not_serve_authorized_responses() {
         }),
     );
 
-    let client = Client::new();
+    let client = common::local_client();
 
     // Request 1: with Authorization — must hit upstream.
     let r1 = client
@@ -1081,7 +1080,7 @@ fn post_requests_are_not_retried_on_5xx() {
         }),
     );
 
-    let client = Client::new();
+    let client = common::local_client();
     let _resp = client.post(srv.url("/")).body("payload").send().unwrap();
     // The proxy may return 500 or 502 depending on how Pingora handles the
     // upstream response; what matters is that the upstream was hit exactly ONCE.
@@ -1145,7 +1144,7 @@ fn get_requests_are_retried_on_5xx() {
         }),
     );
 
-    let resp = Client::new().get(srv.url("/")).send().unwrap();
+    let resp = common::local_client().get(srv.url("/")).send().unwrap();
     // First call returns 500 → retried → second call returns 200.
     assert_eq!(
         resp.status().as_u16(),
@@ -1184,7 +1183,7 @@ fn rate_limit_burst_allows_burst_requests() {
         }),
     );
 
-    let client = Client::new();
+    let client = common::local_client();
     let mut statuses: Vec<u16> = Vec::new();
     for _ in 0..6 {
         let s = client.get(srv.url("/")).send().unwrap().status().as_u16();
@@ -1230,7 +1229,7 @@ fn rate_limit_dry_run_logs_but_allows() {
         }),
     );
 
-    let client = Client::new();
+    let client = common::local_client();
     let mut statuses: Vec<u16> = Vec::new();
     for _ in 0..5 {
         let s = client.get(srv.url("/")).send().unwrap().status().as_u16();
@@ -1268,7 +1267,7 @@ fn rate_limit_dry_run_false_still_enforces() {
         }),
     );
 
-    let client = Client::new();
+    let client = common::local_client();
     let mut statuses: Vec<u16> = Vec::new();
     for _ in 0..5 {
         let s = client.get(srv.url("/")).send().unwrap().status().as_u16();

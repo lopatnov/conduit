@@ -137,6 +137,7 @@ pub fn validate_route_config(
         ));
     }
     warn_slow_start_ignored(cfg, prefix);
+    warn_sticky_has_no_effect(cfg, prefix);
     warn_group_strategy_cannot_see_load(cfg, prefix);
     if let Some(cache) = &cfg.cache {
         validate_cache_config(cache, &format!("{prefix}.cache"), errors);
@@ -155,6 +156,28 @@ pub fn validate_route_config(
                 "dryRun is not supported on a route-level rateLimit (only site and consumer rate limits support it)",
             ));
         }
+    }
+}
+
+/// `sticky` that does nothing (issue #644): on a route with `groups` it is never read (`resolve_grouped`
+/// passes no sticky state, so no cookie is set and none is honoured), and `strict` only refuses a client whose
+/// cookie verifies against an unhealthy upstream, which exists only in `secret` mode. A user who sets either
+/// believes sessions are pinned or refused, so it is said once at start-up and on reload.
+fn warn_sticky_has_no_effect(cfg: &ProxyRouteConfig, prefix: &str) {
+    let Some(sticky) = &cfg.sticky else {
+        return;
+    };
+    if cfg.groups.as_ref().is_some_and(|g| !g.is_empty()) {
+        tracing::warn!(
+            "{prefix}.sticky is ignored on a route with groups: groups pick the group by \
+             groupStrategy and the target by each group's strategy, and set no sticky cookie \
+             (see docs/configuration.md, 'Sticky sessions')"
+        );
+    } else if sticky.strict == Some(true) && sticky.secret.is_none() {
+        tracing::warn!(
+            "{prefix}.sticky.strict has no effect without sticky.secret: only a signed cookie names \
+             an upstream to refuse (see docs/configuration.md, 'Sticky sessions')"
+        );
     }
 }
 
@@ -601,6 +624,12 @@ mod tests {
             strict: None,
         });
         cfg.groups = Some(vec![group("plain", Some(LoadBalanceStrategy::RoundRobin))]);
+        // The only warning is the one that says the leftover `sticky` does nothing (issue #644): the slow-start
+        // check does not judge the route by it.
+        let warnings = warnings_for(&cfg);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("sticky is ignored on a route with groups"));
+        cfg.sticky = None;
         assert!(warnings_for(&cfg).is_empty());
 
         cfg.groups = Some(vec![group(
@@ -614,6 +643,37 @@ mod tests {
             warnings[0].contains("is ignored for group 'pinned'"),
             "{warnings:?}"
         );
+    }
+
+    /// Issue #644: `sticky` on a route with `groups` is never read, and `strict` without `secret` has nothing
+    /// to refuse; each is said once. A working `sticky` says nothing.
+    #[test]
+    fn sticky_that_does_nothing_is_warned_about() {
+        let sticky = |secret: Option<&str>, strict: Option<bool>| StickyConfig {
+            cookie: "sid".to_owned(),
+            secret: secret.map(str::to_owned),
+            strict,
+        };
+        let mut cfg = route(Some(LoadBalanceStrategy::RoundRobin), None);
+        // works: signed, strict or not; unsigned and not strict
+        for ok in [
+            sticky(Some("s3cret-s3cret-s3cret-s3cret-s3cret"), Some(true)),
+            sticky(Some("s3cret-s3cret-s3cret-s3cret-s3cret"), None),
+            sticky(None, None),
+            sticky(None, Some(false)),
+        ] {
+            cfg.sticky = Some(ok);
+            assert!(warnings_for(&cfg).is_empty(), "{:?}", warnings_for(&cfg));
+        }
+        cfg.sticky = Some(sticky(None, Some(true)));
+        let warnings = warnings_for(&cfg);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("sticky.strict has no effect without sticky.secret"));
+        // with groups the whole `sticky` is ignored, and only that is said
+        cfg.groups = Some(vec![group("g", Some(LoadBalanceStrategy::RoundRobin))]);
+        let warnings = warnings_for(&cfg);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("sticky is ignored on a route with groups"));
     }
 
     #[test]

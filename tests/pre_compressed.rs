@@ -64,7 +64,7 @@ fn pre_compressed_br_served_when_accepted() {
         ("index.html.br", BR_HELLO),
     ]);
 
-    let client = reqwest::blocking::Client::builder()
+    let client = common::local_client_builder()
         .no_gzip() // disable reqwest's auto-decompression
         .build()
         .expect("client");
@@ -123,7 +123,7 @@ fn pre_compressed_gz_served_when_br_not_accepted() {
         ("style.css.gz", GZ_HELLO),
     ]);
 
-    let client = reqwest::blocking::Client::builder()
+    let client = common::local_client_builder()
         .no_gzip()
         .build()
         .expect("client");
@@ -168,7 +168,7 @@ fn pre_compressed_falls_back_to_original_when_no_sibling() {
         // No data.txt.br or data.txt.gz
     ]);
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(srv.url("/data.txt"))
         .header("accept-encoding", "br, gzip")
@@ -209,7 +209,7 @@ fn pre_compressed_not_used_when_disabled() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(srv.url("/page.html"))
         .header("accept-encoding", "gzip")
@@ -239,7 +239,7 @@ fn pre_compressed_br_preferred_over_gz() {
         ("app.js.gz", GZ_HELLO),
     ]);
 
-    let client = reqwest::blocking::Client::builder()
+    let client = common::local_client_builder()
         .no_gzip()
         .build()
         .expect("client");
@@ -277,7 +277,7 @@ fn pre_compressed_falls_back_to_gz_when_no_br() {
         ("bundle.js.gz", GZ_HELLO),
     ]);
 
-    let client = reqwest::blocking::Client::builder()
+    let client = common::local_client_builder()
         .no_gzip()
         .build()
         .expect("client");
@@ -308,7 +308,7 @@ fn pre_compressed_head_returns_headers_only() {
     let (srv, _dir) =
         make_server_with_precompressed(&[("file.css", b"body{}"), ("file.css.br", BR_HELLO)]);
 
-    let client = reqwest::blocking::Client::builder()
+    let client = common::local_client_builder()
         .no_gzip()
         .build()
         .expect("client");

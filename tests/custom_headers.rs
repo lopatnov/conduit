@@ -29,7 +29,7 @@ fn srv_with_headers(headers: serde_json::Value) -> (common::TestServer, tempfile
 #[serial]
 fn custom_header_present_on_static_response() {
     let (srv, _dir) = srv_with_headers(serde_json::json!({ "X-Powered-By": "Conduit" }));
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(
         resp.headers()
@@ -49,7 +49,7 @@ fn multiple_custom_headers_all_present() {
         "Cache-Control": "no-store"
     }));
 
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
 
     assert_eq!(
@@ -78,7 +78,7 @@ fn multiple_custom_headers_all_present() {
 #[serial]
 fn custom_header_present_on_health_response() {
     let (srv, _dir) = srv_with_headers(serde_json::json!({ "X-Node": "node-1" }));
-    let resp = reqwest::blocking::get(srv.url("/__health__")).expect("GET");
+    let resp = common::get(srv.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(
         resp.headers().get("x-node").and_then(|v| v.to_str().ok()),
@@ -93,7 +93,7 @@ fn custom_header_present_on_health_response() {
 #[serial]
 fn custom_header_present_on_404_fallback() {
     let (srv, _dir) = srv_with_headers(serde_json::json!({ "X-Served-By": "conduit" }));
-    let resp = reqwest::blocking::get(srv.url("/no-such-file")).expect("GET");
+    let resp = common::get(srv.url("/no-such-file")).expect("GET");
     // 404 from the fallback handler
     assert_eq!(resp.status(), 404);
     assert_eq!(

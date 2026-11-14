@@ -580,6 +580,9 @@ build:    cargo install lopatnov-conduit --no-default-features --features proxy
 bundle:   `--features gateway` also covers this configuration
 ```
 
+The exit status is 0 when the binary has everything the config needs, 1 when it lacks a feature and 2 when the
+config cannot be loaded.
+
 ### Optional features
 
 | Feature           | What it enables                                                            |

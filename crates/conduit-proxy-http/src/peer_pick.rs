@@ -74,7 +74,7 @@ pub(crate) fn build_pool(
 /// `ProxyReqState`/sticky-cookie steps need to know about how it was chosen.
 pub(crate) struct PeerOutcome {
     pub(crate) chosen_url: String,
-    pub(crate) is_least_conn: bool,
+    pub(crate) holds_slot: bool,
     /// The exact peer this session's sticky cookie is pinned to, when the
     /// cookie was HMAC-verified against one (#220). `None` in legacy
     /// no-secret mode or when there's no sticky cookie at all.
@@ -161,9 +161,9 @@ pub(crate) fn pick_peer_with_retry(
     // moment `retry` was configured. `routes.rs` already had this shape
     // (pick, then anchor the retry list to what was picked, #367); this
     // brings `router.rs` in line with it.
-    let (chosen_url, is_least_conn) = if let Some(pin) = honored_pin {
+    let (chosen_url, holds_slot) = if let Some(pin) = honored_pin {
         // Honoring the pin *is* the routing decision — no strategy dispatch,
-        // no hashing. is_least_conn = false: nothing incremented conn_count
+        // no hashing. holds_slot = false: nothing incremented conn_count
         // for us, so the `circuit_tracking` block below owns that slot.
         (pin.to_string(), false)
     } else {
@@ -214,16 +214,16 @@ pub(crate) fn pick_peer_with_retry(
             opts.max_conns_per_upstream,
             // Mirrors `upstream_conn_slot`'s own formula below. The old
             // retry branch hardcoded this to `max_conns.is_some()`, which
-            // was only correct while that branch forced is_least_conn=false;
+            // was only correct while that branch forced holds_slot=false;
             // now that retries go through real strategy dispatch, least-conn
             // routes genuinely do track a slot per attempt.
-            is_least_conn || opts.max_conns_per_upstream.is_some(),
+            holds_slot || opts.max_conns_per_upstream.is_some(),
         )
     });
 
     Ok(PeerOutcome {
         chosen_url,
-        is_least_conn,
+        holds_slot,
         pinned: pinned.map(str::to_owned),
         honored_pin: honored_pin.is_some(),
         fail_open: pool.fail_open,

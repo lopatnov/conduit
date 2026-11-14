@@ -106,7 +106,7 @@ pub struct RetryState {
     /// TOCTOU discipline established by PR #92.
     pub max_conns_per_upstream: Option<u64>,
     /// `true` when this route acquires a real `conn_count` slot per retry
-    /// attempt (#216 part 2): `is_least_conn || circuit_tracking` at
+    /// attempt (#216 part 2): `holds_slot || circuit_tracking` at
     /// routing time, mirroring the same condition that decided
     /// `RouteResolution.upstream_conn_slot` for the first attempt.
     ///

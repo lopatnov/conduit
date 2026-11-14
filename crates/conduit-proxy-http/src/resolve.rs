@@ -114,7 +114,7 @@ pub(crate) fn resolve_target(
         &peer.chosen_url,
         strip,
         &opts,
-        peer.is_least_conn,
+        peer.holds_slot,
         ctx.upstream_health,
     ) else {
         return ProxyResolution::unresolved(ProxyReqState::default());
@@ -122,7 +122,7 @@ pub(crate) fn resolve_target(
 
     let (proxy_upstream_url, upstream_conn_slot) = track_conn_slot(
         opts.max_conns_per_upstream,
-        peer.is_least_conn,
+        peer.holds_slot,
         &peer.chosen_url,
         ctx.upstream_health,
     );
@@ -166,11 +166,11 @@ pub(crate) fn resolve_target(
 /// by logging() via proxy_upstream_url, gated on upstream_conn_slot.
 fn track_conn_slot(
     max_conns_per_upstream: Option<u64>,
-    is_least_conn: bool,
+    holds_slot: bool,
     chosen_url: &str,
     upstream_health: &UpstreamRegistry,
 ) -> (Option<String>, bool) {
-    let circuit_tracking = max_conns_per_upstream.is_some() && !is_least_conn;
+    let circuit_tracking = max_conns_per_upstream.is_some() && !holds_slot;
     if circuit_tracking {
         upstream_health.conn_inc(chosen_url);
     }
@@ -178,7 +178,7 @@ fn track_conn_slot(
     // attribution works for every strategy; upstream_conn_slot separately
     // tracks whether this request actually holds a conn_count slot to release.
     let proxy_upstream_url = Some(chosen_url.to_owned());
-    let upstream_conn_slot = is_least_conn || circuit_tracking;
+    let upstream_conn_slot = holds_slot || circuit_tracking;
     (proxy_upstream_url, upstream_conn_slot)
 }
 
@@ -279,7 +279,7 @@ fn resolve_backup(
     tracing::info!(backup = %backup, "all primary upstreams unhealthy — routing to backup");
     // The backup carries the route's own settings (#417): timeouts, pool, HTTP/2, cache,
     // WebSocket permission, passive-health thresholds and strip/rewrite/mirror/upstream TLS.
-    // No conn_count slot is taken (`is_least_conn = false`, `upstream_conn_slot = false`);
+    // No conn_count slot is taken (`holds_slot = false`, `upstream_conn_slot = false`);
     // `proxy_upstream_url` is set so passive-health attribution (#155) covers backup traffic.
     // Retry and sticky pinning stay off: the backup is a single fixed peer.
     let strip = opts.strip_value(route_key);
@@ -309,11 +309,11 @@ fn build_proxy_upstream(
     chosen_url: &str,
     strip: Option<String>,
     opts: &RouteOptions<'_>,
-    is_least_conn: bool,
+    holds_slot: bool,
     upstream_health: &UpstreamRegistry,
 ) -> Option<ProxyUpstream> {
     let Some(base) = outcome::url_to_proxy_upstream(chosen_url, strip) else {
-        if is_least_conn {
+        if holds_slot {
             upstream_health.conn_dec(chosen_url);
         }
         return None;

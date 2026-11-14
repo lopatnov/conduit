@@ -12,14 +12,14 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 | #712 | npm: the package of 2.3.0 was refused by the registry (413, 208.7 MB): the binaries leave the package, the launcher downloads them | the release of 2.3.0 (owner) | done in this PR (2.3.1): the package is ~12 kB, the binary is fetched at install and at the first run, with source and destination shown |
 | #711 | CI: the tests of the npm package (`npm/test`) are not run by any job | the same investigation | done in this PR: the job `npm-package` (Node 18 and 24) runs them |
 | #710 | CI: SonarCloud analysis fails on every fork and Dependabot PR (no `SONAR_TOKEN`) | the merge of #703 (Gitar) | done in PR #703 (owner: "хорошая идея"): the job checks for the token and skips the scan with a notice |
-| #709 | tests: the integration-test harness honours `HTTP_PROXY`/`HTTPS_PROXY`, so every test fails behind a proxy | CodeRabbit on #703 | partly done in PR #703: the readiness probes and `reload` use `common::local_client()` (no proxy); open: the ~240 call sites of other test files and a note in the test instructions (asked to the owner) |
+| #709 | tests: the integration-test harness honours `HTTP_PROXY`/`HTTPS_PROXY`, so every test fails behind a proxy | CodeRabbit on #703 | done in the fast-follow PR (2026-11-14): `common::get`/`local_client`/`local_client_builder` replace the ~270 proxy-reading calls in `tests/*.rs`; a note in the testing skill |
 | #704 | h2 integration tests are absent, but should be | owner, 2026-11-12 | done in PR #703: `tests/h2_authority.rs` and the Docker end-to-end harness `scripts/e2e/` |
 | #700 | upload: the 5 GiB request ceiling is hard-coded, undocumented and silently caps a larger per-site limit | owner's question during #696 | done in PR #699 |
 | #696 | 32-bit targets (i686 Linux/Windows, ARMv6/ARMv7) and the Android targets: probe builds, then ship what builds | owner's question on rustc and targets, 2026-11-11 | done in PR #699: the four 32-bit Linux targets and Windows ARM64 ship; i686 Windows waits for Pingora (#701, cloudflare/pingora#1119 and cloudflare/pingora#1120); Android is not supported by Pingora |
 | #702 | upload: removing the files of a refused request unlinks large files on an async worker (`SavedFiles::drop`) | security review of #699 (LOW) | done in PR #699 (owner: "Конечно"): the error path awaits `discard()` on the blocking pool, the `Drop` of a cancelled request hands the paths to it |
 | #706 | proxy: a top-level `targets` key is a route named "targets"; three examples were written that way and validate said nothing | the smoke test of #699 (2026-11-13) | done in PR #699: `validate` warns, the examples and the recipe fixed, `check_doc_configs.py` fails on the warning |
-| #708 | CI and docs: Docker 29.4.2's default seccomp profile refuses `socket()` to 32-bit x86 processes (ubuntu-latest is now 26.04; fixed in Docker 29.4.3) | the CI of #699 (2026-11-13) | partly done in PR #699: the two jobs are pinned to `ubuntu-24.04` with timeouts, the user note is in the docs; open: unpin when the runner has Docker 29.4.3 or later (GitHub's to update), and `timeout-minutes` for the other jobs (asked to the owner) |
-| #707 | upload: `SavedFiles::drop` can abort the process if the OS cannot start a blocking thread during a panic | security review of #699 (LOW) | open: the owner decided (2026-11-13) it is a separate PR |
+| #708 | CI and docs: Docker 29.4.2's default seccomp profile refuses `socket()` to 32-bit x86 processes (ubuntu-latest is now 26.04; fixed in Docker 29.4.3) | the CI of #699 (2026-11-13) | partly done: pinned to `ubuntu-24.04` in #699; `timeout-minutes` on every job of ci.yml in the fast-follow PR; open: unpin when the runner has Docker 29.4.3 or later (GitHub's to update) |
+| #707 | upload: `SavedFiles::drop` can abort the process if the OS cannot start a blocking thread during a panic | security review of #699 (LOW) | done in the fast-follow PR (2026-11-14): the refused `spawn_blocking` is caught and the files are removed inline |
 | #701 | release: add i686-pc-windows-msvc once a Pingora release compiles on 32-bit Windows | #696 | open, waits for Pingora |
 | #697 | ledger-check hardening: Windows cwd lookup of `gh`, no subprocess timeout, `RecursionError`, glued `PR#N` | security review of #686 | done in PR #699 |
 | #677 | flaky server start in the integration tests | full test run for #678 | harness improved in PR #683 (stderr kept, one retry); open until the cause is named |
@@ -27,15 +27,15 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 | #673 | RISC-V release build is not run under QEMU in CI | 2.2.1 | open |
 | #671 | Windows ARM64 release | 2.2.0 | open, waits for a green windows-11-arm job |
 | #670 | systemd unit: more hardening directives | .deb | open |
-| #663 | Rhai guide test reads fences by the CommonMark rule | #662 | open |
-| #661 | wasm/rhai: one file reader, compile once per reload | #566 | open |
+| #663 | Rhai guide test reads fences by the CommonMark rule | #662 | open: needs a decision (a shared helper for two crates cannot be a shared test file without breaking standalone packaging; options: a dev-dependency crate or a copy) |
+| #661 | wasm/rhai: one file reader, compile once per reload | #566 | Rhai half done in the fast-follow PR (bounded reader); open: compile a WASM module once per reload (needs a measurement) and the FIFO swap between check and open |
 | #659 | build the C, Go and Zig samples of the WASM guide in CI | #565 | open |
-| #658 | flaky dns::resolve_socket_addr_hostname_respects_timeout | a docs PR | open |
+| #658 | flaky dns::resolve_socket_addr_hostname_respects_timeout | a docs PR | done in the fast-follow PR (2026-11-14): the test uses a resolver that never answers |
 | #684 | libyaml folds leading/trailing blanks on the first line of a block scalar or a continuation line of a multi-line quoted scalar: `interpolate_yaml` does not guard it | security review of #683 | open |
 | #633 | split the production files over 400 code lines: `wasm.rs` (614), `filter.rs` (520), and since #683 `conduit-config-core/src/env.rs` (415, to go with #684) | code-length reports | open |
 | #619 | Windows #600 follow-ups: placeholders, ReFS, symlink-converted dirs (needs those environments) | #600 | open, waits for the environments |
 | #643 | groups: a dead group is not failed over; backup, retry and mirror not applied to a grouped route | balancer work (#631) | open (predates the ledger) |
-| #644 | sticky: ignored on routes with groups without a warning; cookie has no Secure/Max-Age | balancer work (#631) | open (predates the ledger) |
+| #644 | sticky: ignored on routes with groups without a warning; cookie has no Secure/Max-Age | balancer work (#631) | sticky warnings done in the fast-follow PR (groups, strict without secret); open: `Secure`/`Max-Age` of the cookie, a distinct reason for the strict refusal (wire-visible change) |
 | #645 | disk-cache is a marker feature: it gates no code | balancer work (#631) | open (predates the ledger) |
 | #647 | perf: four upstreams give 10-20% less throughput than one, for every strategy | balancer work (#631) | open (predates the ledger) |
 | #651 | half-open: the probe offer should be claimed by the pick that selects the upstream | balancer work (#631) | open (predates the ledger) |

@@ -34,7 +34,7 @@ struct HashCtx<'a> {
 
 /// Pick a URL and optional retry state according to the configured strategy.
 ///
-/// Returns `(url, retry_state, is_least_conn)`.  `is_least_conn` is `true`
+/// Returns `(url, retry_state, holds_slot)`.  `holds_slot` is `true`
 /// when the inflight counter on `upstream_health` has already been incremented
 /// so the caller knows to store the URL for later decrement.
 ///
@@ -66,7 +66,7 @@ fn pick_url_by_strategy(
     let s = conduit_upstream::strategy::from_config(
         strategy.unwrap_or(&LoadBalanceStrategy::RoundRobin),
     );
-    let (url, is_least_conn) = s.pick(
+    let (url, holds_slot) = s.pick(
         urls,
         hash_ctx.weighted,
         route_key,
@@ -74,7 +74,7 @@ fn pick_url_by_strategy(
         counters,
         upstream_health,
     )?;
-    Some((url, None, is_least_conn))
+    Some((url, None, holds_slot))
 }
 
 /// Two-level load balancing: pick a group via `group_strategy`, then pick a
@@ -202,7 +202,7 @@ pub(crate) fn resolve_grouped(
         health: ctx.upstream_health,
         ramp: &ramp,
     };
-    let Some((chosen_url, is_least_conn)) = capacity::pick_bounded(&inner_input) else {
+    let Some((chosen_url, holds_slot)) = capacity::pick_bounded(&inner_input) else {
         return ProxyResolution::unresolved(ProxyReqState::default());
     };
     let retry_state: Option<RetryState> = None; // groups don't support retry in V1
@@ -219,7 +219,7 @@ pub(crate) fn resolve_grouped(
             ..base
         },
         None => {
-            if is_least_conn {
+            if holds_slot {
                 ctx.upstream_health.conn_dec(&chosen_url);
             }
             return ProxyResolution::unresolved(ProxyReqState::default());
@@ -230,7 +230,7 @@ pub(crate) fn resolve_grouped(
     // only acquired when least-conn didn't already track it but a cap is
     // configured, so the capacity check above stays fed for every strategy.
     // Placed after the successful parse — see the ordering note above.
-    let circuit_tracking = opts.max_conns_per_upstream.is_some() && !is_least_conn;
+    let circuit_tracking = opts.max_conns_per_upstream.is_some() && !holds_slot;
     if circuit_tracking {
         ctx.upstream_health.conn_inc(&chosen_url);
     }
@@ -248,7 +248,7 @@ pub(crate) fn resolve_grouped(
             proxy_http2: opts.http2,
             proxy_upstream_url,
             meters_traffic: matches!(group.strategy, Some(LoadBalanceStrategy::LeastBandwidth)),
-            upstream_conn_slot: is_least_conn || circuit_tracking,
+            upstream_conn_slot: holds_slot || circuit_tracking,
             proxy_cache_cfg: opts.cache.cloned(),
             passive_unhealthy_status: Vec::new(), // groups don't have per-route healthCheck
             passive_unhealthy_latency_ms: None,
@@ -317,7 +317,7 @@ mod tests {
         )
         .unwrap();
         assert!(urls.contains(&url));
-        assert!(is_lc, "least-conn must set the is_least_conn flag");
+        assert!(is_lc, "least-conn must set the holds_slot flag");
         assert_eq!(
             reg.conn_load(&url),
             1,

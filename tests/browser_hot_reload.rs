@@ -69,7 +69,7 @@ fn hot_reload_client_js_served() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/__hot-reload__/client.js")).expect("GET client.js");
+    let resp = common::get(srv.url("/__hot-reload__/client.js")).expect("GET client.js");
     assert_eq!(resp.status().as_u16(), 200);
     let ct = resp
         .headers()
@@ -108,8 +108,8 @@ fn hot_reload_client_js_not_served_when_disabled() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/__hot-reload__/client.js"))
-        .expect("GET client.js without hotReload");
+    let resp =
+        common::get(srv.url("/__hot-reload__/client.js")).expect("GET client.js without hotReload");
     // Without hotReload the path is not recognized as a special endpoint — falls
     // through to fallback (404).
     assert_eq!(
@@ -185,7 +185,7 @@ fn hot_reload_sse_not_served_when_disabled() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/__hot-reload__")).expect("GET SSE");
+    let resp = common::get(srv.url("/__hot-reload__")).expect("GET SSE");
     assert_eq!(
         resp.status().as_u16(),
         404,

@@ -353,32 +353,31 @@ mod tests {
         assert_eq!(addr, "127.0.0.1:4000".parse().unwrap());
     }
 
-    #[tokio::test(start_paused = true)]
+    /// A resolver that never answers: a stalled DNS server.
+    struct StalledResolver;
+
+    #[async_trait]
+    impl HostResolver for StalledResolver {
+        async fn lookup(&self, _addr_str: &str) -> std::io::Result<Vec<SocketAddr>> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
     async fn resolve_socket_addr_hostname_respects_timeout() {
-        // CodeRabbit finding on PR #227: without a bound, a stalled resolver
-        // could hold the request open indefinitely. Racing a zero-duration
-        // timeout against a *real* DNS lookup would be flaky — `localhost`
-        // often resolves fast enough to win that race on some hosts (this
-        // was caught locally: the first version of this test used a real
-        // clock and failed non-deterministically). Using a paused virtual
-        // clock instead makes this deterministic: `tokio::net::lookup_host`
-        // runs on Tokio's blocking-thread pool, so it always returns
-        // `Poll::Pending` on its first poll — it cannot complete
-        // synchronously within that same poll. The zero-duration deadline
-        // has therefore already elapsed on the paused clock by the time
-        // `Timeout` checks it, so the timeout branch always wins.
-        //
-        // Uses a port no other hostname-resolving test in this file uses
-        // (#232's DNS_CACHE is a process-global static): if this shared
-        // "localhost:4000" key were already cached by
-        // `resolve_socket_addr_resolves_localhost_hostname` racing on
-        // another thread, this call would hit the cache and return `Ok`
-        // instead of exercising the timeout path at all.
-        let result = resolve_socket_addr("localhost:4001", Some(Duration::ZERO)).await;
-        assert!(
-            result.is_err(),
-            "a hostname lookup must respect an expired timeout, not block indefinitely"
-        );
+        // CodeRabbit finding on PR #227: without a bound, a stalled resolver could hold the request open
+        // indefinitely. The resolver here never answers, so the timeout is the only way out and the test does
+        // not depend on the OS resolver, the clock or the scheduler (issue #658: the first version raced a
+        // zero timeout against a real `localhost` lookup, and failed twice in CI). The key is used by no other
+        // test, so `DNS_CACHE` (a process-global static, #232) cannot answer it.
+        let err = resolve_socket_addr_with(
+            &StalledResolver,
+            "stalled.invalid:4001",
+            Some(Duration::from_millis(10)),
+        )
+        .await
+        .expect_err("a stalled lookup must time out, not block indefinitely");
+        assert_eq!(err.etype(), &pingora_core::ErrorType::ConnectTimedout);
     }
 
     // ── DNS resolution cache (#232) ──────────────────────────────────────────

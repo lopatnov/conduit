@@ -689,6 +689,18 @@ mod tests {
     }
 
     #[test]
+    fn a_url_listed_twice_gets_no_larger_share() {
+        // Under the old modulo pick a duplicate entry acted as a weight; rendezvous scores a URL once
+        // (issue #562). Use a weighted strategy for weights.
+        let single = peers(3);
+        let mut doubled = single.clone();
+        doubled.push(single[0].clone());
+        for key in 0..2000u64 {
+            assert_eq!(pick_by_hash(&single, key), pick_by_hash(&doubled, key));
+        }
+    }
+
+    #[test]
     fn hash_ignores_the_order_of_the_list() {
         let urls = peers(5);
         let mut reversed = urls.clone();

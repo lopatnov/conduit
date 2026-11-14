@@ -14,7 +14,7 @@ use serde_json::json;
 // ── helpers ────────────────────────────────────────
 
 fn plain_client() -> Client {
-    Client::new()
+    common::local_client()
 }
 
 /// Build the value of an `Authorization: Basic …` header.

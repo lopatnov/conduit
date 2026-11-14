@@ -17,7 +17,7 @@ use crate::state::RetryState;
 /// one request against the same config snapshot that produced `urls`,
 /// rather than re-reading config from inside `upstream_peer`. This branch
 /// always bypasses `pick_bounded`/strategy dispatch entirely (see this
-/// function's caller), so `is_least_conn` is never true here -- retries on
+/// function's caller), so `holds_slot` is never true here -- retries on
 /// this path track a `conn_count` slot per attempt exactly when a cap is
 /// configured, mirroring `circuit_tracking`'s own condition for the first
 /// attempt a few lines below this function's call site.

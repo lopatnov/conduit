@@ -46,7 +46,7 @@ fn script_allow_all_passes_request_through() {
     let cfg = make_config(port, admin_port, script_path.to_str().unwrap());
 
     let server = common::TestServer::start_with_config(port, admin_port, cfg);
-    let resp = reqwest::blocking::get(server.url("/__health__")).unwrap();
+    let resp = common::get(server.url("/__health__")).unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -64,7 +64,7 @@ fn script_deny_all_aborts_with_default_200() {
     let cfg = make_config(port, admin_port, script_path.to_str().unwrap());
 
     let server = common::TestServer::start_with_config(port, admin_port, cfg);
-    let resp = reqwest::blocking::get(server.url("/anything")).unwrap();
+    let resp = common::get(server.url("/anything")).unwrap();
     // Script returned false with default status 200.
     assert_eq!(resp.status(), 200);
 }
@@ -83,7 +83,7 @@ fn script_abort_with_custom_status() {
     let cfg = make_config(port, admin_port, script_path.to_str().unwrap());
 
     let server = common::TestServer::start_with_config(port, admin_port, cfg);
-    let resp = reqwest::blocking::get(server.url("/anything")).unwrap();
+    let resp = common::get(server.url("/anything")).unwrap();
     assert_eq!(resp.status(), 403);
 }
 
@@ -105,7 +105,7 @@ fn script_abort_with_response_header() {
     let cfg = make_config(port, admin_port, script_path.to_str().unwrap());
 
     let server = common::TestServer::start_with_config(port, admin_port, cfg);
-    let resp = reqwest::blocking::get(server.url("/api")).unwrap();
+    let resp = common::get(server.url("/api")).unwrap();
     assert_eq!(resp.status(), 401);
     assert_eq!(
         resp.headers()
@@ -143,13 +143,13 @@ fn script_conditional_on_request_header() {
 
     // Without header → script aborts → 401.
     // Use /api (not /__health__, which bypasses scripts by design).
-    let no_auth = reqwest::blocking::get(server.url("/api")).unwrap();
+    let no_auth = common::get(server.url("/api")).unwrap();
     assert_eq!(no_auth.status(), 401);
 
     // With header → script passes → falls through to the default 404 fallback
     // (no static/proxy configured, but the important thing is the script
     // did not abort with 401).
-    let with_auth = reqwest::blocking::Client::new()
+    let with_auth = common::local_client()
         .get(server.url("/api"))
         .header("Authorization", "Bearer secret")
         .send()
@@ -175,7 +175,7 @@ fn broken_script_is_fail_open() {
 
     let server = common::TestServer::start_with_config(port, admin_port, cfg);
     // Script fails to compile → fail-open → request passes through.
-    let resp = reqwest::blocking::get(server.url("/__health__")).unwrap();
+    let resp = common::get(server.url("/__health__")).unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -258,7 +258,7 @@ fn demo_rhai_api_gate_missing_key_returns_401() {
     let cfg = api_gate_config(port, admin_port, echo_port, &script, "secret");
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
 
-    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    let resp = common::get(srv.url("/")).unwrap();
     assert_eq!(resp.status().as_u16(), 401, "missing key must return 401");
     let body: serde_json::Value = resp.json().unwrap_or_default();
     assert_eq!(body["status"], 401);
@@ -280,7 +280,7 @@ fn demo_rhai_api_gate_wrong_key_returns_403() {
     let cfg = api_gate_config(port, admin_port, echo_port, &script, "correct-key");
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/"))
         .header("x-api-key", "wrong-key")
         .send()
@@ -305,7 +305,7 @@ fn demo_rhai_api_gate_correct_key_reaches_upstream() {
     let cfg = api_gate_config(port, admin_port, echo_port, &script, "correct-key");
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/"))
         .header("x-api-key", "correct-key")
         .send()
@@ -356,7 +356,7 @@ fn demo_rhai_response_enricher_adds_served_by() {
         }]
     });
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
-    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    let resp = common::get(srv.url("/")).unwrap();
     assert_eq!(resp.status().as_u16(), 200);
     assert_eq!(
         resp.headers()
@@ -398,10 +398,7 @@ fn demo_wasm_header_injector_injects_x_wasm_plugin() {
         }]
     });
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
-    let resp = reqwest::blocking::Client::new()
-        .get(srv.url("/"))
-        .send()
-        .unwrap();
+    let resp = common::local_client().get(srv.url("/")).send().unwrap();
     // The upstream echo returns the headers it received.
     // We check that X-Wasm-Plugin arrived at the echo server.
     let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
@@ -459,10 +456,7 @@ fn wasm_entry_sees_headers_set_by_an_earlier_entry() {
         }]
     });
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
-    let resp = reqwest::blocking::Client::new()
-        .get(srv.url("/"))
-        .send()
-        .unwrap();
+    let resp = common::local_client().get(srv.url("/")).send().unwrap();
     let body: serde_json::Value = resp.json().unwrap_or(serde_json::Value::Null);
     let headers = body
         .get("headers")
@@ -506,7 +500,7 @@ fn demo_wasm_response_tagger_adds_processed_by() {
         }]
     });
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
-    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    let resp = common::get(srv.url("/")).unwrap();
     assert_eq!(
         resp.headers()
             .get("x-processed-by")
@@ -545,7 +539,7 @@ fn wasm_on_response_replaces_the_body() {
         }]
     });
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
-    let resp = reqwest::blocking::get(srv.url("/")).unwrap();
+    let resp = common::get(srv.url("/")).unwrap();
     assert_eq!(resp.status(), 200);
     assert!(resp
         .headers()
@@ -612,7 +606,7 @@ fn wasm_on_response_body_is_skipped_when_the_response_has_no_body() {
     });
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
 
-    let resp = reqwest::blocking::get(srv.url("/204")).unwrap();
+    let resp = common::get(srv.url("/204")).unwrap();
     assert_eq!(resp.status(), 204);
     assert!(
         resp.headers().get("content-length").is_none(),
@@ -620,7 +614,7 @@ fn wasm_on_response_body_is_skipped_when_the_response_has_no_body() {
     );
     assert_eq!(resp.text().unwrap(), "");
 
-    let resp = reqwest::blocking::get(srv.url("/empty")).unwrap();
+    let resp = common::get(srv.url("/empty")).unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(
         resp.headers()
@@ -670,7 +664,7 @@ fn wasm_on_response_replacement_drops_stale_headers_and_uses_the_upstream_length
     });
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
 
-    let resp = reqwest::blocking::get(srv.url("/validators")).unwrap();
+    let resp = common::get(srv.url("/validators")).unwrap();
     assert_eq!(resp.status(), 200);
     for gone in [
         "etag",
@@ -690,7 +684,7 @@ fn wasm_on_response_replacement_drops_stale_headers_and_uses_the_upstream_length
 
     // The upstream said "no body"; removing its Content-Length later must not turn that into a
     // replaceable response.
-    let resp = reqwest::blocking::get(srv.url("/empty")).unwrap();
+    let resp = common::get(srv.url("/empty")).unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "");
 }
@@ -722,7 +716,7 @@ fn rhai_infinite_loop_aborts_gracefully() {
     // Health endpoint bypasses middleware — verify the server is still alive.
     // The actual gauge of the fix is that the server responds within a normal
     // timeout rather than hanging.
-    let client = reqwest::blocking::Client::builder()
+    let client = common::local_client_builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap();
@@ -771,7 +765,7 @@ true
     let srv = common::TestServer::start_with_config(port, admin_port, cfg);
 
     // Script will fail with a string-too-large error → fail-open → 200 from upstream.
-    let resp = reqwest::blocking::Client::builder()
+    let resp = common::local_client_builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap()

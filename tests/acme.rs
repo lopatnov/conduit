@@ -82,7 +82,7 @@ fn acme_obtains_certificate_and_serves_https() {
     // Wait up to 60 seconds for the HTTPS server to become ready (ACME
     // negotiation can take a few seconds).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    let client = reqwest::blocking::Client::builder()
+    let client = common::local_client_builder()
         .danger_accept_invalid_certs(true)
         .build()
         .expect("http client");
@@ -144,8 +144,8 @@ fn acme_challenge_endpoint_is_accessible() {
     );
 
     // The challenge store is empty — expect 404 but NOT 401/403/5xx.
-    let resp = reqwest::blocking::get(srv.url("/.well-known/acme-challenge/test-token"))
-        .expect("GET challenge");
+    let resp =
+        common::get(srv.url("/.well-known/acme-challenge/test-token")).expect("GET challenge");
     assert_eq!(
         resp.status().as_u16(),
         404,

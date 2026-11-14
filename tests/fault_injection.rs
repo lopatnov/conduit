@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use reqwest::blocking::Client;
 
 fn plain_client() -> Client {
-    Client::new()
+    common::local_client()
 }
 
 // ── Abort tests ───────────────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ fn fault_delay_100pct_adds_latency() {
     let srv = server_with_delay(100.0, 200);
 
     let start = Instant::now();
-    let _resp = Client::builder()
+    let _resp = common::local_client_builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap()
@@ -133,7 +133,7 @@ fn fault_delay_zero_pct_no_latency() {
     let srv = server_with_delay(0.0, 5000);
 
     let start = Instant::now();
-    let _resp = Client::builder()
+    let _resp = common::local_client_builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap()

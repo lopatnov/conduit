@@ -512,6 +512,7 @@ if upstream.header("Access-Control-Allow-Origin") == "" {
 | Max operations per script execution | 500,000 |
 | Max string size | 1 MiB (1,048,576 bytes) |
 | Max array / map size | 65,536 elements |
+| Script file | a regular file of at most 1 MiB, UTF-8 (anything else is reported by `conduit validate` and not read) |
 
 A script that exceeds any limit terminates with a runtime error and fails open
 (request passes through). Loops in middleware scripts should be short or bounded.

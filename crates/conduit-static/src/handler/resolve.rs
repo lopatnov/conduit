@@ -154,6 +154,17 @@ pub(super) async fn find_file<'a>(
         return None;
     }
     for root in roots {
+        // An empty `rel` is the root itself, and the roots are tried in order. The generic lookup below cannot
+        // take it: on Windows `symlink_metadata("root/")` of a root that is a symlink or junction
+        // (`current -> releases/42`, a deployment the docs support) reports the link and not the directory, so
+        // `stat_no_symlink` refuses it. The root is the operator's choice, so its index is looked up directly
+        // (issue #595: this is reachable, as it was not on Unix).
+        if rel.is_empty() {
+            if let Some(p) = find_index(root, options).await {
+                return Some((root, p));
+            }
+            continue;
+        }
         if !parent_dirs_are_not_symlinks(root, rel).await {
             continue;
         }
@@ -166,13 +177,6 @@ pub(super) async fn find_file<'a>(
                 }
             }
             _ => {}
-        }
-    }
-    if rel.is_empty() {
-        for root in roots {
-            if let Some(p) = find_index(root, options).await {
-                return Some((root, p));
-            }
         }
     }
     None
@@ -449,6 +453,28 @@ mod tests {
         assert!(find_file(&roots, "missing", &opts).await.is_none());
     }
 
+    /// Issue #591: a FIFO in place of a file (swapped in after `find_file` looked, or just there) is a miss, and the
+    /// open does not wait for a writer.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_served_treats_a_fifo_as_a_miss_without_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        // `mkfifo(1)`: `rustix::fs::mknodat` does not exist on macOS.
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let served = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            open_served(dir.path(), &fifo),
+        )
+        .await
+        .expect("opening a FIFO must not block");
+        assert!(served.unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn resolve_pre_compressed_returns_size_when_sibling_exists() {
         let dir = tempfile::tempdir().unwrap();
@@ -573,6 +599,44 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// Issue #595: a root that is itself a link (the operator's choice, `current -> releases/42`) still serves its
+    /// index for an empty path. On Windows only the direct lookup of the root finds it (`symlink_metadata` of
+    /// `root/` reports the link there); a junction needs no privilege.
+    #[tokio::test]
+    async fn find_file_serves_the_index_of_a_root_that_is_a_link() {
+        let base = tempfile::tempdir().unwrap();
+        let real = base.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("index.html"), "x").unwrap();
+        let link = base.path().join("current");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&real)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J failed: {out:?}");
+        }
+        let roots = [link.clone()];
+        let (root, path) = find_file(&roots, "", &StaticOptions::default())
+            .await
+            .expect("the index of a linked root");
+        assert_eq!((root, path), (link.as_path(), link.join("index.html")));
+        // The roots are tried in order: a linked root ahead of a plain one that also holds an index wins.
+        let plain = base.path().join("public");
+        std::fs::create_dir(&plain).unwrap();
+        std::fs::write(plain.join("index.html"), "y").unwrap();
+        let roots = [link.clone(), plain.clone()];
+        let (root, _) = find_file(&roots, "", &StaticOptions::default())
+            .await
+            .expect("an index");
+        assert_eq!(root, link.as_path());
     }
 
     /// The same for a junction, which needs no privilege on Windows.

@@ -41,7 +41,7 @@ fn make_self_signed_cert() -> (TempDir, String, String) {
 
 /// A reqwest HTTPS client that accepts any certificate (for self-signed certs in tests).
 fn insecure_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+    common::local_client_builder()
         .danger_accept_invalid_certs(true)
         .build()
         .expect("reqwest client")
@@ -134,6 +134,6 @@ fn tls_plain_http_site_unaffected() {
         }),
     );
 
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("HTTP GET");
+    let resp = common::get(server.url("/__health__")).expect("HTTP GET");
     assert_eq!(resp.status(), 200);
 }

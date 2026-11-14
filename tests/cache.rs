@@ -233,12 +233,12 @@ fn cache_second_request_served_from_memory() {
     );
 
     // First request — cache miss; upstream is contacted.
-    let r1 = reqwest::blocking::get(srv.url("/cached/item")).expect("GET 1");
+    let r1 = common::get(srv.url("/cached/item")).expect("GET 1");
     assert_eq!(r1.status(), 200, "first request must return 200");
     assert_eq!(upstream.hit_count(), 1, "first request must reach upstream");
 
     // Second identical request — must be a cache hit; upstream not contacted again.
-    let r2 = reqwest::blocking::get(srv.url("/cached/item")).expect("GET 2");
+    let r2 = common::get(srv.url("/cached/item")).expect("GET 2");
     assert_eq!(r2.status(), 200, "second request must return 200");
     assert_eq!(
         upstream.hit_count(),
@@ -282,7 +282,7 @@ fn cache_is_not_shared_between_sites_with_the_same_host_and_different_ports() {
     let _keep_alive = &srv;
 
     let get = |port: u16| {
-        reqwest::blocking::Client::new()
+        common::local_client()
             .get(format!("http://127.0.0.1:{port}/cached/item"))
             .header("host", "example.com")
             .send()
@@ -342,7 +342,7 @@ fn cache_skip_if_cookie_bypasses_cache() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     // First request — no cookie; goes to upstream and is cached.
     let r1 = client
@@ -398,14 +398,14 @@ fn cache_skip_paths_bypasses_cache() {
     );
 
     // Request to a private path — must NOT be cached.
-    let _ = reqwest::blocking::get(srv.url("/data/private/secret")).expect("GET private 1");
+    let _ = common::get(srv.url("/data/private/secret")).expect("GET private 1");
     assert_eq!(
         upstream.hit_count(),
         1,
         "first private request must hit upstream"
     );
 
-    let _ = reqwest::blocking::get(srv.url("/data/private/secret")).expect("GET private 2");
+    let _ = common::get(srv.url("/data/private/secret")).expect("GET private 2");
     assert_eq!(
         upstream.hit_count(),
         2,
@@ -413,14 +413,14 @@ fn cache_skip_paths_bypasses_cache() {
     );
 
     // Request to a cacheable path — must be cached after the first hit.
-    let _ = reqwest::blocking::get(srv.url("/data/public/item")).expect("GET public 1");
+    let _ = common::get(srv.url("/data/public/item")).expect("GET public 1");
     assert_eq!(
         upstream.hit_count(),
         3,
         "first public request must hit upstream"
     );
 
-    let _ = reqwest::blocking::get(srv.url("/data/public/item")).expect("GET public 2");
+    let _ = common::get(srv.url("/data/public/item")).expect("GET public 2");
     assert_eq!(
         upstream.hit_count(),
         3,
@@ -460,7 +460,7 @@ fn cache_zero_ttl_disables_caching() {
     );
 
     for i in 1..=3_u16 {
-        let r = reqwest::blocking::get(srv.url("/no-cache/item")).expect("GET");
+        let r = common::get(srv.url("/no-cache/item")).expect("GET");
         assert_eq!(r.status(), 200);
         assert_eq!(
             upstream.hit_count(),
@@ -513,7 +513,7 @@ fn cache_lock_prevents_thundering_herd() {
     let handles: Vec<_> = (0..concurrency)
         .map(|_| {
             let url = url.clone();
-            std::thread::spawn(move || reqwest::blocking::get(&url).expect("GET").status().as_u16())
+            std::thread::spawn(move || common::get(&url).expect("GET").status().as_u16())
         })
         .collect();
 
@@ -545,7 +545,7 @@ fn cache_lock_prevents_thundering_herd() {
 
 /// Helper: warm the cache for `path`, returning once the entry is stored.
 fn warm_cache(srv: &common::TestServer, upstream: &FlakyUpstream, path: &str) {
-    let r1 = reqwest::blocking::get(srv.url(path)).expect("warm GET");
+    let r1 = common::get(srv.url(path)).expect("warm GET");
     assert_eq!(r1.status(), 200, "warm-up request must return 200");
     assert_eq!(
         r1.text().unwrap(),
@@ -578,7 +578,7 @@ fn stale_if_error_serves_stale_on_5xx_without_retry() {
     warm_cache(&srv, &upstream, "/sie-5xx/item");
     upstream.start_failing_with_500();
 
-    let r2 = reqwest::blocking::get(srv.url("/sie-5xx/item")).expect("GET 2");
+    let r2 = common::get(srv.url("/sie-5xx/item")).expect("GET 2");
     let status = r2.status();
     let body = r2.text().unwrap();
     assert_eq!(
@@ -620,7 +620,7 @@ fn stale_if_error_serves_stale_when_retry_exhausted_on_5xx() {
     warm_cache(&srv, &upstream, "/sie-retry/item");
     upstream.start_failing_with_500();
 
-    let r2 = reqwest::blocking::get(srv.url("/sie-retry/item")).expect("GET 2");
+    let r2 = common::get(srv.url("/sie-retry/item")).expect("GET 2");
     let status = r2.status();
     let body = r2.text().unwrap();
     assert_eq!(
@@ -660,7 +660,7 @@ fn stale_if_error_serves_stale_on_connection_error() {
     warm_cache(&srv, &upstream, "/sie-conn/item");
     upstream.start_failing_by_dropping();
 
-    let r2 = reqwest::blocking::get(srv.url("/sie-conn/item")).expect("GET 2");
+    let r2 = common::get(srv.url("/sie-conn/item")).expect("GET 2");
     let status = r2.status();
     let body = r2.text().unwrap();
     assert_eq!(

@@ -91,7 +91,7 @@ fn make_server_cert(dir: &TempDir) -> (String, String) {
 fn client_with_identity(cert_pem: &str, key_pem: &str) -> reqwest::blocking::Client {
     let identity_pem = format!("{key_pem}\n{cert_pem}");
     let identity = reqwest::Identity::from_pem(identity_pem.as_bytes()).expect("build identity");
-    reqwest::blocking::Client::builder()
+    common::local_client_builder()
         .danger_accept_invalid_certs(true)
         .identity(identity)
         .build()
@@ -99,7 +99,7 @@ fn client_with_identity(cert_pem: &str, key_pem: &str) -> reqwest::blocking::Cli
 }
 
 fn insecure_client_no_identity() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+    common::local_client_builder()
         .danger_accept_invalid_certs(true)
         .build()
         .expect("reqwest client")

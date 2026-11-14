@@ -29,7 +29,7 @@ fn make_static_server(files: &[(&str, &str)]) -> (common::TestServer, tempfile::
 #[serial]
 fn static_200_serves_file() {
     let (server, _dir) = make_static_server(&[("hello.txt", "Hello, world!")]);
-    let resp = reqwest::blocking::get(server.url("/hello.txt")).expect("GET");
+    let resp = common::get(server.url("/hello.txt")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "Hello, world!");
 }
@@ -38,7 +38,7 @@ fn static_200_serves_file() {
 #[serial]
 fn static_content_type_html() {
     let (server, _dir) = make_static_server(&[("index.html", "<h1>hi</h1>")]);
-    let resp = reqwest::blocking::get(server.url("/index.html")).expect("GET");
+    let resp = common::get(server.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     let ct = resp
         .headers()
@@ -53,7 +53,7 @@ fn static_content_type_html() {
 #[serial]
 fn static_index_html_at_root() {
     let (server, _dir) = make_static_server(&[("index.html", "root index")]);
-    let resp = reqwest::blocking::get(server.url("/")).expect("GET /");
+    let resp = common::get(server.url("/")).expect("GET /");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "root index");
 }
@@ -62,7 +62,7 @@ fn static_index_html_at_root() {
 #[serial]
 fn static_404_for_missing_file() {
     let (server, _dir) = make_static_server(&[("exists.txt", "yes")]);
-    let resp = reqwest::blocking::get(server.url("/nope.txt")).expect("GET");
+    let resp = common::get(server.url("/nope.txt")).expect("GET");
     assert_eq!(resp.status(), 404);
 }
 
@@ -72,7 +72,7 @@ fn static_304_on_matching_etag() {
     let (server, _dir) = make_static_server(&[("data.txt", "content")]);
 
     // First request to get ETag
-    let first = reqwest::blocking::get(server.url("/data.txt")).expect("GET");
+    let first = common::get(server.url("/data.txt")).expect("GET");
     assert_eq!(first.status(), 200);
     let etag = first
         .headers()
@@ -83,7 +83,7 @@ fn static_304_on_matching_etag() {
         .to_owned();
 
     // Second request with If-None-Match
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(server.url("/data.txt"))
         .header("if-none-match", &etag)
@@ -96,7 +96,7 @@ fn static_304_on_matching_etag() {
 #[serial]
 fn static_200_on_mismatched_etag() {
     let (server, _dir) = make_static_server(&[("data.txt", "content")]);
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(server.url("/data.txt"))
         .header("if-none-match", "\"wrong-etag\"")
@@ -109,7 +109,7 @@ fn static_200_on_mismatched_etag() {
 #[serial]
 fn static_206_range_request() {
     let (server, _dir) = make_static_server(&[("range.txt", "0123456789")]);
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(server.url("/range.txt"))
         .header("range", "bytes=2-5")
@@ -133,7 +133,7 @@ fn static_206_range_request() {
 #[serial]
 fn static_206_range_suffix() {
     let (server, _dir) = make_static_server(&[("range.txt", "0123456789")]);
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(server.url("/range.txt"))
         .header("range", "bytes=-3")
@@ -149,7 +149,7 @@ fn static_206_range_suffix() {
 #[serial]
 fn static_range_past_the_end_is_clamped_not_rejected() {
     let (server, _dir) = make_static_server(&[("range.txt", "0123456789")]);
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     for (range, content_range, body) in [
         ("bytes=4-999", "bytes 4-9/10", "456789"),
         ("bytes=0-999", "bytes 0-9/10", "0123456789"),
@@ -182,7 +182,7 @@ fn static_range_past_the_end_is_clamped_not_rejected() {
 #[serial]
 fn static_if_range_decides_between_206_and_200() {
     let (server, _dir) = make_static_server(&[("range.txt", "0123456789")]);
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let etag = client
         .get(server.url("/range.txt"))
         .send()
@@ -216,7 +216,7 @@ fn static_if_range_decides_between_206_and_200() {
 #[serial]
 fn static_416_invalid_range() {
     let (server, _dir) = make_static_server(&[("small.txt", "hi")]);
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(server.url("/small.txt"))
         .header("range", "bytes=100-200")
@@ -229,7 +229,7 @@ fn static_416_invalid_range() {
 #[serial]
 fn static_404_for_dotfile_default() {
     let (server, _dir) = make_static_server(&[(".hidden", "secret")]);
-    let resp = reqwest::blocking::get(server.url("/.hidden")).expect("GET");
+    let resp = common::get(server.url("/.hidden")).expect("GET");
     assert_eq!(resp.status(), 404);
 }
 
@@ -237,7 +237,7 @@ fn static_404_for_dotfile_default() {
 #[serial]
 fn static_head_returns_no_body() {
     let (server, _dir) = make_static_server(&[("file.txt", "body content")]);
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client.head(server.url("/file.txt")).send().expect("HEAD");
     assert_eq!(resp.status(), 200);
     let body = resp.text().unwrap();
@@ -248,7 +248,7 @@ fn static_head_returns_no_body() {
 #[serial]
 fn static_etag_and_last_modified_present() {
     let (server, _dir) = make_static_server(&[("file.txt", "data")]);
-    let resp = reqwest::blocking::get(server.url("/file.txt")).expect("GET");
+    let resp = common::get(server.url("/file.txt")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(resp.headers().contains_key("etag"), "missing etag");
     assert!(
@@ -284,12 +284,12 @@ fn validators_server(options: serde_json::Value) -> (common::TestServer, tempfil
 #[serial]
 fn static_etag_false_omits_etag_and_ignores_if_none_match() {
     let (server, _dir) = validators_server(serde_json::json!({ "etag": false }));
-    let resp = reqwest::blocking::get(server.url("/f.txt")).expect("GET");
+    let resp = common::get(server.url("/f.txt")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(!resp.headers().contains_key("etag"), "etag must be off");
     assert!(resp.headers().contains_key("last-modified"));
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(server.url("/f.txt"))
         .header("if-none-match", "*")
         .send()
@@ -305,13 +305,13 @@ fn static_etag_false_omits_etag_and_ignores_if_none_match() {
 #[serial]
 fn static_last_modified_false_omits_header_and_ignores_if_modified_since() {
     let (server, _dir) = validators_server(serde_json::json!({ "lastModified": false }));
-    let resp = reqwest::blocking::get(server.url("/f.txt")).expect("GET");
+    let resp = common::get(server.url("/f.txt")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(!resp.headers().contains_key("last-modified"));
     assert!(resp.headers().contains_key("etag"));
 
     let far_future = "Fri, 01 Jan 2100 00:00:00 GMT";
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(server.url("/f.txt"))
         .header("if-modified-since", far_future)
         .send()
@@ -352,7 +352,7 @@ fn dot_server(policy: &str) -> (common::TestServer, tempfile::TempDir) {
 #[serial]
 fn dotfiles_allow_serves_hidden_file() {
     let (srv, _dir) = dot_server("allow");
-    let resp = reqwest::blocking::get(srv.url("/.hidden")).expect("GET");
+    let resp = common::get(srv.url("/.hidden")).expect("GET");
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -365,7 +365,7 @@ fn dotfiles_allow_serves_hidden_file() {
 #[serial]
 fn dotfiles_deny_returns_403() {
     let (srv, _dir) = dot_server("deny");
-    let resp = reqwest::blocking::get(srv.url("/.hidden")).expect("GET");
+    let resp = common::get(srv.url("/.hidden")).expect("GET");
     assert_eq!(
         resp.status().as_u16(),
         403,
@@ -377,7 +377,7 @@ fn dotfiles_deny_returns_403() {
 #[serial]
 fn dotfiles_ignore_returns_404() {
     let (srv, _dir) = dot_server("ignore");
-    let resp = reqwest::blocking::get(srv.url("/.hidden")).expect("GET");
+    let resp = common::get(srv.url("/.hidden")).expect("GET");
     assert_eq!(
         resp.status().as_u16(),
         404,
@@ -389,7 +389,7 @@ fn dotfiles_ignore_returns_404() {
 #[serial]
 fn dotfiles_allow_does_not_affect_normal_files() {
     let (srv, _dir) = dot_server("allow");
-    let resp = reqwest::blocking::get(srv.url("/normal.txt")).expect("GET");
+    let resp = common::get(srv.url("/normal.txt")).expect("GET");
     assert_eq!(resp.status().as_u16(), 200);
     assert_eq!(resp.text().unwrap(), "public");
 }
@@ -418,7 +418,7 @@ fn dotfiles_allow_serves_dotfile_in_subdirectory() {
             }]
         }),
     );
-    let resp = reqwest::blocking::get(srv.url("/subdir/.env")).expect("GET");
+    let resp = common::get(srv.url("/subdir/.env")).expect("GET");
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -449,7 +449,7 @@ fn dotfiles_deny_blocks_dotfile_in_subdirectory() {
             }]
         }),
     );
-    let resp = reqwest::blocking::get(srv.url("/subdir/.env")).expect("GET");
+    let resp = common::get(srv.url("/subdir/.env")).expect("GET");
     assert_eq!(
         resp.status().as_u16(),
         403,
@@ -483,7 +483,7 @@ fn dotfiles_deny_blocks_dot_directory_component() {
         }),
     );
     // /.secrets/config.txt — the directory segment starts with '.'
-    let resp = reqwest::blocking::get(srv.url("/.secrets/config.txt")).expect("GET");
+    let resp = common::get(srv.url("/.secrets/config.txt")).expect("GET");
     assert_eq!(
         resp.status().as_u16(),
         403,
@@ -513,7 +513,7 @@ fn static_cache_control_max_age() {
         }),
     );
 
-    let resp = reqwest::blocking::get(server.url("/f.txt")).expect("GET");
+    let resp = common::get(server.url("/f.txt")).expect("GET");
     assert_eq!(resp.status(), 200);
     let cc = resp
         .headers()
@@ -590,7 +590,7 @@ fn static_a_file_swapped_for_a_symlink_is_never_served_or_cut_off() {
         })
     };
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let (mut ok, mut missing, mut busy) = (0u32, 0u32, 0u32);
     // At least 400 requests, and on until 25 of them got the file (at most 4000).
     for n in 0..4000u32 {
@@ -656,14 +656,14 @@ fn static_an_unreadable_file_is_403_before_any_header() {
         eprintln!("skipping: this account can read a mode-000 file (root)");
         return;
     }
-    let resp = reqwest::blocking::get(server.url("/secret.txt")).expect("GET");
+    let resp = common::get(server.url("/secret.txt")).expect("GET");
     assert_eq!(resp.status(), 403);
     assert_eq!(
         resp.text().expect("a 403 carries its whole body"),
         "Forbidden"
     );
     // HEAD opens the file too: the same answer, no body.
-    let head = reqwest::blocking::Client::new()
+    let head = common::local_client()
         .head(server.url("/secret.txt"))
         .send()
         .expect("HEAD");

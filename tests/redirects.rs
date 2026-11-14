@@ -5,7 +5,7 @@ use reqwest::redirect::Policy;
 
 /// HTTP client that does NOT follow redirects — so we can inspect the 3xx.
 fn no_follow() -> Client {
-    Client::builder()
+    common::local_client_builder()
         .redirect(Policy::none())
         .build()
         .expect("client")
@@ -72,7 +72,7 @@ fn redirect_308_exact() {
 fn no_redirect_for_unmatched_path() {
     let srv = server_with_redirects();
     // /__health__ is not in the redirects list — should return 200.
-    let resp = reqwest::blocking::get(srv.url("/__health__")).expect("GET /__health__");
+    let resp = common::get(srv.url("/__health__")).expect("GET /__health__");
     assert_eq!(resp.status().as_u16(), 200);
 }
 

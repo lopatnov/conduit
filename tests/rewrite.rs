@@ -92,7 +92,7 @@ fn rewrite_simple_prefix_replacement() {
         serde_json::json!([{ "from": "^/old/(.+)$", "to": "/new/$1" }]),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     client.get(server.url("/old/page")).send().expect("request");
 
     assert_eq!(
@@ -111,7 +111,7 @@ fn rewrite_strips_version_prefix() {
         serde_json::json!([{ "from": "^/v[0-9]+/(.*)$", "to": "/$1" }]),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     client.get(server.url("/v3/users")).send().expect("request");
 
     assert_eq!(
@@ -134,7 +134,7 @@ fn rewrite_first_rule_wins() {
         ]),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     client.get(server.url("/a")).send().expect("request");
 
     assert_eq!(
@@ -153,7 +153,7 @@ fn no_rewrite_when_no_rules_match() {
         serde_json::json!([{ "from": "^/specific$", "to": "/other" }]),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     client
         .get(server.url("/anything-else"))
         .send()
@@ -191,7 +191,7 @@ fn rewrite_and_strip_prefix_coexist() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     client
         .get(server.url("/api/users/42"))
         .send()

@@ -88,7 +88,7 @@ fn strategy_random_distributes_to_upstreams() {
 
     // Send 20 requests; with pseudo-random selection both upstreams should get hits.
     for _ in 0..20 {
-        let resp = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let resp = common::get(srv.url("/")).expect("GET");
         assert_eq!(resp.status(), 200);
     }
 
@@ -136,7 +136,7 @@ fn strategy_least_conn_returns_200() {
     // Send several sequential requests — each completes before the next starts,
     // so both upstreams will have 0 inflight when picked.  Verify all succeed.
     for _ in 0..10 {
-        let resp = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let resp = common::get(srv.url("/")).expect("GET");
         assert_eq!(resp.status(), 200);
     }
 
@@ -184,7 +184,7 @@ fn health_include_upstreams_shows_status() {
     // Give the first probe time to run.
     std::thread::sleep(Duration::from_millis(1500));
 
-    let resp = reqwest::blocking::get(srv.url("/__health__")).expect("GET health");
+    let resp = common::get(srv.url("/__health__")).expect("GET health");
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().expect("parse JSON");
     assert_eq!(body["status"], "ok", "status must be ok");
@@ -209,7 +209,7 @@ fn health_without_include_upstreams_omits_field() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/__health__")).expect("GET");
+    let resp = common::get(srv.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().expect("parse JSON");
     assert_eq!(body["status"], "ok");
@@ -237,7 +237,7 @@ fn admin_upstreams_initially_empty() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
+    let resp = common::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().expect("parse JSON");
     assert!(body["upstreams"].is_array(), "upstreams must be an array");
@@ -281,7 +281,7 @@ fn admin_upstreams_populated_after_health_check() {
     // Wait long enough for at least one probe.
     std::thread::sleep(Duration::from_millis(1500));
 
-    let resp = reqwest::blocking::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
+    let resp = common::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().expect("parse JSON");
     let list = body["upstreams"].as_array().expect("array");
@@ -338,8 +338,8 @@ fn upstream_marked_unhealthy_after_threshold_failures() {
     // so 1.5 s is more than enough even with late task scheduling.
     std::thread::sleep(Duration::from_millis(1500));
 
-    let resp = reqwest::blocking::get(format!("http://127.0.0.1:{admin_port}/upstreams"))
-        .expect("GET /upstreams");
+    let resp =
+        common::get(format!("http://127.0.0.1:{admin_port}/upstreams")).expect("GET /upstreams");
     let body: serde_json::Value = resp.json().expect("parse JSON");
     let list = body["upstreams"].as_array().expect("array");
 
@@ -415,7 +415,7 @@ fn circuit_breaker_limits_connections() {
         }),
     );
 
-    let client = reqwest::blocking::Client::builder()
+    let client = common::local_client_builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -431,7 +431,7 @@ fn circuit_breaker_limits_connections() {
     std::thread::sleep(Duration::from_millis(200));
 
     // Second request should hit the circuit breaker → 503.
-    let client2 = reqwest::blocking::Client::builder()
+    let client2 = common::local_client_builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -479,7 +479,7 @@ fn circuit_breaker_allows_when_under_limit() {
         }),
     );
     // Single request well under the limit — should succeed.
-    let resp = reqwest::blocking::get(srv.url("/")).expect("GET /");
+    let resp = common::get(srv.url("/")).expect("GET /");
     assert_eq!(resp.status().as_u16(), 200, "under limit: should succeed");
 }
 
@@ -511,11 +511,11 @@ fn passive_stats_tracked_for_round_robin_without_conn_cap() {
     );
 
     for _ in 0..10 {
-        let resp = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let resp = common::get(srv.url("/")).expect("GET");
         assert_eq!(resp.status(), 200);
     }
 
-    let resp = reqwest::blocking::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
+    let resp = common::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().expect("parse JSON");
     let list = body["upstreams"].as_array().expect("array");
@@ -577,10 +577,10 @@ fn outlier_detection_ejects_with_round_robin() {
     // consecutive 5xx responses and gets ejected; from then on filter_healthy
     // excludes it so every further request lands on `good`.
     for _ in 0..5 {
-        let _ = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let _ = common::get(srv.url("/")).expect("GET");
     }
 
-    let resp = reqwest::blocking::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
+    let resp = common::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
     let body: serde_json::Value = resp.json().expect("parse JSON");
     let list = body["upstreams"].as_array().expect("array");
     let bad_entry = list
@@ -598,7 +598,7 @@ fn outlier_detection_ejects_with_round_robin() {
 
     // With `bad` ejected, every further request must be routed to `good` only.
     for _ in 0..4 {
-        let resp = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let resp = common::get(srv.url("/")).expect("GET");
         assert_eq!(
             resp.status(),
             200,
@@ -646,10 +646,10 @@ fn per_peer_response_breakdown_for_random_strategy() {
     );
 
     for _ in 0..20 {
-        let _ = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let _ = common::get(srv.url("/")).expect("GET");
     }
 
-    let resp = reqwest::blocking::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
+    let resp = common::get(srv.admin_url("/upstreams")).expect("GET /upstreams");
     let body: serde_json::Value = resp.json().expect("parse JSON");
     let list = body["upstreams"].as_array().expect("array");
 
@@ -709,7 +709,7 @@ fn circuit_breaker_round_robin_skips_saturated_upstream_with_multiple_targets() 
     );
 
     // Occupy the slow upstream's single connection slot in the background.
-    let bg_client = reqwest::blocking::Client::builder()
+    let bg_client = common::local_client_builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -725,7 +725,7 @@ fn circuit_breaker_round_robin_skips_saturated_upstream_with_multiple_targets() 
     // correctly-routed request could legitimately land on `slow` — a short
     // timeout would then panic on a timing race rather than a real bug.
     // `fast.hit_count()` below is the actual detector either way.
-    let fg_client = reqwest::blocking::Client::builder()
+    let fg_client = common::local_client_builder()
         .timeout(Duration::from_millis(4000))
         .build()
         .unwrap();
@@ -773,7 +773,7 @@ fn routes_array_honors_max_connections_per_upstream() {
         }),
     );
 
-    let bg_client = reqwest::blocking::Client::builder()
+    let bg_client = common::local_client_builder()
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
@@ -786,7 +786,7 @@ fn routes_array_honors_max_connections_per_upstream() {
     // See the comment on the equivalent fg_client above: timeout stays above
     // SlowUpstream's 3s hold so a timing-race pick doesn't panic the test
     // instead of failing the real fast.hit_count() assertion below.
-    let fg_client = reqwest::blocking::Client::builder()
+    let fg_client = common::local_client_builder()
         .timeout(Duration::from_millis(4000))
         .build()
         .unwrap();

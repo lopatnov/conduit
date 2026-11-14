@@ -50,7 +50,7 @@ was a gate: every request goes through unchecked). To see what a config needs, a
 binary you run has it:
 
 ```bash
-conduit features -c conduit.yaml   # lists the features the config needs; exit 1 if this binary lacks one
+conduit features -c conduit.yaml   # lists the features the config needs; exit 1 if this binary lacks one, 2 if the config cannot be loaded
 conduit validate -c conduit.yaml   # prints a warning for every ignored section
 ```
 
@@ -1043,7 +1043,9 @@ any cookie. Conduit hashes the **address of the TCP peer that connected to it**
 (FNV-1a) and maps the hash to an upstream by rendezvous (highest-random-weight)
 hashing: every healthy upstream is scored against the hash and the highest score
 wins. The same address lands on the same upstream for as long as the set of
-healthy upstreams is unchanged.
+healthy upstreams is unchanged. An upstream listed twice is scored once, so a
+duplicate entry is not a weight: use [`weighted-round-robin`](#weighted-round-robin)
+when the capacities differ.
 
 | Field | Meaning | Default |
 | --- | --- | --- |
@@ -1403,6 +1405,10 @@ and the following requests follow it. In the mode without `secret` Conduit sets
 nothing: the first request is balanced normally, and affinity starts only once your
 application has set the cookie and the client sends it back. While a cookie is
 present and honoured, it replaces the route's `strategy` for that request.
+
+**Not with `groups`.** A route that has `groups` ignores `sticky`: no cookie is set and none is
+honoured. `conduit validate` and the start-up log say so. `strict` without `secret` is ignored
+too, and is reported the same way.
 
 **It is affinity, not a guarantee.** If the pinned upstream is unhealthy (or at its
 `maxConnectionsPerUpstream`) and `strict` is off, the session moves to another

@@ -5,7 +5,7 @@ use common::{free_port, TestServer};
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn build_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+    common::local_client_builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .expect("reqwest client")
