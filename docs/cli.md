@@ -1008,4 +1008,9 @@ kubectl apply -f contrib/k8s/conduitsite-crd.yaml
 When the binary is built **without** `--features kubernetes`, the
 `--kubernetes-namespace` flag does not exist in the binary.
 
+Building it needs Rust **1.95** (kube 5.1). The `k8s-openapi` types are those of the
+Kubernetes **1.33** API, the oldest set `k8s-openapi` 0.29 offers; the provider reads
+only the `ConduitSite` resource (a CRD under `apiextensions.k8s.io/v1`). It has not been
+run against a live cluster of any version: the tests cover the event handling only.
+
 Dependencies added: `kube` (runtime + derive), `k8s-openapi`, `schemars`, `futures`

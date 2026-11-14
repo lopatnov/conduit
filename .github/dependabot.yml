@@ -20,6 +20,11 @@ updates:
       - "rust"
     commit-message:
       prefix: "chore(deps)"
+    ignore:
+      # Pinned to the minor wasmtime itself reads modules with, so that the lock holds one copy of it
+      # (Cargo.toml, issue #565). It moves with a wasmtime bump (dep/wasmtime-*), never on its own: a
+      # lone bump put two copies in the lock (#689).
+      - dependency-name: "wasmparser"
     groups:
       # pingora + pingora-core + pingora-proxy + pingora-load-balancing +
       # pingora-cache + pingora-http all share the same version.
