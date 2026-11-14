@@ -122,7 +122,7 @@ x509-parser = "0.18"
 # there (via instant-acme's "rcgen" feature) and unconditionally by the root
 # crate's dev-dependencies (test cert generation) — kept as a shared
 # workspace dependency for that reason.
-instant-acme = { version = "0.8", features = ["rcgen"] }
+instant-acme = { version = "0.8", features = ["rcgen", "time"] }
 rcgen        = "0.14"
 # ring is the crypto provider for rustls; needed to install before TLS starts.
 rustls         = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
