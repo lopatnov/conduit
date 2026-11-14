@@ -1406,6 +1406,10 @@ nothing: the first request is balanced normally, and affinity starts only once y
 application has set the cookie and the client sends it back. While a cookie is
 present and honoured, it replaces the route's `strategy` for that request.
 
+**Not with `groups`.** A route that has `groups` ignores `sticky`: no cookie is set and none is
+honoured. `conduit validate` and the start-up log say so. `strict` without `secret` is ignored
+too, and is reported the same way.
+
 **It is affinity, not a guarantee.** If the pinned upstream is unhealthy (or at its
 `maxConnectionsPerUpstream`) and `strict` is off, the session moves to another
 upstream and loses whatever state the first one held. Sticky routing cannot keep a
