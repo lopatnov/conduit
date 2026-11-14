@@ -167,4 +167,14 @@ fn tls_site_sends_hsts_and_its_plain_http_twin_does_not() {
             .and_then(|v| v.to_str().ok()),
         Some("max-age=63072000; includeSubDomains")
     );
+    // a client cannot switch it off over TLS by sending X-Forwarded-Proto: http
+    let resp = insecure_client()
+        .get(&url)
+        .header("x-forwarded-proto", "http")
+        .send()
+        .expect("HTTPS GET");
+    assert!(
+        resp.headers().get("strict-transport-security").is_some(),
+        "X-Forwarded-Proto: http must not remove HSTS from a TLS response"
+    );
 }
