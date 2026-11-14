@@ -1241,6 +1241,12 @@ upstream however busy it was; with the in-flight factor an upstream twice as
 fast settles at about twice the in-flight requests of the slower one, and a busy
 upstream hands requests back to its sibling.
 
+**Failures count as slow.** A response of 500 or more, a connect failure and a timeout are charged to the estimate as at
+least one second, however fast the error came. Without that, an upstream that answers every request with an error right
+away would have the lowest latency in the pool and attract the traffic (the fast-failing-peer problem). One failure
+moves the traffic away from that upstream for a few seconds (the estimate decays with a 10 s time constant); one that
+keeps failing stays out. It shows in `ewma_latency_ms` of `GET /upstreams`.
+
 **Weights.** The cost is divided by `weight`, so at equal latency a weight-3
 upstream carries about three times the in-flight requests of a weight-1 upstream
 when the pool has two upstreams. With more, only two random samples are compared
