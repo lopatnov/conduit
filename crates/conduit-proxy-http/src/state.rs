@@ -139,19 +139,27 @@ pub struct StickyCookie {
     pub secure: Option<bool>,
     /// `sticky.maxAgeSecs`: `None` is a session cookie.
     pub max_age_secs: Option<u64>,
+    /// `sticky.sameSite`: `None` means `Lax`.
+    pub same_site: Option<crate::config::StickySameSite>,
 }
 
 impl StickyCookie {
-    /// The `Set-Cookie` header value. `HttpOnly; SameSite=Lax` always (not readable from JavaScript, basic CSRF
-    /// protection); `Secure` as `secure` says, or, when it is unset, when the matched site has `tls`; `Max-Age`
-    /// when set.
+    /// The `Set-Cookie` header value. `HttpOnly` always (not readable from JavaScript); `SameSite` as
+    /// `same_site` says (`Lax` when unset: basic CSRF protection); `Secure` as `secure` says, or, when it is
+    /// unset, when the matched site has `tls`, and always with `SameSite=None` (a browser refuses that cookie
+    /// without it, RFC 6265bis section 4.1.2.7); `Max-Age` when set.
     #[must_use]
     pub fn header_value(&self, site_has_tls: bool) -> String {
+        let same_site = self.same_site.unwrap_or(crate::config::StickySameSite::Lax);
         let mut header = format!(
-            "{}={}; Path=/; HttpOnly; SameSite=Lax",
-            self.name, self.value
+            "{}={}; Path=/; HttpOnly; SameSite={}",
+            self.name,
+            self.value,
+            same_site.as_str()
         );
-        if self.secure.unwrap_or(site_has_tls) {
+        let force_secure =
+            same_site == crate::config::StickySameSite::None && self.secure != Some(false);
+        if force_secure || self.secure.unwrap_or(site_has_tls) {
             header.push_str("; Secure");
         }
         if let Some(secs) = self.max_age_secs {
@@ -282,6 +290,7 @@ mod tests {
             value: "v".to_owned(),
             secure,
             max_age_secs,
+            same_site: None,
         }
     }
 
@@ -309,6 +318,38 @@ mod tests {
         assert_eq!(
             cookie(None, Some(60)).header_value(false),
             format!("{base}; Max-Age=60")
+        );
+    }
+
+    /// Issue #644: `SameSite` follows `sticky.sameSite` (`Lax` unset); `none` always carries `Secure`.
+    #[test]
+    fn the_sticky_cookie_header_carries_the_configured_same_site() {
+        use crate::config::StickySameSite::{Lax, None as NoneSite, Strict};
+        let with = |same_site, secure| StickyCookie {
+            same_site: Some(same_site),
+            ..cookie(secure, None)
+        };
+        let base = "srv=v; Path=/; HttpOnly";
+        assert_eq!(
+            with(Lax, None).header_value(false),
+            format!("{base}; SameSite=Lax")
+        );
+        assert_eq!(
+            with(Strict, None).header_value(false),
+            format!("{base}; SameSite=Strict")
+        );
+        // none: Secure even on a plain-HTTP site, unless the operator said `secure: false` (a validation error)
+        assert_eq!(
+            with(NoneSite, None).header_value(false),
+            format!("{base}; SameSite=None; Secure")
+        );
+        assert_eq!(
+            with(NoneSite, Some(true)).header_value(false),
+            format!("{base}; SameSite=None; Secure")
+        );
+        assert_eq!(
+            with(NoneSite, Some(false)).header_value(true),
+            format!("{base}; SameSite=None")
         );
     }
 

@@ -156,6 +156,15 @@ pub fn validate_route_config(
             "maxAgeSecs must be at least 1 (seconds): Max-Age=0 would delete the cookie",
         ));
     }
+    if cfg.sticky.as_ref().is_some_and(|s| {
+        s.same_site == Some(crate::config::StickySameSite::None) && s.secure == Some(false)
+    }) {
+        errors.push(ValidationError::new(
+            format!("{prefix}.sticky.sameSite"),
+            "sameSite \"none\" needs a Secure cookie: browsers refuse SameSite=None without Secure, so the \
+             affinity would silently end; remove `secure: false` or choose \"lax\" or \"strict\"",
+        ));
+    }
     warn_slow_start_ignored(cfg, prefix);
     warn_sticky_has_no_effect(cfg, prefix);
     warn_group_strategy_cannot_see_load(cfg, prefix);
@@ -210,10 +219,11 @@ fn warn_sticky_has_no_effect(cfg: &ProxyRouteConfig, prefix: &str) {
                  an upstream to refuse (see docs/configuration.md, 'Sticky sessions')"
             );
         }
-        if sticky.secure.is_some() || sticky.max_age_secs.is_some() {
+        if sticky.secure.is_some() || sticky.max_age_secs.is_some() || sticky.same_site.is_some() {
             tracing::warn!(
-                "{prefix}.sticky.secure and sticky.maxAgeSecs have no effect without sticky.secret: Conduit \
-                 sets no cookie then, the application does (see docs/configuration.md, 'Sticky sessions')"
+                "{prefix}.sticky.secure, sticky.maxAgeSecs and sticky.sameSite have no effect without \
+                 sticky.secret: Conduit sets no cookie then, the application does (see docs/configuration.md, \
+                 'Sticky sessions')"
             );
         }
     }
@@ -628,6 +638,7 @@ mod tests {
             strict: None,
             secure: None,
             max_age_secs: None,
+            same_site: None,
         });
         let warnings = warnings_for(&cfg);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -664,6 +675,7 @@ mod tests {
             strict: None,
             secure: None,
             max_age_secs: None,
+            same_site: None,
         });
         cfg.groups = Some(vec![group("plain", Some(LoadBalanceStrategy::RoundRobin))]);
         // The only warning is the one that says the leftover `sticky` does nothing (issue #644): the slow-start
@@ -719,6 +731,7 @@ mod tests {
             strict: None,
             secure: None,
             max_age_secs: None,
+            same_site: None,
         });
         let mut errors = Vec::new();
         validate_route_config(&cfg, "p", &mut errors);
@@ -739,6 +752,7 @@ mod tests {
                 strict: None,
                 secure,
                 max_age_secs: max_age,
+                same_site: None,
             };
         let signed = "s3cret-s3cret-s3cret-s3cret-s3cret";
         let mut cfg = route(Some(LoadBalanceStrategy::RoundRobin), None);
@@ -764,6 +778,43 @@ mod tests {
         assert_eq!(warnings_for(&cfg).len(), 1);
     }
 
+    /// Issue #644: `sameSite: none` needs a `Secure` cookie, so `secure: false` next to it is an error; every
+    /// other combination is accepted, and `sameSite` without `secret` is warned about like the other attributes.
+    #[test]
+    fn sticky_same_site_none_cannot_be_combined_with_secure_false() {
+        use crate::config::StickySameSite::{Lax, None as NoneSite};
+        let sticky = |same_site, secure, secret: Option<&str>| StickyConfig {
+            cookie: "sid".to_owned(),
+            secret: secret.map(str::to_owned),
+            strict: None,
+            secure,
+            max_age_secs: None,
+            same_site: Some(same_site),
+        };
+        let signed = "s3cret-s3cret-s3cret-s3cret-s3cret";
+        let mut cfg = route(Some(LoadBalanceStrategy::RoundRobin), None);
+        for ok in [
+            sticky(NoneSite, None, Some(signed)),
+            sticky(NoneSite, Some(true), Some(signed)),
+            sticky(Lax, Some(false), Some(signed)),
+        ] {
+            cfg.sticky = Some(ok);
+            let mut errors = Vec::new();
+            validate_route_config(&cfg, "p", &mut errors);
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+        cfg.sticky = Some(sticky(NoneSite, Some(false), Some(signed)));
+        let mut errors = Vec::new();
+        validate_route_config(&cfg, "p", &mut errors);
+        assert!(
+            errors.iter().any(|e| e.path.ends_with("sticky.sameSite")),
+            "{errors:?}"
+        );
+        // no secret: Conduit sets no cookie, so the attribute has no effect
+        cfg.sticky = Some(sticky(Lax, None, None));
+        assert_eq!(warnings_for(&cfg).len(), 1);
+    }
+
     /// Issue #644: `sticky` on a route with `groups` is never read, and `strict` without `secret` has nothing
     /// to refuse; each is said once. A working `sticky` says nothing.
     #[test]
@@ -774,6 +825,7 @@ mod tests {
             strict,
             secure: None,
             max_age_secs: None,
+            same_site: None,
         };
         let mut cfg = route(Some(LoadBalanceStrategy::RoundRobin), None);
         // works: signed, strict or not; unsigned and not strict

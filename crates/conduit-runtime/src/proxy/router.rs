@@ -2103,6 +2103,7 @@ mod tests {
                     strict: strict.then_some(true),
                     secure: None,
                     max_age_secs: None,
+                    same_site: None,
                 }),
                 retry,
                 ..Default::default()
@@ -2272,6 +2273,7 @@ mod tests {
                     strict: None,
                     secure: None,
                     max_age_secs: None,
+                    same_site: None,
                 }),
                 health_check: Some(UpstreamHealthCheck {
                     max_connections_per_upstream: Some(1),
@@ -2387,6 +2389,7 @@ mod tests {
                     strict: None,
                     secure: None,
                     max_age_secs: None,
+                    same_site: None,
                 }),
                 health_check: Some(UpstreamHealthCheck {
                     max_connections_per_upstream: Some(1),
@@ -2567,6 +2570,7 @@ mod tests {
                     strict: Some(true),
                     secure: None,
                     max_age_secs: None,
+                    same_site: None,
                 }),
                 ..Default::default()
             })),
@@ -2637,6 +2641,7 @@ mod tests {
                     strict: None,
                     secure: None,
                     max_age_secs: None,
+                    same_site: None,
                 }),
                 ..Default::default()
             })),

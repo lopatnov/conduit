@@ -208,6 +208,35 @@ pub struct StickyConfig {
     /// preference for an upstream, not a credential). Must be positive: `0` would delete the cookie.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_age_secs: Option<u64>,
+    /// The `SameSite` attribute of the cookie Conduit sets (only in `secret` mode): `lax` (the default),
+    /// `strict` or `none`. `none` lets the browser send the cookie on cross-site requests (an embedded or
+    /// cross-origin application); browsers refuse such a cookie unless it is `Secure`, so `none` always adds
+    /// `Secure` and `secure: false` together with it is a validation error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub same_site: Option<StickySameSite>,
+}
+
+/// `sticky.sameSite`: the `SameSite` attribute of the sticky cookie.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum StickySameSite {
+    #[serde(rename = "lax", alias = "Lax")]
+    Lax,
+    #[serde(rename = "strict", alias = "Strict")]
+    Strict,
+    #[serde(rename = "none", alias = "None")]
+    None,
+}
+
+impl StickySameSite {
+    /// The attribute value as written into `Set-Cookie`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lax => "Lax",
+            Self::Strict => "Strict",
+            Self::None => "None",
+        }
+    }
 }
 
 impl fmt::Debug for StickyConfig {
@@ -218,6 +247,7 @@ impl fmt::Debug for StickyConfig {
             .field("strict", &self.strict)
             .field("secure", &self.secure)
             .field("max_age_secs", &self.max_age_secs)
+            .field("same_site", &self.same_site)
             .finish()
     }
 }
@@ -381,6 +411,7 @@ mod tests {
             strict: Some(true),
             secure: None,
             max_age_secs: None,
+            same_site: None,
         };
         let debug = format!("{cfg:?}");
         assert!(!debug.contains("hmac-signing-secret"), "got: {debug}");
@@ -399,6 +430,7 @@ mod tests {
             strict: None,
             secure: None,
             max_age_secs: None,
+            same_site: None,
         };
         let debug = format!("{cfg:?}");
         assert!(

@@ -493,7 +493,8 @@
             "secret": { "type": "string", "minLength": 1, "description": "HMAC-SHA256 secret. When set, Conduit signs the upstream URL into the cookie and verifies it on every request, preventing forgery. Use an env-var reference ($MY_SECRET). Must be non-empty." },
             "strict": { "type": "boolean", "description": "When true, return 503 (reason sticky_upstream_unavailable) if the pinned upstream is unhealthy instead of failing over to another backend. Needs secret. Default false." },
             "secure": { "type": "boolean", "description": "The Secure attribute of the cookie Conduit sets (needs secret). Unset: Secure when the matched site has tls. true: always (behind a load balancer that terminates TLS). false: never." },
-            "maxAgeSecs": { "type": "integer", "minimum": 1, "description": "The Max-Age of the cookie Conduit sets, in seconds (needs secret). Unset: a session cookie. An instruction to the browser, not a check on the server." }
+            "maxAgeSecs": { "type": "integer", "minimum": 1, "description": "The Max-Age of the cookie Conduit sets, in seconds (needs secret). Unset: a session cookie. An instruction to the browser, not a check on the server." },
+            "sameSite": { "type": "string", "enum": ["lax", "strict", "none"], "description": "The SameSite attribute of the cookie Conduit sets (needs secret). Unset: lax. none lets the browser send the cookie on cross-site requests and always adds Secure (browsers require it); secure: false together with none is a validation error." }
           },
           "description": "Sticky-session configuration. Routes the same client to the same upstream using a cookie."
         },
