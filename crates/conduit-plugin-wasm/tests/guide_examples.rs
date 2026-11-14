@@ -9,55 +9,10 @@
 //! The Rust plugins of the guide are built by `scripts/check_doc_wasm.py`. The guide lives outside this crate, so
 //! when it is not there (the crate was unpacked on its own) the test says so and passes.
 
-struct Block {
-    text: String,
-    line: usize,
-    skipped: bool,
-}
-
-/// A fence line: its character, its length and what follows it (CommonMark: three or more backticks or tildes).
-fn fence(line: &str) -> Option<(char, usize, &str)> {
-    let line = line.trim_start();
-    let ch = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
-    let run = line.chars().take_while(|c| *c == ch).count();
-    (run >= 3).then(|| (ch, run, &line[run..]))
-}
-
-/// The ```wat blocks of `markdown`. `open` is the fence being read (character, length) and, when it is a `wat`
-/// block, the block; a fence of another language is tracked too, so that a line inside it is never taken for a
-/// fence, and a fence closes only on the same character, at least as long, with nothing after it.
-fn blocks(markdown: &str) -> Vec<Block> {
-    let (mut found, mut skip_next) = (Vec::new(), false);
-    let mut open: Option<(char, usize, Option<Block>)> = None;
-    for (index, line) in markdown.lines().enumerate() {
-        match (open.take(), fence(line)) {
-            (Some((ch, len, block)), Some((c, run, rest)))
-                if c == ch && run >= len && rest.trim().is_empty() =>
-            {
-                found.extend(block);
-            }
-            (Some((ch, len, mut block)), _) => {
-                if let Some(b) = block.as_mut() {
-                    b.text.push_str(line);
-                    b.text.push('\n');
-                }
-                open = Some((ch, len, block));
-            }
-            (None, Some((ch, len, info))) => {
-                let is_wat = info.split_whitespace().next() == Some("wat");
-                let block = is_wat.then(|| Block {
-                    text: String::new(),
-                    line: index + 1,
-                    skipped: skip_next,
-                });
-                open = Some((ch, len, block));
-            }
-            (None, None) => {}
-        }
-        skip_next = line.contains("docs-check: skip");
-    }
-    found
-}
+// The fence reader is the one of the Rhai guide test (issue #663). This test is left out of the published package
+// (`exclude` in Cargo.toml): the path below only exists in the workspace checkout.
+#[path = "../../conduit-script-rhai/tests/common/fences.rs"]
+mod fences;
 
 /// The guide, or `None` when this crate was unpacked on its own. In the workspace checkout an unreadable guide
 /// fails the test: a moved file must not make it pass by checking nothing.
@@ -80,7 +35,7 @@ fn guide() -> Option<String> {
 #[test]
 fn every_wat_block_of_the_guide_assembles_into_a_module_the_host_accepts() {
     let Some(markdown) = guide() else { return };
-    let found = blocks(&markdown);
+    let found = fences::blocks(&markdown, "wat");
     assert!(
         !found.is_empty(),
         "the guide is expected to hold a wat block"
@@ -109,44 +64,4 @@ fn every_wat_block_of_the_guide_assembles_into_a_module_the_host_accepts() {
         "wat blocks that do not work:\n{}",
         failures.join("\n")
     );
-}
-
-#[test]
-fn the_block_extractor_finds_blocks_and_honours_the_skip_marker() {
-    let md = "x\n```wat\n(module)\n```\n<!-- docs-check: skip (a fragment) -->\n```wat\n(func\n```\n```rust\nfn a() {}\n```\n";
-    let found = blocks(md);
-    assert_eq!(found.len(), 2);
-    assert_eq!((found[0].line, found[0].skipped), (2, false));
-    assert_eq!(found[0].text, "(module)\n");
-    assert_eq!((found[1].line, found[1].skipped), (6, true));
-}
-
-#[test]
-fn fences_follow_commonmark_rules() {
-    // A longer fence is not closed by a shorter run, a tilde fence is found, and a wat fence inside another
-    // language's block is not a block.
-    let md = [
-        "````wat",
-        "(module)",
-        "```",
-        "(still inside)",
-        "````",
-        "~~~wat",
-        "(module)",
-        "~~~",
-        "```rust",
-        "```wat",
-        "not a block",
-        "```",
-    ]
-    .join("\n");
-    let found = blocks(&md);
-    assert_eq!(
-        found.len(),
-        2,
-        "{:?}",
-        found.iter().map(|b| &b.text).collect::<Vec<_>>()
-    );
-    assert_eq!(found[0].text, "(module)\n```\n(still inside)\n");
-    assert_eq!(found[1].text, "(module)\n");
 }
