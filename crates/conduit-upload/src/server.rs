@@ -277,11 +277,22 @@ impl Drop for SavedFiles {
         }
         let paths = std::mem::take(&mut self.paths);
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
+            Ok(handle) => hand_to_pool(paths, |paths| {
                 drop(handle.spawn_blocking(move || remove_files(&paths)));
-            }
+            }),
             Err(_) => remove_files(&paths),
         }
+    }
+}
+
+/// Give `paths` to `spawn` (which hands them to the blocking pool). `spawn_blocking` panics when the operating
+/// system cannot start a worker thread, and a panic inside a `Drop` that runs while another panic unwinds aborts
+/// the process (issue #707): the panic is caught here and the files are removed on the spot instead, which is
+/// the slow path of issue #702 but loses nothing.
+fn hand_to_pool(paths: Vec<PathBuf>, spawn: impl FnOnce(Vec<PathBuf>)) {
+    let spare = paths.clone();
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| spawn(paths))).is_err() {
+        remove_files(&spare);
     }
 }
 
@@ -722,6 +733,27 @@ mod tests {
             !path.exists(),
             "the file must be removed by the blocking pool"
         );
+    }
+
+    #[test]
+    fn files_are_removed_on_the_spot_when_the_blocking_pool_cannot_take_them() {
+        // `spawn_blocking` panics when the OS cannot start a thread (issue #707); a stand-in that panics.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a");
+        std::fs::write(&path, b"x").unwrap();
+        hand_to_pool(vec![path.clone()], |_| panic!("OS can't spawn worker thread"));
+        assert!(!path.exists(), "the fallback must remove the file");
+    }
+
+    #[test]
+    fn files_given_to_a_pool_that_takes_them_are_left_to_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("a");
+        std::fs::write(&path, b"x").unwrap();
+        let mut taken = Vec::new();
+        hand_to_pool(vec![path.clone()], |p| taken = p);
+        assert_eq!(taken, vec![path.clone()]);
+        assert!(path.exists(), "no fallback when the pool took the paths");
     }
 
     #[test]
