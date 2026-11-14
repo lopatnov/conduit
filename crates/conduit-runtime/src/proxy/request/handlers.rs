@@ -270,6 +270,9 @@ impl ConduitProxy {
             HandlerKind::Overloaded => Some(Box::new(OverloadedHandler {
                 extra_headers: extra,
             })),
+            HandlerKind::StickyUnavailable => Some(Box::new(StickyUnavailableHandler {
+                extra_headers: extra,
+            })),
         }
     }
 
@@ -361,6 +364,28 @@ impl LocalHandlerImpl for OverloadedHandler {
             "application/json",
             bytes::Bytes::from_static(
                 b"{\"error\":\"Service Unavailable\",\"status\":503,\"reason\":\"upstream_overloaded\"}",
+            ),
+            &self.extra_headers,
+        )
+        .await
+    }
+}
+
+/// `sticky.strict` and the upstream the client's signed cookie names is unhealthy (#644): `503` with the reason
+/// `sticky_upstream_unavailable`. Same status as the circuit breaker, but the upstream is down, not overloaded.
+struct StickyUnavailableHandler {
+    extra_headers: Vec<(String, String)>,
+}
+
+#[async_trait]
+impl LocalHandlerImpl for StickyUnavailableHandler {
+    async fn handle(&mut self, session: &mut Session) -> pingora_core::Result<()> {
+        response::write_response(
+            session,
+            503,
+            "application/json",
+            bytes::Bytes::from_static(
+                b"{\"error\":\"Service Unavailable\",\"status\":503,\"reason\":\"sticky_upstream_unavailable\"}",
             ),
             &self.extra_headers,
         )
@@ -504,6 +529,19 @@ mod tests {
         let ctx = Some(make_ctx(UpstreamTarget::Local(LocalHandler::Overloaded)));
         let result = proxy.build_handler(HandlerKind::Overloaded, &ctx);
         assert!(result.is_some(), "Overloaded handler must return Some");
+    }
+
+    #[test]
+    fn build_handler_sticky_unavailable_returns_some() {
+        let proxy = make_proxy();
+        let ctx = Some(make_ctx(UpstreamTarget::Local(
+            LocalHandler::StickyUnavailable,
+        )));
+        let result = proxy.build_handler(HandlerKind::StickyUnavailable, &ctx);
+        assert!(
+            result.is_some(),
+            "StickyUnavailable handler must return Some"
+        );
     }
 
     // `make_proxy` is duplicated here (and in `retry.rs`'s own test module) --

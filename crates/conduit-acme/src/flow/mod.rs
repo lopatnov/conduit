@@ -27,9 +27,12 @@ pub use http01::ChallengeSource;
 pub use renewal::{renew_if_due, run_renewal_loop, RenewalJob};
 
 use http01::ChallengeServer;
-use storage::{cached_pair_matches, pair_paths, write_secret_atomic, PendingPair};
+use storage::{
+    cached_pair_matches, pair_paths, unsupported_key_format, write_secret_atomic, PendingPair,
+};
 
-/// How many days before certificate expiry to trigger automatic renewal.
+/// The most days before expiry at which renewal starts. A certificate with a shorter life renews earlier in proportion
+/// (see [`cert_renewal_due`]).
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
 
 /// On-disk paths to a site's TLS certificate and private key obtained via ACME.
@@ -59,6 +62,38 @@ pub fn cert_expires_within_days(cert_pem: &str, days: i64) -> bool {
     not_after < now + days * 86_400
 }
 
+/// `true` when the first certificate in `cert_pem` is due for renewal at `now` (seconds since the Unix epoch): when
+/// no more than a third of its lifetime is left, and never later than [`RENEWAL_THRESHOLD_DAYS`] before expiry.
+///
+/// A fixed 30 days is right for a 90-day certificate (a third of it) and wrong for the shorter ones the CAs are moving to
+/// (issue #594): 64-day certificates renew with 21 days left, 45-day ones with 15, a 6-day one with 2 (a fixed
+/// threshold would make that one due on every check, a new order every 12 hours). A parse error, an empty or inverted
+/// validity period counts as due, so a certificate that cannot be read is replaced rather than kept.
+pub fn cert_renewal_due(cert_pem: &str, now: i64) -> bool {
+    use x509_parser::pem::parse_x509_pem;
+    let Ok((_, pem)) = parse_x509_pem(cert_pem.as_bytes()) else {
+        return true;
+    };
+    let Ok(x509) = pem.parse_x509() else {
+        return true;
+    };
+    let not_before = x509.validity().not_before.timestamp();
+    let not_after = x509.validity().not_after.timestamp();
+    let lifetime = not_after - not_before;
+    if lifetime <= 0 {
+        return true;
+    }
+    let threshold = (lifetime / 3).min(RENEWAL_THRESHOLD_DAYS * 86_400);
+    now >= not_after - threshold
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::UNIX_EPOCH
+        .elapsed()
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// What the files already on disk are good for.
 #[derive(Debug, PartialEq, Eq)]
 enum CacheState {
@@ -73,7 +108,7 @@ enum CacheState {
 fn cache_state(cert_pem: Option<&str>, key_pem: Option<&str>) -> CacheState {
     match (cert_pem, key_pem) {
         (Some(cert), Some(key)) if cached_pair_matches(cert, key) => {
-            if cert_expires_within_days(cert, RENEWAL_THRESHOLD_DAYS) {
+            if cert_renewal_due(cert, unix_now()) {
                 CacheState::Expiring
             } else {
                 CacheState::Reusable
@@ -87,7 +122,7 @@ fn cache_state(cert_pem: Option<&str>, key_pem: Option<&str>) -> CacheState {
 /// obtain a fresh one.
 ///
 /// If valid cert/key files already exist and the certificate is not expiring
-/// within [`RENEWAL_THRESHOLD_DAYS`] days, the cached paths are returned
+/// due for renewal ([`cert_renewal_due`]), the cached paths are returned
 /// without contacting the ACME server.
 ///
 /// `challenges` is the shared HTTP-01 challenge store; it is populated during
@@ -189,11 +224,20 @@ async fn load_or_obtain_with(
             CacheState::Expiring => {
                 tracing::info!(domain, "ACME certificate expires soon — renewing");
             }
-            CacheState::Unusable => tracing::warn!(
-                domain,
-                "cached ACME certificate and key are unreadable or do not match — \
-                 obtaining a new certificate"
-            ),
+            CacheState::Unusable => match key_pem.as_deref().and_then(unsupported_key_format) {
+                Some(format) => tracing::warn!(
+                    domain,
+                    format,
+                    "the private key in {key_path:?} is {format}: only a PKCS#8 `PRIVATE KEY` is read, \
+                     so this key is not used. A new key and certificate are being ordered and will replace \
+                     the file; convert the key with `openssl pkcs8 -topk8 -nocrypt` to keep it"
+                ),
+                None => tracing::warn!(
+                    domain,
+                    "cached ACME certificate and key are unreadable or do not match — \
+                     obtaining a new certificate"
+                ),
+            },
         }
     } else {
         tracing::info!(domain, "obtaining ACME certificate for the first time");
@@ -237,8 +281,12 @@ async fn run_acme_order(
     let account = load_or_create_account(acme_cfg, &directory_url).await?;
 
     let identifiers = [Identifier::Dns(domain.to_string())];
+    let new_order = match acme_cfg.profile.as_deref() {
+        Some(profile) => NewOrder::new(&identifiers).profile(profile),
+        None => NewOrder::new(&identifiers),
+    };
     let mut order = account
-        .new_order(&NewOrder::new(&identifiers))
+        .new_order(&new_order)
         .await
         .context("ACME new-order request failed")?;
 
@@ -341,19 +389,79 @@ fn account_builder() -> anyhow::Result<instant_acme::AccountBuilder> {
     }
 }
 
-/// Load a persisted ACME account from `storage_dir/acme_account.json`, or
-/// create a new one with the ACME server and persist the credentials.
+/// FNV-1a, 64 bit: a hash that never changes between Rust versions (`DefaultHasher` may), for a file name.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// Refuse a credentials file that records another CA's directory than the one asked for. instant-acme sends orders
+/// to the directory stored in the credentials, so a file reached through a name collision (or copied by hand) would
+/// silently send them to the wrong CA (issue #555).
+fn check_recorded_directory(json: &str, directory_url: &str, path: &Path) -> anyhow::Result<()> {
+    let recorded = serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| {
+            v.get("directory")
+                .and_then(|d| d.as_str())
+                .map(str::to_owned)
+        });
+    match recorded {
+        Some(dir) if dir != directory_url => anyhow::bail!(
+            "ACME account file {path:?} belongs to the directory {dir}, not {directory_url}; move the file away so \
+             that an account is created for this directory"
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// Where the account for `directory_url` is kept (issue #555). `acme_account.json` is the account of the CA it was created
+/// for (the credentials record the directory URL); another directory, such as production after staging, gets its own
+/// file instead of being tried against the first CA's account. A file with no recorded directory (an older version's)
+/// is used as before.
+fn account_credentials_path(storage: &Path, directory_url: &str) -> PathBuf {
+    let default = storage.join("acme_account.json");
+    let recorded = std::fs::read_to_string(&default)
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|v| {
+            v.get("directory")
+                .and_then(|d| d.as_str())
+                .map(str::to_owned)
+        });
+    match recorded {
+        Some(dir) if dir != directory_url => {
+            // The slug only makes the name readable; the hash of the whole URL keeps two directories that slug alike
+            // (`https://a.b/dir`, `https://a_b/dir`, or one long shared prefix) apart.
+            let slug: String = directory_url
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .take(48)
+                .collect();
+            storage.join(format!(
+                "acme_account.{slug}.{:016x}.json",
+                fnv1a_64(directory_url.as_bytes())
+            ))
+        }
+        _ => default,
+    }
+}
+
+/// Load a persisted ACME account from `storage_dir/acme_account.json` (or the file of this directory, see
+/// [`account_credentials_path`]), or create a new one with the ACME server and persist the credentials.
 async fn load_or_create_account(
     acme_cfg: &AcmeConfig,
     directory_url: &str,
 ) -> anyhow::Result<Account> {
     let storage = acme_cfg.storage.as_deref().unwrap_or("./certs");
-    let creds_path = PathBuf::from(storage).join("acme_account.json");
+    let creds_path = account_credentials_path(Path::new(storage), directory_url);
 
     if creds_path.exists() {
         let json = tokio::fs::read_to_string(&creds_path)
             .await
             .with_context(|| format!("reading ACME credentials from {creds_path:?}"))?;
+        check_recorded_directory(&json, directory_url, &creds_path)?;
         let creds: AccountCredentials = serde_json::from_str(&json)
             .with_context(|| format!("parsing ACME credentials in {creds_path:?}"))?;
         let account = account_builder()?
@@ -391,6 +499,132 @@ async fn load_or_create_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directories_that_slug_alike_get_different_account_files() {
+        let dir = tempfile::tempdir().unwrap();
+        // the default file belongs to another CA, so both URLs below get a file of their own
+        std::fs::write(
+            dir.path().join("acme_account.json"),
+            r#"{"directory":"https://other.example/dir"}"#,
+        )
+        .unwrap();
+        let a = account_credentials_path(dir.path(), "https://a.b/dir");
+        let b = account_credentials_path(dir.path(), "https://a_b/dir");
+        assert_ne!(a, b);
+        let long = format!("https://ca.example/{}", "x".repeat(200));
+        assert_ne!(
+            account_credentials_path(dir.path(), &format!("{long}1")),
+            account_credentials_path(dir.path(), &format!("{long}2")),
+            "a shared prefix longer than the slug"
+        );
+        // the same URL always maps to the same file
+        assert_eq!(a, account_credentials_path(dir.path(), "https://a.b/dir"));
+        assert_eq!(fnv1a_64(b"abc"), 0xe71f_a219_0541_574b);
+    }
+
+    #[test]
+    fn a_credentials_file_for_another_directory_is_refused() {
+        let path = Path::new("/tmp/acme_account.json");
+        let json = r#"{"directory":"https://one.example/dir","id":"x"}"#;
+        assert!(check_recorded_directory(json, "https://one.example/dir", path).is_ok());
+        let err = check_recorded_directory(json, "https://two.example/dir", path)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("one.example") && err.contains("two.example"),
+            "{err}"
+        );
+        // a file with no recorded directory (an older version's) is used as before
+        assert!(check_recorded_directory(r#"{"id":"x"}"#, "https://two.example/dir", path).is_ok());
+    }
+
+    /// A self-signed certificate that is valid for `lifetime_days` days, `days_left` of which remain at `now`.
+    fn cert_with_life(lifetime_days: i64, days_left: i64, now: i64) -> String {
+        let key = rcgen::KeyPair::generate().expect("keygen");
+        let mut params =
+            rcgen::CertificateParams::new(vec!["example.com".to_string()]).expect("params");
+        let not_after = now + days_left * 86_400;
+        params.not_after = time::OffsetDateTime::from_unix_timestamp(not_after).expect("not_after");
+        params.not_before =
+            time::OffsetDateTime::from_unix_timestamp(not_after - lifetime_days * 86_400)
+                .expect("not_before");
+        params.self_signed(&key).expect("self-signed").pem()
+    }
+
+    #[test]
+    fn renewal_starts_at_a_third_of_the_lifetime_and_never_later_than_30_days_before_expiry() {
+        let now = 1_900_000_000;
+        // (lifetime, days left, due?)
+        for (life, left, due) in [
+            (90, 31, false),
+            (90, 29, true), // today's behaviour for a 90-day certificate
+            (64, 22, false),
+            (64, 20, true), // a third of 64 days is 21
+            (45, 16, false),
+            (45, 14, true), // a third of 45 days is 15
+            (6, 3, false),
+            (6, 1, true), // a 6-day certificate is not due on its first day
+            (6, 6, false),
+            (398, 31, false),
+            (398, 29, true), // longer than 90 days: still the 30-day cap
+        ] {
+            let pem = cert_with_life(life, left, now);
+            assert_eq!(
+                cert_renewal_due(&pem, now),
+                due,
+                "{life}-day certificate, {left} days left"
+            );
+        }
+        assert!(
+            cert_renewal_due("not a certificate", now),
+            "an unreadable certificate is due"
+        );
+    }
+
+    #[test]
+    fn the_account_file_follows_the_directory_it_was_created_for() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let staging = "https://acme-staging-v02.api.letsencrypt.org/directory";
+        let prod = "https://acme-v02.api.letsencrypt.org/directory";
+        // nothing stored yet: the default file, whatever the directory
+        assert_eq!(
+            account_credentials_path(dir.path(), prod),
+            dir.path().join("acme_account.json")
+        );
+        // an account created for staging
+        std::fs::write(
+            dir.path().join("acme_account.json"),
+            format!(r#"{{"id":"https://x/acct/1","key_pkcs8":"AA","directory":"{staging}"}}"#),
+        )
+        .expect("write");
+        assert_eq!(
+            account_credentials_path(dir.path(), staging),
+            dir.path().join("acme_account.json")
+        );
+        let other = account_credentials_path(dir.path(), prod);
+        assert_ne!(
+            other,
+            dir.path().join("acme_account.json"),
+            "production must not reuse staging's account"
+        );
+        assert!(other
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("acme_account.")
+                && n.ends_with(".json")
+                && !n.contains('/')));
+        // an older file with no recorded directory is used as before
+        std::fs::write(
+            dir.path().join("acme_account.json"),
+            r#"{"id":"https://x/acct/1","key_pkcs8":"AA"}"#,
+        )
+        .expect("write");
+        assert_eq!(
+            account_credentials_path(dir.path(), prod),
+            dir.path().join("acme_account.json")
+        );
+    }
 
     /// Build a self-signed cert + key PEM pair with a caller-controlled
     /// `not_after`, so tests can exercise both "far from expiry" and
@@ -461,6 +695,7 @@ mod tests {
             directory: Some("http://127.0.0.1:1/directory".to_string()),
             storage: None,
             challenge: None,
+            profile: None,
         };
         let paths = load_or_obtain_certificate(
             &cfg,
@@ -538,6 +773,7 @@ mod tests {
             directory: Some("http://127.0.0.1:1/directory".to_string()),
             storage: None,
             challenge: None,
+            profile: None,
         }
     }
 

@@ -225,6 +225,11 @@ pub enum LocalHandler {
     /// The handler returns `503 Service Unavailable` immediately without
     /// forwarding the request to any upstream.
     Overloaded,
+    /// `sticky.strict` and the upstream the signed cookie names is unhealthy.
+    ///
+    /// The handler returns `503 Service Unavailable` with the reason `sticky_upstream_unavailable`, without
+    /// forwarding the request to any upstream.
+    StickyUnavailable,
 }
 
 // Layer-0 vocabulary (#114/#126).

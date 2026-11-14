@@ -375,7 +375,7 @@ fn bound_listeners(
 /// require a server restart (cold fields).
 ///
 /// Cold fields: `global.workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`,
-/// the set of bound listener ports, and each port's `tls.cert`/`tls.key`.
+/// the set of bound listener ports, each port's `tls.cert`/`tls.key`, and every field of a site's `tls.acme`.
 pub(crate) fn detect_cold_changes(
     old: &crate::config::schema::AppConfig,
     new: &crate::config::schema::AppConfig,
@@ -425,7 +425,52 @@ pub(crate) fn detect_cold_changes(
         }
     }
 
+    // `tls.acme`: every field is read when the certificate is ordered at start-up and by the renewal loop, which
+    // a reload does not restart (issue #555). A change here would silently keep the old account, directory,
+    // storage directory or contact. Sites are matched by `host`, the name the certificate is ordered for.
+    let old_a = acme_by_host(old);
+    let new_a = acme_by_host(new);
+    for host in old_a
+        .keys()
+        .chain(new_a.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        match (old_a.get(host), new_a.get(host)) {
+            (Some(o), Some(n)) => {
+                for (name, changed) in [
+                    ("email", o.email != n.email),
+                    ("directory", o.directory != n.directory),
+                    ("storage", o.storage != n.storage),
+                    ("challenge", o.challenge != n.challenge),
+                    ("profile", o.profile != n.profile),
+                ] {
+                    if changed {
+                        cold.push(format!("sites[{host}].tls.acme.{name}"));
+                    }
+                }
+            }
+            (Some(_), None) | (None, Some(_)) => cold.push(format!("sites[{host}].tls.acme")),
+            (None, None) => {}
+        }
+    }
+
     cold
+}
+
+/// The `tls.acme` block of every site that has one, by the site's `host` (the first site wins for a repeated host).
+fn acme_by_host(
+    cfg: &crate::config::schema::AppConfig,
+) -> std::collections::BTreeMap<String, &crate::config::schema::AcmeConfig> {
+    let mut out = std::collections::BTreeMap::new();
+    for site in &cfg.sites {
+        if let (Some(host), Some(acme)) = (
+            site.host.as_ref(),
+            site.tls.as_ref().and_then(|t| t.acme.as_ref()),
+        ) {
+            out.entry(host.clone()).or_insert(acme);
+        }
+    }
+    out
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -499,6 +544,67 @@ mod tests {
         assert!(
             cold.iter().any(|f| f.contains("tls.cert")),
             "cert change must be cold: {cold:?}"
+        );
+    }
+
+    fn acme_site(email: &str, directory: &str, storage: &str) -> crate::config::schema::AppConfig {
+        cfg(&format!(
+            r#"{{"sites":[{{"port":443,"host":"a.example.com","tls":{{"acme":{{"email":"{email}","directory":"{directory}","storage":"{storage}"}}}}}}]}}"#
+        ))
+    }
+
+    #[test]
+    fn every_acme_field_that_is_read_only_at_start_up_is_cold() {
+        let base = acme_site("ops@example.com", "https://ca.test/dir", "./certs");
+        assert!(detect_cold_changes(
+            &base,
+            &acme_site("ops@example.com", "https://ca.test/dir", "./certs")
+        )
+        .is_empty());
+        for (new, field) in [
+            (
+                acme_site("other@example.com", "https://ca.test/dir", "./certs"),
+                "email",
+            ),
+            (
+                acme_site("ops@example.com", "https://other.test/dir", "./certs"),
+                "directory",
+            ),
+            (
+                acme_site("ops@example.com", "https://ca.test/dir", "./elsewhere"),
+                "storage",
+            ),
+            (
+                cfg(
+                    r#"{"sites":[{"port":443,"host":"a.example.com","tls":{"acme":{"email":"ops@example.com","directory":"https://ca.test/dir","storage":"./certs","profile":"shortlived"}}}]}"#,
+                ),
+                "profile",
+            ),
+        ] {
+            let cold = detect_cold_changes(&base, &new);
+            assert_eq!(
+                cold,
+                vec![format!("sites[a.example.com].tls.acme.{field}")],
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn adding_or_removing_acme_on_a_site_is_cold() {
+        let with = acme_site("ops@example.com", "https://ca.test/dir", "./certs");
+        let without = cfg(
+            r#"{"sites":[{"port":443,"host":"a.example.com","tls":{"cert":"c.pem","key":"k.pem"}}]}"#,
+        );
+        let cold = detect_cold_changes(&without, &with);
+        assert!(
+            cold.iter().any(|f| f == "sites[a.example.com].tls.acme"),
+            "{cold:?}"
+        );
+        let cold = detect_cold_changes(&with, &without);
+        assert!(
+            cold.iter().any(|f| f == "sites[a.example.com].tls.acme"),
+            "{cold:?}"
         );
     }
 

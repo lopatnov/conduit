@@ -155,7 +155,7 @@ pub(super) async fn upstream_response_filter(
     // Clone sticky-cookie data before the chain runs so that subsequent
     // mutable borrows of `ctx` (in MaskBody / RetryUpstream arms) do not
     // conflict with the immutable `req_ctx` reference.
-    let sticky_cookie: Option<(String, String)> = req_ctx.proxy.sticky_set_cookie.clone();
+    let sticky_cookie = req_ctx.proxy.sticky_set_cookie.clone();
 
     // The response chain may execute WASM plugins whose .wasm file is read from disk on first load, so a chain that
     // has one runs through `block_in_place`; a chain that only edits headers runs in place (issue #475: the
@@ -219,12 +219,18 @@ pub(super) async fn upstream_response_filter(
     //
     // This runs after the response chain so it is never clobbered by
     // response transforms.  The value is `HttpOnly; SameSite=Lax` so it is
-    // not accessible from JavaScript and provides basic CSRF protection.
-    if let Some((cookie_name, cookie_val)) = &sticky_cookie {
-        let cookie_header = format!(
-            "{}={}; Path=/; HttpOnly; SameSite=Lax",
-            cookie_name, cookie_val
-        );
+    // not accessible from JavaScript and provides basic CSRF protection;
+    // `Secure` and `Max-Age` follow the sticky config (`StickyCookie::header_value`).
+    if let Some(cookie) = &sticky_cookie {
+        // `Secure` follows `sticky.secure`, or (unset) whether the matched site has TLS, the same test
+        // `X-Forwarded-Proto` uses (`transform.rs`).
+        let site_has_tls = ctx.as_ref().is_some_and(|c| {
+            config
+                .sites
+                .get(c.site_idx)
+                .is_some_and(|site| site.tls.is_some())
+        });
+        let cookie_header = cookie.header_value(site_has_tls);
         // Use append_header so upstream Set-Cookie headers (session
         // tokens, auth cookies) are preserved alongside the sticky cookie.
         let _ = upstream_response.append_header("set-cookie", cookie_header);

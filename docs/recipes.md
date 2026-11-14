@@ -187,9 +187,10 @@ proxy:
 > **Requires** `cargo build --features acme`
 
 Conduit obtains certificates at startup. A background task renews them
-automatically when they approach expiry (30 days before). The renewed files
+automatically when they approach expiry (a third of the lifetime before, at most 30 days: 30 days for 90-day certificates). The renewed files
 are written to disk, but the running process keeps serving the old certificate
-until it restarts — restart Conduit within that 30-day window.
+until it restarts — restart Conduit within that window. Every renewal is a fresh HTTP-01 challenge, so port 80 must be reachable by the CA at
+every renewal, not only at the first order (Let's Encrypt shortens the reuse of a validation to 10 days from 2027-02-10).
 The domain must point to this server and port 80 must be reachable for the HTTP-01 challenge.
 
 ```yaml

@@ -129,6 +129,38 @@ impl RetryState {
     }
 }
 
+/// The sticky-session cookie to set on a response (issue #39): its name, the HMAC-signed value, and the
+/// attributes the operator chose (`sticky.secure`, `sticky.maxAgeSecs`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StickyCookie {
+    pub name: String,
+    pub value: String,
+    /// `sticky.secure`: `None` means "when the site has TLS".
+    pub secure: Option<bool>,
+    /// `sticky.maxAgeSecs`: `None` is a session cookie.
+    pub max_age_secs: Option<u64>,
+}
+
+impl StickyCookie {
+    /// The `Set-Cookie` header value. `HttpOnly; SameSite=Lax` always (not readable from JavaScript, basic CSRF
+    /// protection); `Secure` as `secure` says, or, when it is unset, when the matched site has `tls`; `Max-Age`
+    /// when set.
+    #[must_use]
+    pub fn header_value(&self, site_has_tls: bool) -> String {
+        let mut header = format!(
+            "{}={}; Path=/; HttpOnly; SameSite=Lax",
+            self.name, self.value
+        );
+        if self.secure.unwrap_or(site_has_tls) {
+            header.push_str("; Secure");
+        }
+        if let Some(secs) = self.max_age_secs {
+            header.push_str(&format!("; Max-Age={secs}"));
+        }
+        header
+    }
+}
+
 /// Per-request proxy-routing state, threaded through the request pipeline.
 ///
 /// Embedded in `RequestCtx` as `pub proxy: ProxyReqState` (`src/proxy/ctx.rs`).
@@ -218,9 +250,8 @@ pub struct ProxyReqState {
     /// Sticky-session cookie to set on the response when HMAC signing is enabled.
     ///
     /// Populated during routing when `sticky.secret` is configured.
-    /// Format: `(cookie_name, hmac_signed_value)`.  The `upstream_response_filter`
-    /// injects the corresponding `Set-Cookie` header.
-    pub sticky_set_cookie: Option<(String, String)>,
+    /// The `upstream_response_filter` injects the corresponding `Set-Cookie` header.
+    pub sticky_set_cookie: Option<StickyCookie>,
     /// Per-route rate limit selected during routing (issue #360), together
     /// with the bucket-key fragment identifying which route it came from.
     ///
@@ -244,6 +275,42 @@ pub struct ProxyReqState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cookie(secure: Option<bool>, max_age_secs: Option<u64>) -> StickyCookie {
+        StickyCookie {
+            name: "srv".to_owned(),
+            value: "v".to_owned(),
+            secure,
+            max_age_secs,
+        }
+    }
+
+    /// Issue #644: `Secure` follows `sticky.secure`, or the site's TLS when it is unset; `Max-Age` only when set.
+    #[test]
+    fn the_sticky_cookie_header_carries_secure_and_max_age_as_configured() {
+        let base = "srv=v; Path=/; HttpOnly; SameSite=Lax";
+        // unset: Secure only on a TLS site (a Secure cookie on plain HTTP would be dropped by the browser)
+        assert_eq!(cookie(None, None).header_value(false), base);
+        assert_eq!(
+            cookie(None, None).header_value(true),
+            format!("{base}; Secure")
+        );
+        // explicit: wins over the site
+        assert_eq!(
+            cookie(Some(true), None).header_value(false),
+            format!("{base}; Secure")
+        );
+        assert_eq!(cookie(Some(false), None).header_value(true), base);
+        // Max-Age after Secure
+        assert_eq!(
+            cookie(Some(true), Some(3600)).header_value(false),
+            format!("{base}; Secure; Max-Age=3600")
+        );
+        assert_eq!(
+            cookie(None, Some(60)).header_value(false),
+            format!("{base}; Max-Age=60")
+        );
+    }
 
     fn make_retry(attempt: usize, max: usize, conditions: &[&str]) -> RetryState {
         RetryState {

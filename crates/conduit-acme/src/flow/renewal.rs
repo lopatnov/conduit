@@ -138,6 +138,7 @@ mod tests {
                 directory: Some("http://127.0.0.1:1/directory".to_owned()),
                 storage: None,
                 challenge: None,
+                profile: None,
             },
             domain: "example.com".to_owned(),
             storage_dir: dir.to_path_buf(),

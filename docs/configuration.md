@@ -421,9 +421,16 @@ letters, digits and hyphens separated by dots (international names in punycode, 
 no `/`, `\`, `..`, empty label or other character. A leading `*.` is accepted, but a CA
 validating over HTTP-01, the only challenge Conduit implements, normally refuses wildcards.
 
-A background task renews the certificate on disk when it is within 30 days of
-expiry; the running process keeps serving the one it loaded, so restart Conduit
-within that window. Details: [`acme` in the CLI reference](cli.md#acme--auto-tls--lets-encrypt).
+A background task renews the certificate on disk when no more than a third of its lifetime is left, and never
+later than 30 days before expiry (30 days for a 90-day certificate, 21 for a 64-day one, 15 for a 45-day one); the running process keeps serving the one it loaded, so restart Conduit
+within that window (with `profile: shortlived`, a certificate of about 6 days, that window is 2 days: restart at least every day or two, or the process serves an expired certificate). Details: [`acme` in the CLI reference](cli.md#acme--auto-tls--lets-encrypt).
+
+The account with the CA is kept in `<storage>/acme_account.json`, which records the directory URL it was created for.
+When you point `directory` at another CA (staging to production, say), the old account is not tried against the new CA:
+a second file, `acme_account.<readable part of the URL>.<hash of the whole URL>.json`, holds the account for it, and a file that records another directory than the one asked for is refused. A private key that you placed at
+`<storage>/<host>.key.pem` is read only as PKCS#8 (`-----BEGIN PRIVATE KEY-----`); a PKCS#1 (`RSA PRIVATE KEY`), SEC1
+(`EC PRIVATE KEY`) or encrypted key is named in the log and then **replaced** by a newly ordered key, so convert it first
+(`openssl pkcs8 -topk8 -nocrypt -in old.key -out <host>.key.pem`).
 
 ### TLS field reference
 
@@ -446,6 +453,7 @@ within that window. Details: [`acme` in the CLI reference](cli.md#acme--auto-tls
 > error (fails startup with an explanation) rather than a silent no-op, so a
 > misconfigured expectation of TLS restriction can't go unnoticed.
 | `acme.challenge`   | string   | —       | `"http-01"` (the only challenge implemented; other values are rejected)                                                                                                                     |
+| `acme.profile`     | string   | —       | Certificate profile to ask the CA for (Let's Encrypt: `classic`, `tlsserver`, `shortlived`); absent = the CA's default. An empty value is rejected; a profile the CA does not offer fails the order |
 | `acme.directory`   | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
 | `clientAuth`       | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication)                                                                     |
 
@@ -726,6 +734,8 @@ proxy:
 | `sticky.cookie`       | string               | —             | Cookie name for sticky sessions                                                |
 | `sticky.secret`       | string               | —             | HMAC-SHA256 secret — Conduit signs + verifies the cookie (prevents forgery)    |
 | `sticky.strict`       | boolean              | `false`       | Return 503 when the pinned upstream is down (instead of routing elsewhere)     |
+| `sticky.secure`       | boolean              | when `tls`    | `Secure` attribute of the cookie Conduit sets (needs `secret`)                 |
+| `sticky.maxAgeSecs`   | integer              | session       | `Max-Age` of the cookie Conduit sets (needs `secret`)                          |
 | `groups`              | object[]             | —             | Two-level LB groups: `[{name, targets, strategy}]`                             |
 | `groupStrategy`       | string               | `round-robin` | Outer strategy when `groups` is set                                            |
 | `priority`            | number (0–100)       | `50`          | Request priority for load shedding — see [Priority routing](#priority-routing) |
@@ -1391,7 +1401,9 @@ All the options of `sticky`:
 | --- | --- | --- | --- |
 | `cookie` | string | required | Cookie name to read (and, with `secret`, to set). |
 | `secret` | string | none | Key for signing and verifying. Use an environment variable (`"$STICKY_SECRET"`). |
-| `strict` | boolean | `false` | With `secret`: refuse with `503` instead of relocating when the pinned upstream is unhealthy. |
+| `strict` | boolean | `false` | With `secret`: refuse with `503` (reason `sticky_upstream_unavailable`) instead of relocating when the pinned upstream is unhealthy. |
+| `secure` | boolean | `Secure` when the site has `tls` | With `secret`: the `Secure` attribute of the cookie. `true` always (use it behind a load balancer that terminates TLS: Conduit then sees plain HTTP); `false` never. |
+| `maxAgeSecs` | integer ≥ 1 | session cookie | With `secret`: the `Max-Age` of the cookie. |
 
 **Use when:** the application keeps session state in the memory of one process
 (a shopping cart, a login held in the worker, an upload that must finish on the
@@ -1467,7 +1479,16 @@ proxy:
 | `strict: false` (default) | If the pinned upstream is unhealthy, fall back to the next available backend |
 | `strict: true` | If the pinned upstream is unhealthy, return `503 Service Unavailable` immediately |
 
-The injected cookie attributes are: `Path=/; HttpOnly; SameSite=Lax`.
+The injected cookie attributes are `Path=/; HttpOnly; SameSite=Lax`, plus `Secure` and `Max-Age` as configured:
+
+- `secure` unset means "when the matched site has `tls`". A plain-HTTP site gets no `Secure`, because a browser drops
+  a `Secure` cookie it received over HTTP and the affinity would silently end. Behind a load balancer that
+  terminates TLS, Conduit itself sees plain HTTP: set `secure: true` there.
+- `maxAgeSecs` unset means a session cookie (it ends with the browser session). It is an instruction to the browser,
+  not a check on the server: the signed value carries no expiry, so a client that keeps the cookie can still send it.
+  The pin is a preference for an upstream, not a credential. `0` is rejected (it would delete the cookie).
+- With `strict: true` the refusal is `503` with `"reason":"sticky_upstream_unavailable"` (the upstream is down; the
+  circuit breaker's `upstream_overloaded` is a different case).
 
 **How the pin is applied.** With a `secret` set, the verified cookie names one
 exact upstream, and Conduit routes to *that* upstream directly — the
@@ -3439,8 +3460,8 @@ hotReload:
 `logging`, `cors`, `securityHeaders`, `cache`, `outlierDetection`, `limits`,
 `requestTransform`, `responseTransform`, `maskErrors`.
 
-**Requires cold restart:** `port`, `tls.cert/key`, `workers`, `global.shutdownTimeoutSecs`,
-`global.admin.bind`. (`tls.versions`/`tls.ciphers` are not listed here
+**Requires cold restart:** `port`, `tls.cert/key`, every field of `tls.acme` (and adding or removing it on a site),
+`workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`. (`tls.versions`/`tls.ciphers` are not listed here
 because they're rejected at validate-time — see [TLS field reference]
 (#tls-field-reference) — not merely cold-restart-only.)
 
