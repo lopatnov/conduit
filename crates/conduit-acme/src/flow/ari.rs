@@ -83,7 +83,7 @@ pub(super) fn window_says_renew(
     if end < start {
         return false;
     }
-    let span = (end - start) as u64 + 1;
+    let span = end.saturating_sub(start) as u64 + 1;
     let chosen = start.saturating_add((seed % span) as i64);
     now >= chosen || end <= now.saturating_add(interval_secs)
 }

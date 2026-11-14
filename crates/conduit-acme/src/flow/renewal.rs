@@ -19,8 +19,8 @@ use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use super::{
-    ari, cache_state, load_or_create_account, load_or_obtain_with, pair_paths, unix_now,
-    AcmeCertPaths, CacheState, ChallengeSource,
+    ari, cache_state, load_or_create_account, load_or_obtain_with, pair_paths,
+    stored_account_exists, unix_now, AcmeCertPaths, CacheState, ChallengeSource,
 };
 use crate::config::AcmeConfig;
 
@@ -84,6 +84,10 @@ async fn ca_asks_for_renewal(job: &RenewalJob, cert_pem: &str) -> bool {
         .directory
         .as_deref()
         .unwrap_or_else(|| instant_acme::LetsEncrypt::Production.url());
+    if !stored_account_exists(&job.acme, directory_url) {
+        // No account yet: the first order creates it. Asking about a certificate that is not due must not.
+        return false;
+    }
     let account = match load_or_create_account(&job.acme, directory_url).await {
         Ok(account) => account,
         Err(e) => {
@@ -333,10 +337,15 @@ mod tests {
             .to_string()
     }
 
-    fn job_for(dir: &std::path::Path, ca: &MockCa) -> RenewalJob {
+    /// A job against the mock CA, with an account already stored (renewal asks ARI only when there is one).
+    async fn job_for(dir: &std::path::Path, ca: &MockCa) -> RenewalJob {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let mut job = job(dir);
         job.acme.directory = Some(ca.directory_url.clone());
         job.acme.storage = Some(dir.to_string_lossy().into_owned());
+        load_or_create_account(&job.acme, &ca.directory_url)
+            .await
+            .expect("account on the mock CA");
         job
     }
 
@@ -357,7 +366,7 @@ mod tests {
         })
         .await;
 
-        let err = renew(&job_for(dir.path(), &ca))
+        let err = renew(&job_for(dir.path(), &ca).await)
             .await
             .expect_err("the mock CA refuses every order");
         assert!(format!("{err:#}").contains("new-order"), "got: {err:#}");
@@ -394,7 +403,10 @@ mod tests {
         })
         .await;
 
-        assert!(matches!(renew(&job_for(dir.path(), &ca)).await, Ok(None)));
+        assert!(matches!(
+            renew(&job_for(dir.path(), &ca).await).await,
+            Ok(None)
+        ));
 
         let seen = ca.seen.lock().unwrap();
         assert_eq!(seen.ari_ids.len(), 1, "the CA was asked");
@@ -411,7 +423,7 @@ mod tests {
         })
         .await;
 
-        assert!(renew(&job_for(dir.path(), &ca)).await.is_err());
+        assert!(renew(&job_for(dir.path(), &ca).await).await.is_err());
         assert!(
             !ca.seen.lock().unwrap().orders.is_empty(),
             "renewed now: the next check would be after the window"
@@ -428,7 +440,7 @@ mod tests {
         })
         .await;
 
-        assert!(renew(&job_for(dir.path(), &ca)).await.is_err());
+        assert!(renew(&job_for(dir.path(), &ca).await).await.is_err());
 
         let seen = ca.seen.lock().unwrap();
         assert!(!seen.orders.is_empty(), "the renewal went ahead");
@@ -441,13 +453,16 @@ mod tests {
         issued_pair(dir.path(), 10);
         let ca = MockCa::start(Ari::Absent).await;
         // not due, no ARI in the directory: nothing happens
-        assert!(matches!(renew(&job_for(dir.path(), &ca)).await, Ok(None)));
+        assert!(matches!(
+            renew(&job_for(dir.path(), &ca).await).await,
+            Ok(None)
+        ));
         assert!(ca.seen.lock().unwrap().ari_ids.is_empty());
 
         // due by the lifetime rule: the order goes out without `replaces` (a CA without ARI would refuse it)
         let due = tempfile::TempDir::new().unwrap();
         issued_pair(due.path(), 75);
-        assert!(renew(&job_for(due.path(), &ca)).await.is_err());
+        assert!(renew(&job_for(due.path(), &ca).await).await.is_err());
         let seen = ca.seen.lock().unwrap();
         assert_eq!(seen.orders.len(), 1);
         assert!(seen.orders[0].get("replaces").is_none());
@@ -459,7 +474,31 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         issued_pair(dir.path(), 10);
         let ca = MockCa::start(Ari::Broken).await;
-        assert!(matches!(renew(&job_for(dir.path(), &ca)).await, Ok(None)));
+        assert!(matches!(
+            renew(&job_for(dir.path(), &ca).await).await,
+            Ok(None)
+        ));
         assert!(ca.seen.lock().unwrap().orders.is_empty());
+    }
+
+    #[tokio::test]
+    async fn asking_about_a_certificate_that_is_not_due_does_not_register_an_account() {
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 10);
+        let ca = MockCa::start(Ari::Window {
+            start: now() - 7200,
+            end: now() - 3600,
+        })
+        .await;
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut job = job(dir.path());
+        job.acme.directory = Some(ca.directory_url.clone());
+        job.acme.storage = Some(dir.path().to_string_lossy().into_owned());
+
+        // no account stored: ARI is not asked and nothing is created, even though the window is open
+        assert!(matches!(renew(&job).await, Ok(None)));
+        let seen = ca.seen.lock().unwrap();
+        assert_eq!(seen.accounts, 0);
+        assert!(seen.ari_ids.is_empty() && seen.orders.is_empty());
     }
 }

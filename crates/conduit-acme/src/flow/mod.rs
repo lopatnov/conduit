@@ -491,6 +491,13 @@ fn account_credentials_path(storage: &Path, directory_url: &str) -> PathBuf {
     }
 }
 
+/// `true` when an account for `directory_url` is already stored. A check that may end in "nothing to do" (the ARI
+/// question of [`renewal`]) must not register a new account with the CA as a side effect.
+fn stored_account_exists(acme_cfg: &AcmeConfig, directory_url: &str) -> bool {
+    let storage = acme_cfg.storage.as_deref().unwrap_or("./certs");
+    account_credentials_path(Path::new(storage), directory_url).exists()
+}
+
 /// Load a persisted ACME account from `storage_dir/acme_account.json` (or the file of this directory, see
 /// [`account_credentials_path`]), or create a new one with the ACME server and persist the credentials.
 async fn load_or_create_account(

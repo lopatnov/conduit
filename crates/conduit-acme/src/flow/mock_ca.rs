@@ -22,6 +22,8 @@ pub(super) struct Seen {
     pub orders: Vec<serde_json::Value>,
     /// The certificate identifier of every renewal-information request.
     pub ari_ids: Vec<String>,
+    /// How many accounts were created.
+    pub accounts: usize,
 }
 
 pub(super) struct MockCa {
@@ -162,11 +164,14 @@ fn answer(
             ("200 OK", format!("{json}{nonce}"), dir.to_string())
         }
         ("HEAD" | "GET", "/nonce") => ("200 OK", nonce.to_owned(), String::new()),
-        ("POST", "/new-acct") => (
-            "201 Created",
-            format!("{json}{nonce}Location: {base}/acct/1\r\n"),
-            r#"{"status":"valid"}"#.to_owned(),
-        ),
+        ("POST", "/new-acct") => {
+            seen.lock().unwrap().accounts += 1;
+            (
+                "201 Created",
+                format!("{json}{nonce}Location: {base}/acct/1\r\n"),
+                r#"{"status":"valid"}"#.to_owned(),
+            )
+        }
         ("POST", "/new-order") => {
             if let Some(p) = jws_payload(body) {
                 seen.lock().unwrap().orders.push(p);
