@@ -3,7 +3,7 @@
 //! `newOrder` and which certificate identifiers were asked about, so a test can assert on the wire.
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// What the mock CA does with a renewal-information request.
@@ -34,6 +34,8 @@ pub(super) struct MockCa {
     pub hang_directory: Arc<AtomicBool>,
     /// While set, a `newOrder` request is accepted and never answered.
     pub hang_new_order: Arc<AtomicBool>,
+    /// How many `newOrder` requests were accepted and left unanswered because of `hang_new_order`.
+    pub hung_new_orders: Arc<AtomicUsize>,
     /// The `Retry-After` (seconds) of every renewal-information answer; 6 hours until a test sets it.
     pub retry_after_secs: Arc<AtomicU64>,
 }
@@ -227,6 +229,8 @@ impl MockCa {
         let seen = Arc::new(Mutex::new(Seen::default()));
         let hang = Arc::new(AtomicBool::new(false));
         let hang_order = Arc::new(AtomicBool::new(false));
+        let hung_orders = Arc::new(AtomicUsize::new(0));
+        let hu = hung_orders.clone();
         let retry_after = Arc::new(AtomicU64::new(21_600));
         let (b, s, h, ho) = (base.clone(), seen.clone(), hang.clone(), hang_order.clone());
         let ra = retry_after.clone();
@@ -235,7 +239,7 @@ impl MockCa {
                 let Ok(stream) = stream else { return };
                 let (base, ari, seen, config) =
                     (b.clone(), ari.clone(), s.clone(), tls.config.clone());
-                let (hang, hang_order, ra) = (h.clone(), ho.clone(), ra.clone());
+                let (hang, hang_order, ra, hu) = (h.clone(), ho.clone(), ra.clone(), hu.clone());
                 std::thread::spawn(move || {
                     let Ok(conn) = rustls::ServerConnection::new(config) else {
                         return;
@@ -244,9 +248,12 @@ impl MockCa {
                     let Some((method, path, body)) = read_request(&mut stream) else {
                         return;
                     };
-                    if (path == "/directory" && hang.load(Ordering::SeqCst))
-                        || (path == "/new-order" && hang_order.load(Ordering::SeqCst))
-                    {
+                    let hang_this = (path == "/directory" && hang.load(Ordering::SeqCst))
+                        || (path == "/new-order" && hang_order.load(Ordering::SeqCst));
+                    if hang_this {
+                        if path == "/new-order" {
+                            hu.fetch_add(1, Ordering::SeqCst);
+                        }
                         std::thread::sleep(std::time::Duration::from_secs(3600));
                         return;
                     }
@@ -270,6 +277,7 @@ impl MockCa {
             seen,
             hang_directory: hang,
             hang_new_order: hang_order,
+            hung_new_orders: hung_orders,
             retry_after_secs: retry_after,
         }
     }

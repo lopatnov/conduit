@@ -625,12 +625,35 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let before = std::fs::read(dir.path().join("example.com.key.pem")).unwrap();
 
+        // Real time until the order has reached the silent `newOrder` (the account and directory requests before it
+        // go over real sockets, and a paused clock would jump past their timeouts while they are in flight); virtual
+        // time from there, so the 60 s limit costs nothing.
+        let task = tokio::spawn({
+            let job = job.clone();
+            async move { renew(&job).await }
+        });
+        for _ in 0..1000 {
+            if ca.hung_new_orders.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            ca.hung_new_orders.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the order reached newOrder"
+        );
         tokio::time::pause();
-        let err = tokio::time::timeout(Duration::from_secs(600), renew(&job))
+        let err = tokio::time::timeout(Duration::from_secs(600), task)
             .await
             .expect("the order must give up by itself, well before the outer limit")
+            .unwrap()
             .expect_err("a silent CA is an error");
-        assert!(format!("{err:#}").contains("timed out"), "got: {err:#}");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("new-order request") && message.contains("timed out"),
+            "the newOrder step is the one that timed out, got: {message}"
+        );
         assert_eq!(
             std::fs::read(dir.path().join("example.com.key.pem")).unwrap(),
             before,
