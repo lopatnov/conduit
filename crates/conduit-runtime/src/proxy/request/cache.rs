@@ -10,7 +10,7 @@ use pingora_core::Result;
 use pingora_proxy::Session;
 
 use crate::proxy::cache as proxy_cache;
-#[cfg(feature = "cache")]
+#[cfg(feature = "disk-cache")]
 use crate::proxy::cache_disk;
 // Only used inside request_cache_filter's `#[cfg(feature = "cache")]` body
 // below -- `redis` alone (e.g. for the Redis-backed rate limiter, which
@@ -72,7 +72,21 @@ pub(crate) fn request_cache_filter(
                 return Ok(());
             }
         } else if let Some(dir) = cfg.store.strip_prefix("disk:") {
-            cache_disk::get_or_create(dir)
+            #[cfg(feature = "disk-cache")]
+            {
+                cache_disk::get_or_create(dir)
+            }
+            #[cfg(not(feature = "disk-cache"))]
+            {
+                let _ = dir;
+                // Said once at start-up and on reload (`feature_warnings`, `disk_feature_warning`); here, per
+                // request, it is only a debug line.
+                tracing::debug!(
+                    store = %cfg.store,
+                    "disk cache requires --features disk-cache — caching disabled"
+                );
+                return Ok(());
+            }
         } else {
             tracing::warn!(
                 store = %cfg.store,

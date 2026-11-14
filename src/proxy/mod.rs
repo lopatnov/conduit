@@ -1,4 +1,5 @@
 pub mod cache;
+#[cfg(feature = "disk-cache")]
 pub mod cache_disk;
 #[cfg(feature = "redis")]
 pub mod cache_redis;
