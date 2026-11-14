@@ -47,4 +47,4 @@ was `tokio::task::block_in_place` around the response filter chain on every resp
 Deterministic cost model, no quiet machine needed: runs conduit under `valgrind --tool=cachegrind`, drives N1 then N2
 keep-alive requests through one connection and prints the slope `(Ir(N2)-Ir(N1))/(N2-N1)`. Repeat runs of one binary
 differ by ~0.2 %, so only differences above that mean anything. Build with `CARGO_PROFILE_RELEASE_DEBUG=1` and
-`KEEP=1` to `cg_annotate` the output (swap `--tool=callgrind` for inclusive call trees).
+`KEEP=/some/dir` to copy the output files there for `cg_annotate` (swap `--tool=callgrind` for inclusive call trees).

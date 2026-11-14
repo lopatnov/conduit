@@ -151,7 +151,11 @@ pub(super) fn append_forwarded_headers(
 ) -> Result<()> {
     // X-Forwarded-For: chain or start a new entry. One allocation: the address is formatted
     // straight into the final value (#486).
-    if let Some(ip) = session.client_addr().and_then(|a| a.as_inet()).map(|a| a.ip()) {
+    if let Some(ip) = session
+        .client_addr()
+        .and_then(|a| a.as_inet())
+        .map(|a| a.ip())
+    {
         let xff = match upstream_request
             .headers
             .get("x-forwarded-for")

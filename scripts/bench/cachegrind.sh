@@ -9,9 +9,9 @@ set -uo pipefail
 BIN=${1:?usage: cachegrind.sh BIN [N1] [N2]}
 N1=${2:-2000}
 N2=${3:-6000}
-KEEP=${KEEP:-}   # set to a directory to keep the cachegrind.out files for cg_annotate
+KEEP=${KEEP:-}   # set to a directory: the cachegrind.out files (cg.N1, cg.N2) are copied there for cg_annotate
 WORK=$(mktemp -d)
-trap 'kill -9 $(jobs -p) 2>/dev/null; [ -n "$KEEP" ] || rm -rf "$WORK"' EXIT
+trap 'kill -9 $(jobs -p) 2>/dev/null; if [ -n "$KEEP" ]; then mkdir -p "$KEEP" && cp "$WORK"/cg.* "$KEEP"/ && echo "cachegrind output kept in $KEEP" >&2; fi; rm -rf "$WORK"' EXIT
 
 PORT=${PORT:-18080}; ADMIN=${ADMIN:-12019}; UP=${UP:-14000}
 

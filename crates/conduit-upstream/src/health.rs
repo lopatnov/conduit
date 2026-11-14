@@ -239,8 +239,6 @@ pub fn record_request_latency(
     }
 }
 
-/// Record a completed request's HTTP status code for per-upstream statistics.
-///
 /// Exclusive handle on `url`'s entry. The entry exists after the first request, so look it up by
 /// `&str` first and allocate the owned key only on the first miss (#486): every proxied request
 /// takes this path several times.
@@ -254,6 +252,8 @@ fn status_mut<'a>(
     registry.statuses.entry(url.to_owned()).or_default()
 }
 
+/// Record a completed request's HTTP status code for per-upstream statistics.
+///
 /// Increments the matching `responses_2xx`, `responses_4xx`, or `responses_5xx`
 /// counter on the upstream entry.  Called from `logging()` after every proxied
 /// request.
