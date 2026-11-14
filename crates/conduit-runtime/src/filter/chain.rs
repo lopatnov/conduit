@@ -93,11 +93,14 @@ impl RequestFilter for XRequestIdGuard {
             .headers
             .contains_key("x-request-id");
         if !has {
-            let id = Uuid::new_v4().to_string();
+            // Stack buffer, no `String`; `fast-rng` draws from a thread-local ChaCha stream
+            // instead of a `getrandom` syscall per request (#486).
+            let mut buf = Uuid::encode_buffer();
+            let id: &str = Uuid::new_v4().hyphenated().encode_lower(&mut buf);
             let _ = ctx
                 .session
                 .req_header_mut()
-                .insert_header("x-request-id", &id);
+                .insert_header("x-request-id", id);
         }
         Ok(FilterOutcome::Continue)
     }

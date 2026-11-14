@@ -183,7 +183,7 @@ pub fn record_request_latency(
 ) {
     let ts_f64 = now_secs_f64();
 
-    let mut entry = registry.statuses.entry(url.to_owned()).or_default();
+    let mut entry = status_mut(registry, url);
 
     // Apply time-based decay since the last sample.
     let delta = if entry.ewma_last_sample_secs > 0.0 {
@@ -241,11 +241,24 @@ pub fn record_request_latency(
 
 /// Record a completed request's HTTP status code for per-upstream statistics.
 ///
+/// Exclusive handle on `url`'s entry. The entry exists after the first request, so look it up by
+/// `&str` first and allocate the owned key only on the first miss (#486): every proxied request
+/// takes this path several times.
+fn status_mut<'a>(
+    registry: &'a UpstreamRegistry,
+    url: &str,
+) -> dashmap::mapref::one::RefMut<'a, String, UpstreamEntry> {
+    if let Some(e) = registry.statuses.get_mut(url) {
+        return e;
+    }
+    registry.statuses.entry(url.to_owned()).or_default()
+}
+
 /// Increments the matching `responses_2xx`, `responses_4xx`, or `responses_5xx`
 /// counter on the upstream entry.  Called from `logging()` after every proxied
 /// request.
 pub fn record_response_status(registry: &UpstreamRegistry, url: &str, status: u16) {
-    let mut entry = registry.statuses.entry(url.to_owned()).or_default();
+    let mut entry = status_mut(registry, url);
     match status {
         200..=299 => entry.responses_2xx = entry.responses_2xx.saturating_add(1),
         400..=499 => entry.responses_4xx = entry.responses_4xx.saturating_add(1),
@@ -259,7 +272,7 @@ pub fn record_response_status(registry: &UpstreamRegistry, url: &str, status: u1
 /// Increments `selected_total` and updates `selected_last_secs`.
 /// Called from `upstream_request_filter()`.
 pub fn record_upstream_selected(registry: &UpstreamRegistry, url: &str) {
-    let mut entry = registry.statuses.entry(url.to_owned()).or_default();
+    let mut entry = status_mut(registry, url);
     entry.selected_total = entry.selected_total.saturating_add(1);
     entry.selected_last_secs = now_secs();
 }

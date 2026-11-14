@@ -149,24 +149,21 @@ pub(super) fn append_forwarded_headers(
     state: &crate::proxy::service::AppState,
     ctx: &Option<RequestCtx>,
 ) -> Result<()> {
-    // X-Forwarded-For: chain or start a new entry.
-    if let Some(ip) = session
-        .client_addr()
-        .and_then(|a| a.as_inet())
-        .map(|a| a.ip().to_string())
-    {
+    // X-Forwarded-For: chain or start a new entry. One allocation: the address is formatted
+    // straight into the final value (#486).
+    if let Some(ip) = session.client_addr().and_then(|a| a.as_inet()).map(|a| a.ip()) {
         let xff = match upstream_request
             .headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
         {
             Some(existing) => format!("{existing}, {ip}"),
-            None => ip,
+            None => ip.to_string(),
         };
         upstream_request.insert_header("x-forwarded-for", xff)?;
     }
 
-    // X-Forwarded-Proto: derive from whether the matched site has TLS.
+    // X-Forwarded-Proto: derive from whether the matched site has TLS. Static values: no copy.
     let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
     let proto = if state
         .config
@@ -176,9 +173,9 @@ pub(super) fn append_forwarded_headers(
         .and_then(|s| s.tls.as_ref())
         .is_some()
     {
-        "https"
+        http::HeaderValue::from_static("https")
     } else {
-        "http"
+        http::HeaderValue::from_static("http")
     };
     upstream_request.insert_header("x-forwarded-proto", proto)?;
 
@@ -199,8 +196,9 @@ pub(super) fn append_forwarded_headers(
         .get("via")
         .and_then(|v| v.to_str().ok())
     {
-        Some(existing) => format!("{existing}, 1.1 conduit"),
-        None => "1.1 conduit".to_owned(),
+        Some(existing) => http::HeaderValue::try_from(format!("{existing}, 1.1 conduit"))
+            .unwrap_or_else(|_| http::HeaderValue::from_static("1.1 conduit")),
+        None => http::HeaderValue::from_static("1.1 conduit"),
     };
     upstream_request.insert_header("via", via_value)?;
 
