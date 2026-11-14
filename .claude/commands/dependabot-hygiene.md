@@ -23,9 +23,13 @@ row is within that window, skip it. If it is older (or the log is still empty):
 
 - **Fast path first:** if every open Dependabot PR is already logged as triaged **at its current
   revision** (same head SHA and body — a PR that was force-pushed or had its body edited since is
-  not "already logged" even if its number is in the log), log "still clean" and move on; don't
-  spawn `dependency-steward` to manufacture work. A PR that is new, changed, or never
-  risk-classified (semver, changelog read) still needs it.
+  not "already logged" even if its number is in the log) **and nothing is pending on it**, log
+  "still clean"; don't spawn `dependency-steward` to manufacture work. A PR logged as held,
+  deferred or awaiting something is *not* "triaged and nothing pending" (#101 sat held for five
+  weeks because "logged at its current revision" was also true of it): it goes through the
+  "overdue the second time you see it" bullet below, so the fast path never applies to it. A PR that
+  is new, changed, or never risk-classified (semver, changelog read) still needs triage. The
+  fast path skips only the per-PR triage: the branch cross-reference and the log row below still run.
 - List open Dependabot PRs and triage/merge/hold each by the usual bar (green, clean, no
   unaddressed finding, and the security-engineer gate before any merge).
   - **A "held for a dedicated look" PR is overdue the second time you see it** (#101, a `kube` 3→4
