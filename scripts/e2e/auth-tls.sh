@@ -33,6 +33,7 @@ mkleaf e2e-ca alice clientAuth
 mkleaf rogue-ca mallory clientAuth
 chmod 644 "$WORK"/*.key
 e2e_network
+e2e_prove_isolation
 
 restart() { # restart CONFIG URL [curl args]: a fresh conduit on CONFIG
   docker rm -f "$APP" >/dev/null 2>&1 || true
@@ -152,7 +153,7 @@ ok "consumers: the upstream sees the identity and headers Conduit set, not the c
 # ── 5. JWT (HS256) ──
 SECRET='e2e-jwt-secret-of-reasonable-length-0123456789'
 mkjwt() { # mkjwt SECRET ALG EXP-OFFSET SUB  -> token (python, in the client image)
-  docker run --rm conduit-e2e-client python3 -c '
+  docker run --rm --network none conduit-e2e-client python3 -c '
 import base64, hashlib, hmac, json, sys, time
 secret, alg, off, sub = sys.argv[1:5]
 b = lambda d: base64.urlsafe_b64encode(d).rstrip(b"=").decode()

@@ -17,6 +17,7 @@ e2e_init "$1"
 e2e_build_client
 e2e_network
 e2e_who_upstreams who1
+e2e_prove_isolation
 
 U=http://app.test:8080
 code() { client curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || true; }
@@ -33,28 +34,27 @@ cat > "$WORK/ip.yaml" <<'YAML'
 port: 8080
 host: app.test
 ipFilter:
-  allow: ["192.0.2.10/32", "203.0.113.7/32"]
+  allow: ["192.0.2.50/32", "203.0.113.7/32"]
 proxy: "http://who1.test:8080"
 YAML
 docker rm -f "$APP" >/dev/null 2>&1 || true
 cp "$WORK/ip.yaml" "$WORK/conduit.yaml"
 docker run -d --name "$APP" --network "$NET" --ip 192.0.2.20 --network-alias app.test -v "$BIN:/usr/local/bin/conduit:ro" -v "$WORK:/conf:ro" "$CONDUIT_IMAGE" conduit -c /conf/conduit.yaml >/dev/null
 sleep 2
+# positive control: a client whose address IS on the allowlist is served, so that a filter that denies everyone cannot pass
+# the 403 checks below
+allowed=$(docker run --rm --network "$NET" --ip 192.0.2.50 conduit-e2e-client curl -sS --max-time 10 -o /dev/null -w '%{http_code}' $U/ 2>/dev/null || true)
+[ "$allowed" = 200 ] || fail "ipFilter: a client on the allowlist (192.0.2.50) got $allowed, expected 200"
 [ "$(code $U/)" = 403 ] || fail "ipFilter: a client outside the allowlist was served ($(code $U/))"
 [ "$(code -H 'X-Forwarded-For: 203.0.113.7' $U/)" = 403 ] || fail "ipFilter: a spoofed X-Forwarded-For got a client past the allowlist"
 [ "$(code -H 'X-Real-IP: 203.0.113.7' $U/)" = 403 ] || fail "ipFilter: a spoofed X-Real-IP got a client past the allowlist"
 [ "$(code -H 'Forwarded: for=203.0.113.7' $U/)" = 403 ] || fail "ipFilter: a spoofed Forwarded header got a client past the allowlist"
-ok "ipFilter: an address outside the allowlist is 403 and X-Forwarded-For / X-Real-IP / Forwarded do not change that"
+ok "ipFilter: an address on the allowlist is 200, one outside it is 403 and X-Forwarded-For / X-Real-IP / Forwarded do not change that"
 
 # ── 2. Rate limit, request limits, CORS, security headers, redirects, error masking ──
 cat > "$WORK/guards.yaml" <<'YAML'
 port: 8080
 host: app.test
-rateLimit:
-  windowSecs: 60
-  limit: 20
-  keyBy: ip
-  skipPaths: [/__health__]
 limits:
   maxBodyBytes: 1024
   maxRequestHeaders: 30
@@ -112,14 +112,24 @@ echo "$out" | jqe '.status == 500' >/dev/null || fail "maskErrors: not the gener
 ok "maskErrors: a 5xx body from the upstream is replaced"
 
 # wire-level attacks: nothing may reach who1 as a second request, and the answer is an error or exactly one response
+marked() { seen | grep -c 'smuggled\|GPOST' || true; }  # request lines at the upstream that carry an attack's marker
 smuggle() { # smuggle NAME: stdin is the raw request; fails when the upstream saw a request it was not sent
-  local out n
+  local out n before
+  before=$(marked)
   out=$(raw)
-  n=$(echo "$out" | grep -c '^HTTP/1')
+  n=$(echo "$out" | grep -c '^HTTP/1' || true)
   [ "$n" -le 1 ] || fail "$1: $n responses to one request: $out"
-  seen | grep -q 'smuggled\|GPOST' && fail "$1: the upstream saw a smuggled request: $(seen)"
+  [ "$(marked)" -le "$before" ] || fail "$1: the upstream saw a smuggled request: $(seen)"
   echo "$out" | head -1 | tr -d '\r'
 }
+# the oracle has to be able to fail, and a benign request must not trip it: a request that really reaches the upstream with
+# a marker is counted, and a plain request is answered once and adds nothing
+before=$(marked)
+[ "$(code $U/api/smuggled)" = 200 ] || fail "smuggling oracle: the control request was not answered"
+[ "$(marked)" -gt "$before" ] || fail "smuggling oracle: a request that reached the upstream with the marker was not seen by it"
+st=$(printf 'GET / HTTP/1.1\r\nHost: app.test\r\nConnection: close\r\n\r\n' | smuggle "benign request")
+[ "$st" = "HTTP/1.1 200 OK" ] || fail "smuggling oracle: a benign request answered '$st', expected 200"
+ok "smuggling oracle: sees a marked request that reaches the upstream, and a benign request is neither refused nor reported"
 cl_te=$(printf 'POST / HTTP/1.1\r\nHost: app.test\r\nContent-Length: 6\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /api/smuggled HTTP/1.1\r\nHost: app.test\r\n\r\n')
 st=$(printf '%s' "$cl_te" | smuggle "CL.TE"); ok "CL.TE: $st"
 te_cl=$(printf 'POST / HTTP/1.1\r\nHost: app.test\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n5c\r\nGPOST / HTTP/1.1\r\nContent-Length: 15\r\n\r\nx=1\r\n0\r\n\r\n')
@@ -147,7 +157,20 @@ done
 seen | grep -q '^GET /secret' && fail "path traversal: the upstream was asked for /secret: $(seen)"
 ok "path traversal: ../ in five encodings never reached the upstream as /secret"
 
-# rate limit last, it uses up the budget: 20 per minute, health is exempt
+# rate limit last, with its own conduit (the one above has none, so the attacks are answered by the guards and not by 429):
+# 20 per minute, health is exempt
+cat > "$WORK/rl.yaml" <<'YAML'
+port: 8080
+host: app.test
+rateLimit:
+  windowSecs: 60
+  limit: 20
+  keyBy: ip
+  skipPaths: [/__health__]
+healthCheck: true
+proxy: "http://who1.test:8080"
+YAML
+restart "$WORK/rl.yaml" $U/__health__
 n429=0; for i in $(seq 1 40); do [ "$(code $U/)" = 429 ] && n429=$((n429 + 1)); done
 [ "$n429" -ge 15 ] || fail "rateLimit: only $n429 of 40 requests were 429 with a limit of 20"
 [ "$(code $U/__health__)" = 200 ] || fail "rateLimit: the health path was limited"

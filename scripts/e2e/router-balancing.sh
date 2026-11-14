@@ -95,10 +95,10 @@ count() { # count "who1=4 who2=4" who1 -> 4
 
 # ── Router ──
 out=$(client "${CURL[@]}" -X POST "$BASE/method/x"); [ "$out" = "who3" ] || fail "POST /method/x -> '$out', expected who3"
-out=$(client "${CURL[@]}" "$BASE/method/x" -o /dev/null -w '%{http_code}'); [ "$out" != "200" ] || fail "GET /method/x matched a POST-only route"
+out=$(client "${CURL[@]}" "$BASE/method/x" -o /dev/null -w '%{http_code}'); [ "$out" = 404 ] || fail "GET /method/x -> $out, expected 404 (no route matches a GET)"
 ok "a route with a method only matches that method"
 out=$(client "${CURL[@]}" -H 'X-Pick: two' "$BASE/hdr/x"); [ "$out" = "who2" ] || fail "X-Pick: two -> '$out'"
-out=$(client "${CURL[@]}" -H 'X-Pick: one' "$BASE/hdr/x" -o /dev/null -w '%{http_code}'); [ "$out" != "200" ] || fail "route matched without the header value"
+out=$(client "${CURL[@]}" -H 'X-Pick: one' "$BASE/hdr/x" -o /dev/null -w '%{http_code}'); [ "$out" = 404 ] || fail "X-Pick: one on /hdr/x -> $out, expected 404 (no route matches that header value)"
 ok "a route with a header only matches that value"
 out=$(client "${CURL[@]}" "$BASE/first/never/x"); [ "$out" = "who1" ] || fail "first match did not win: '$out'"
 ok "the first matching route wins"
