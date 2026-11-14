@@ -323,6 +323,23 @@ pub(super) fn check_unresolved_credential_warnings(config: &AppConfig, warnings:
         if let Some(token) = site.metrics.as_ref().and_then(|m| m.token.as_deref()) {
             push(format!("sites[{i}].metrics.token"), token);
         }
+        // The key that signs the sticky-session cookie: with the reference text as the key, anyone who has read the
+        // configuration can forge a cookie that pins a client to an upstream of their choosing (#733).
+        if let Some(crate::config::schema::ProxyConfig::Routes(routes)) = &site.proxy {
+            for (name, target) in routes {
+                if let Some(secret) = sticky_secret(target) {
+                    push(
+                        format!("sites[{i}].proxy.{}.sticky.secret", sanitize_for_log(name)),
+                        secret,
+                    );
+                }
+            }
+        }
+        for (j, route) in site.routes.iter().flatten().enumerate() {
+            if let Some(secret) = route.proxy.as_ref().and_then(sticky_secret) {
+                push(format!("sites[{i}].routes[{j}].proxy.sticky.secret"), secret);
+            }
+        }
         for (j, c) in site
             .consumers
             .iter()
@@ -344,6 +361,16 @@ pub(super) fn check_unresolved_credential_warnings(config: &AppConfig, warnings:
                 );
             }
         }
+    }
+}
+
+/// `sticky.secret` of a full proxy route target, if it sets one.
+fn sticky_secret(target: &crate::config::schema::ProxyRouteTarget) -> Option<&str> {
+    match target {
+        crate::config::schema::ProxyRouteTarget::Full(cfg) => {
+            cfg.sticky.as_ref().and_then(|s| s.secret.as_deref())
+        }
+        _ => None,
     }
 }
 

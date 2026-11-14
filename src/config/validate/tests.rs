@@ -2598,6 +2598,9 @@ const UNRESOLVED_CONFIG: &str = r#"{
             "apiKey": { "keys": ["$CONDUIT_TEST_UNSET_KEY", "a-real-key-with-a-$-inside"] },
             "jwtAuth": { "secret": "$CONDUIT_TEST_UNSET_JWT" },
             "metrics": { "token": "$CONDUIT_TEST_UNSET_METRICS" },
+            "proxy": { "/app": { "targets": ["http://127.0.0.1:1"], "sticky": { "cookie": "s", "secret": "$CONDUIT_TEST_UNSET_STICKY" } } },
+            "routes": [{ "match": { "path": "/r/**" },
+                         "proxy": { "targets": ["http://127.0.0.1:1"], "sticky": { "cookie": "s", "secret": "$CONDUIT_TEST_UNSET_STICKY_R" } } }],
             "consumers": { "sharedJwt": { "secret": "$CONDUIT_TEST_UNSET_SHARED" }, "consumers": [
                 { "username": "c1", "apiKey": "$CONDUIT_TEST_UNSET_C1" },
                 { "username": "c2", "basicAuth": { "password": "$CONDUIT_TEST_UNSET_C2" } },
@@ -2619,6 +2622,8 @@ fn an_unset_variable_in_a_credential_is_warned_about_for_every_credential_kind()
         "sites[0].consumers.consumers[2].jwt.secret",
         "sites[0].consumers.sharedJwt.secret",
         "sites[0].metrics.token",
+        "sites[0].proxy./app.sticky.secret",
+        "sites[0].routes[0].proxy.sticky.secret",
     ] {
         assert!(
             warnings

@@ -11,9 +11,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **A credential that is an unset environment variable is now warned about** (issue #624, the "sshole" class: a failed
   lookup that degrades into a value an attacker can predict). `basicAuth` passwords, `apiKey` keys, `jwtAuth.secret`,
-  consumer keys, passwords and secrets, `consumers.sharedJwt.secret`, `metrics.token` and `global.admin.token` whose
-  whole value is `$NAME` with `NAME` not set kept the text `$NAME` and accepted it as the credential. `conduit validate`,
-  start-up and reload now warn for each one.
+  consumer keys, passwords and secrets, `consumers.sharedJwt.secret`, `metrics.token`, `sticky.secret` (on a `proxy`
+  route or a `routes[]` entry) and `global.admin.token` whose whole value is `$NAME` with `NAME` not set kept the text
+  `$NAME` and accepted it as the credential. `conduit validate`, start-up and reload now warn for each one.
   Refusing to start would be stricter and is put to the owner (the examples and the documentation use such references
   on purpose).
 
