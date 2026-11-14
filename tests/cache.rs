@@ -706,14 +706,14 @@ fn disk_store_caches_with_the_feature_and_does_not_without_it() {
         }),
     );
 
-    assert_eq!(
-        common::get(srv.url("/disk/item")).expect("GET 1").status(),
-        200
-    );
-    assert_eq!(
-        common::get(srv.url("/disk/item")).expect("GET 2").status(),
-        200
-    );
+    // Each body is read to the end: the disk store writes an entry when the response has been sent, so a client
+    // that drops the response after the headers could leave the first request without an entry and make the
+    // hit-count assertion race (CodeRabbit on #738).
+    for n in 1..=2 {
+        let resp = common::get(srv.url("/disk/item")).unwrap_or_else(|e| panic!("GET {n}: {e}"));
+        assert_eq!(resp.status(), 200, "GET {n}");
+        let _ = resp.bytes().expect("the whole body");
+    }
     if cfg!(feature = "disk-cache") {
         assert_eq!(
             upstream.hit_count(),
