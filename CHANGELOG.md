@@ -198,6 +198,14 @@ changed.
 
 ## [2.2.0] — 2026-11-07
 
+### Fixed
+
+- **ACME follow-ups of #548** (issue #555): a reload that changes `tls.acme.email/directory/storage/challenge`, or adds or
+  removes `tls.acme` on a site, is now refused as a cold change (it silently kept the old values). Pointing `directory`
+  at another CA no longer tries the first CA's account there: the account file records its directory and a second file
+  is used for another one. A PKCS#1, SEC1 or encrypted private key in the storage directory is named in the log before it
+  is replaced (only PKCS#8 is read). Still open: swapping a renewed certificate into the running listener (#451).
+
 ### Security
 
 - **Windows: a symlink or junction swapped in after the check is no longer followed** (issue #600,

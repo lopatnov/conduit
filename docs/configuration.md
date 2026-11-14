@@ -425,6 +425,13 @@ A background task renews the certificate on disk when it is within 30 days of
 expiry; the running process keeps serving the one it loaded, so restart Conduit
 within that window. Details: [`acme` in the CLI reference](cli.md#acme--auto-tls--lets-encrypt).
 
+The account with the CA is kept in `<storage>/acme_account.json`, which records the directory URL it was created for.
+When you point `directory` at another CA (staging to production, say), the old account is not tried against the new CA:
+a second file, `acme_account.<directory>.json`, holds the account for it. A private key that you placed at
+`<storage>/<host>.key.pem` is read only as PKCS#8 (`-----BEGIN PRIVATE KEY-----`); a PKCS#1 (`RSA PRIVATE KEY`), SEC1
+(`EC PRIVATE KEY`) or encrypted key is named in the log and then **replaced** by a newly ordered key, so convert it first
+(`openssl pkcs8 -topk8 -nocrypt -in old.key -out <host>.key.pem`).
+
 ### TLS field reference
 
 | Field              | Type     | Default | Description                                                                                                                                   |
@@ -3439,8 +3446,8 @@ hotReload:
 `logging`, `cors`, `securityHeaders`, `cache`, `outlierDetection`, `limits`,
 `requestTransform`, `responseTransform`, `maskErrors`.
 
-**Requires cold restart:** `port`, `tls.cert/key`, `workers`, `global.shutdownTimeoutSecs`,
-`global.admin.bind`. (`tls.versions`/`tls.ciphers` are not listed here
+**Requires cold restart:** `port`, `tls.cert/key`, every field of `tls.acme` (and adding or removing it on a site),
+`workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`. (`tls.versions`/`tls.ciphers` are not listed here
 because they're rejected at validate-time — see [TLS field reference]
 (#tls-field-reference) — not merely cold-restart-only.)
 

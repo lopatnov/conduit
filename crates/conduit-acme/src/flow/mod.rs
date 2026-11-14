@@ -27,7 +27,9 @@ pub use http01::ChallengeSource;
 pub use renewal::{renew_if_due, run_renewal_loop, RenewalJob};
 
 use http01::ChallengeServer;
-use storage::{cached_pair_matches, pair_paths, write_secret_atomic, PendingPair};
+use storage::{
+    cached_pair_matches, pair_paths, unsupported_key_format, write_secret_atomic, PendingPair,
+};
 
 /// How many days before certificate expiry to trigger automatic renewal.
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
@@ -189,11 +191,20 @@ async fn load_or_obtain_with(
             CacheState::Expiring => {
                 tracing::info!(domain, "ACME certificate expires soon — renewing");
             }
-            CacheState::Unusable => tracing::warn!(
-                domain,
-                "cached ACME certificate and key are unreadable or do not match — \
-                 obtaining a new certificate"
-            ),
+            CacheState::Unusable => match key_pem.as_deref().and_then(unsupported_key_format) {
+                Some(format) => tracing::warn!(
+                    domain,
+                    format,
+                    "the private key in {key_path:?} is {format}: only a PKCS#8 `PRIVATE KEY` is read, \
+                     so this key is not used. A new key and certificate are being ordered and will replace \
+                     the file; convert the key with `openssl pkcs8 -topk8 -nocrypt` to keep it"
+                ),
+                None => tracing::warn!(
+                    domain,
+                    "cached ACME certificate and key are unreadable or do not match — \
+                     obtaining a new certificate"
+                ),
+            },
         }
     } else {
         tracing::info!(domain, "obtaining ACME certificate for the first time");
@@ -341,14 +352,41 @@ fn account_builder() -> anyhow::Result<instant_acme::AccountBuilder> {
     }
 }
 
-/// Load a persisted ACME account from `storage_dir/acme_account.json`, or
-/// create a new one with the ACME server and persist the credentials.
+/// Where the account for `directory_url` is kept (issue #555). `acme_account.json` is the account of the CA it was created
+/// for (the credentials record the directory URL); another directory, such as production after staging, gets its own
+/// file instead of being tried against the first CA's account. A file with no recorded directory (an older version's)
+/// is used as before.
+fn account_credentials_path(storage: &Path, directory_url: &str) -> PathBuf {
+    let default = storage.join("acme_account.json");
+    let recorded = std::fs::read_to_string(&default)
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|v| {
+            v.get("directory")
+                .and_then(|d| d.as_str())
+                .map(str::to_owned)
+        });
+    match recorded {
+        Some(dir) if dir != directory_url => {
+            let slug: String = directory_url
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .take(96)
+                .collect();
+            storage.join(format!("acme_account.{slug}.json"))
+        }
+        _ => default,
+    }
+}
+
+/// Load a persisted ACME account from `storage_dir/acme_account.json` (or the file of this directory, see
+/// [`account_credentials_path`]), or create a new one with the ACME server and persist the credentials.
 async fn load_or_create_account(
     acme_cfg: &AcmeConfig,
     directory_url: &str,
 ) -> anyhow::Result<Account> {
     let storage = acme_cfg.storage.as_deref().unwrap_or("./certs");
-    let creds_path = PathBuf::from(storage).join("acme_account.json");
+    let creds_path = account_credentials_path(Path::new(storage), directory_url);
 
     if creds_path.exists() {
         let json = tokio::fs::read_to_string(&creds_path)
@@ -391,6 +429,50 @@ async fn load_or_create_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_account_file_follows_the_directory_it_was_created_for() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let staging = "https://acme-staging-v02.api.letsencrypt.org/directory";
+        let prod = "https://acme-v02.api.letsencrypt.org/directory";
+        // nothing stored yet: the default file, whatever the directory
+        assert_eq!(
+            account_credentials_path(dir.path(), prod),
+            dir.path().join("acme_account.json")
+        );
+        // an account created for staging
+        std::fs::write(
+            dir.path().join("acme_account.json"),
+            format!(r#"{{"id":"https://x/acct/1","key_pkcs8":"AA","directory":"{staging}"}}"#),
+        )
+        .expect("write");
+        assert_eq!(
+            account_credentials_path(dir.path(), staging),
+            dir.path().join("acme_account.json")
+        );
+        let other = account_credentials_path(dir.path(), prod);
+        assert_ne!(
+            other,
+            dir.path().join("acme_account.json"),
+            "production must not reuse staging's account"
+        );
+        assert!(other
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("acme_account.")
+                && n.ends_with(".json")
+                && !n.contains('/')));
+        // an older file with no recorded directory is used as before
+        std::fs::write(
+            dir.path().join("acme_account.json"),
+            r#"{"id":"https://x/acct/1","key_pkcs8":"AA"}"#,
+        )
+        .expect("write");
+        assert_eq!(
+            account_credentials_path(dir.path(), prod),
+            dir.path().join("acme_account.json")
+        );
+    }
 
     /// Build a self-signed cert + key PEM pair with a caller-controlled
     /// `not_after`, so tests can exercise both "far from expiry" and

@@ -234,7 +234,8 @@ not via `POST /reload`.
 `maskErrors`.
 
 **What requires a cold restart:**  
-`port`, `tls.cert/key`, `workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`. Sites are matched by listener, not by
+`port`, `tls.cert/key`, `tls.acme.*` (`email`, `directory`, `storage`, `challenge`; adding or removing the block on a site), `workers`,
+`global.shutdownTimeoutSecs`, `global.admin.bind`. Sites are matched by listener, not by
 position: adding, removing or reordering sites on a port that is already bound is hot; a port that appears or
 disappears, or a changed `tls.cert/key` on a bound port, needs a restart.
 (`tls.versions`/`tls.ciphers` are rejected at validate-time — see
