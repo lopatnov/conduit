@@ -168,6 +168,17 @@ pub(super) async fn find_file<'a>(
             _ => {}
         }
     }
+    // An empty `rel` is the root itself. The loop above finds its index for a plain root, but on Windows
+    // `symlink_metadata("root/")` of a root that is a symlink or junction (`current -> releases/42`, a deployment
+    // the docs support) reports the link and not the directory, so `stat_no_symlink` refuses it there; the root is
+    // the operator's choice, so its index is looked up directly (issue #595: not unreachable, as it looked on Unix).
+    if rel.is_empty() {
+        for root in roots {
+            if let Some(p) = find_index(root, options).await {
+                return Some((root, p));
+            }
+        }
+    }
     None
 }
 
@@ -584,6 +595,35 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// Issue #595: a root that is itself a link (the operator's choice, `current -> releases/42`) still serves its
+    /// index for an empty path. On Windows only the direct lookup of the root finds it (`symlink_metadata` of
+    /// `root/` reports the link there); a junction needs no privilege.
+    #[tokio::test]
+    async fn find_file_serves_the_index_of_a_root_that_is_a_link() {
+        let base = tempfile::tempdir().unwrap();
+        let real = base.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("index.html"), "x").unwrap();
+        let link = base.path().join("current");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&real)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J failed: {out:?}");
+        }
+        let roots = [link.clone()];
+        let (root, path) = find_file(&roots, "", &StaticOptions::default())
+            .await
+            .expect("the index of a linked root");
+        assert_eq!((root, path), (link.as_path(), link.join("index.html")));
     }
 
     /// The same for a junction, which needs no privilege on Windows.
