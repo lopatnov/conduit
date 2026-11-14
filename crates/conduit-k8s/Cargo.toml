@@ -2,7 +2,9 @@
 name        = "lopatnov-conduit-k8s"
 version.workspace    = true
 edition.workspace    = true
-rust-version.workspace = true
+# kube 5.1 needs 1.95; the workspace floor (1.89) holds for the builds without `--features kubernetes`
+# (the same arrangement as crates/conduit-plugin-wasm).
+rust-version = "1.95"
 description = "Kubernetes ConduitSite CRD watching for conduit's feature-driven workspace (issue #114/#249) — generic over the config payload type, zero schema knowledge"
 license.workspace    = true
 repository.workspace = true
@@ -18,7 +20,7 @@ path = "src/lib.rs"
 # non-optional dependency of this crate, since the crate's own presence in
 # the dependency graph *is* the gating mechanism.
 kube        = { workspace = true }
-k8s-openapi = { workspace = true, features = ["v1_32"] }
+k8s-openapi = { workspace = true, features = ["v1_33"] }
 schemars    = { workspace = true }
 futures     = { workspace = true }
 tokio       = { workspace = true }
