@@ -62,9 +62,8 @@ pub struct RouteResolution {
     pub websocket_allowed: bool,
     /// HMAC-signed sticky cookie to inject in the response (`Set-Cookie`).
     ///
-    /// `Some((name, value))` when `sticky.secret` is configured.  The
-    /// `upstream_response_filter` in `service.rs` injects the header.
-    pub sticky_set_cookie: Option<(String, String)>,
+    /// `Some` when `sticky.secret` is configured.  The `upstream_response_filter` in `service.rs` injects the header.
+    pub sticky_set_cookie: Option<conduit_proxy_http::state::StickyCookie>,
     /// Per-route rate limit selected during routing (#360). `None` when the
     /// matched route has no `rateLimit` configured, or for `ProxyConfig::
     /// Single`/static/fallback resolutions (`local()` below).
@@ -343,6 +342,7 @@ fn resolve_routes_array(
         RouteMatch::Proxy { resolution, .. } => match resolution.outcome {
             ProxyOutcome::Upstream(pu) => proxy_route_result(pu, resolution.state),
             ProxyOutcome::Overloaded => overloaded_with_state(resolution.state),
+            ProxyOutcome::StickyUnavailable => sticky_unavailable_with_state(resolution.state),
             // Terminal: unlike the legacy `proxy` map (`resolve_legacy_proxy`
             // below), `routes[]` never falls through to `site.static`/
             // `site.proxy` on an unresolved target — map straight to
@@ -414,6 +414,7 @@ fn resolve_legacy_proxy(
             Some(match resolution.outcome {
                 ProxyOutcome::Upstream(pu) => proxy_route_result(pu, resolution.state),
                 ProxyOutcome::Overloaded => overloaded_with_state(resolution.state),
+                ProxyOutcome::StickyUnavailable => sticky_unavailable_with_state(resolution.state),
                 ProxyOutcome::Unresolved => {
                     let mut result = match_static_or_fallback(site, path);
                     result.route_rate_limit = resolution.state.route_rate_limit;
@@ -460,7 +461,16 @@ fn proxy_route_result(upstream: ProxyUpstream, state: ProxyReqState) -> RouteRes
     }
 }
 
-/// 503 — circuit open / sticky strict reject — carrying whatever rate-limit/
+/// 503 — `sticky.strict` and the pinned upstream is unhealthy — carrying whatever rate-limit/priority stamp
+/// routing had already computed (#360, #415).
+fn sticky_unavailable_with_state(state: ProxyReqState) -> RouteResult {
+    let mut result = RouteResolution::local(UpstreamTarget::Local(LocalHandler::StickyUnavailable));
+    result.route_rate_limit = state.route_rate_limit;
+    result.route_priority = state.route_priority;
+    result
+}
+
+/// 503 — circuit open — carrying whatever rate-limit/
 /// priority stamp routing had already computed (#360, #415).
 fn overloaded_with_state(state: ProxyReqState) -> RouteResult {
     let mut result = RouteResolution::local(UpstreamTarget::Local(LocalHandler::Overloaded));
@@ -2091,6 +2101,8 @@ mod tests {
                     cookie: "srv_id".to_owned(),
                     secret: Some("s3cret".to_owned()),
                     strict: strict.then_some(true),
+                    secure: None,
+                    max_age_secs: None,
                 }),
                 retry,
                 ..Default::default()
@@ -2258,6 +2270,8 @@ mod tests {
                     cookie: "srv_id".to_owned(),
                     secret: Some("s3cret".to_owned()),
                     strict: None,
+                    secure: None,
+                    max_age_secs: None,
                 }),
                 health_check: Some(UpstreamHealthCheck {
                     max_connections_per_upstream: Some(1),
@@ -2371,6 +2385,8 @@ mod tests {
                     cookie: "srv_id".to_owned(),
                     secret: Some("s3cret".to_owned()),
                     strict: None,
+                    secure: None,
+                    max_age_secs: None,
                 }),
                 health_check: Some(UpstreamHealthCheck {
                     max_connections_per_upstream: Some(1),
@@ -2549,6 +2565,8 @@ mod tests {
                     cookie: "srv_id".to_owned(),
                     secret: Some("s3cret".to_owned()),
                     strict: Some(true),
+                    secure: None,
+                    max_age_secs: None,
                 }),
                 ..Default::default()
             })),
@@ -2590,9 +2608,9 @@ mod tests {
         assert!(
             matches!(
                 ctx.upstream,
-                UpstreamTarget::Local(LocalHandler::Overloaded)
+                UpstreamTarget::Local(LocalHandler::StickyUnavailable)
             ),
-            "strict mode must return Overloaded when the pinned upstream is unhealthy: {:?}",
+            "strict mode must return StickyUnavailable (not Overloaded) when the pinned upstream is unhealthy: {:?}",
             ctx.upstream
         );
     }
@@ -2617,6 +2635,8 @@ mod tests {
                     cookie: "srv_id".to_owned(),
                     secret: Some("s3cret".to_owned()),
                     strict: None,
+                    secure: None,
+                    max_age_secs: None,
                 }),
                 ..Default::default()
             })),
@@ -2671,7 +2691,11 @@ mod tests {
         // the upstream that was picked, not merely present. A regression that
         // set the wrong cookie name or signed for the wrong upstream must fail
         // this test.
-        let (cookie_name, cookie_value) = ctx
+        let conduit_proxy_http::state::StickyCookie {
+            name: cookie_name,
+            value: cookie_value,
+            ..
+        } = ctx
             .proxy
             .sticky_set_cookie
             .as_ref()

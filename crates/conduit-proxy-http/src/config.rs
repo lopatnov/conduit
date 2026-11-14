@@ -194,6 +194,20 @@ pub struct StickyConfig {
     /// Default: `false` (fall back to normal load-balancing).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+    /// The `Secure` attribute of the cookie Conduit sets (only in `secret` mode).
+    ///
+    /// Absent (the default): `Secure` is added when the matched site has `tls`, so a plain-HTTP site, whose
+    /// browsers would drop a `Secure` cookie and silently lose the affinity, is not affected. `true`: always
+    /// (use it behind a load balancer that terminates TLS, where Conduit itself sees plain HTTP). `false`:
+    /// never.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secure: Option<bool>,
+    /// The `Max-Age` of the cookie Conduit sets, in seconds (only in `secret` mode). Absent: a session cookie,
+    /// which ends with the browser session. It is an instruction to the browser, not a check on the server: the
+    /// signed value carries no expiry, so a client that keeps the cookie can still send it (the pin is a
+    /// preference for an upstream, not a credential). Must be positive: `0` would delete the cookie.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_age_secs: Option<u64>,
 }
 
 impl fmt::Debug for StickyConfig {
@@ -202,6 +216,8 @@ impl fmt::Debug for StickyConfig {
             .field("cookie", &self.cookie)
             .field("secret", &self.secret.as_ref().map(|_| Redacted))
             .field("strict", &self.strict)
+            .field("secure", &self.secure)
+            .field("max_age_secs", &self.max_age_secs)
             .finish()
     }
 }
@@ -363,6 +379,8 @@ mod tests {
             cookie: "route".to_string(),
             secret: Some("hmac-signing-secret".to_string()),
             strict: Some(true),
+            secure: None,
+            max_age_secs: None,
         };
         let debug = format!("{cfg:?}");
         assert!(!debug.contains("hmac-signing-secret"), "got: {debug}");
@@ -379,6 +397,8 @@ mod tests {
             cookie: "route".to_string(),
             secret: None,
             strict: None,
+            secure: None,
+            max_age_secs: None,
         };
         let debug = format!("{cfg:?}");
         assert!(

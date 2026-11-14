@@ -64,10 +64,13 @@ pub struct ProxyUpstream {
 pub enum ProxyOutcome {
     /// Forward to this upstream.
     Upstream(ProxyUpstream),
-    /// Circuit open (every healthy peer at its connection cap, #156) or
-    /// `sticky.strict` with an unhealthy pin (#39). Root maps this to
+    /// Circuit open (every healthy peer at its connection cap, #156). Root maps this to
     /// `LocalHandler::Overloaded` → 503.
     Overloaded,
+    /// `sticky.strict` and the upstream the signed cookie names is unhealthy: refused with `503` and the reason
+    /// `sticky_upstream_unavailable` (the upstream is down, not overloaded). Root maps this to
+    /// `LocalHandler::StickyUnavailable`.
+    StickyUnavailable,
     /// A route matched but produced no usable upstream: malformed URL, empty
     /// healthy set, or capacity resolution returned nothing. This replaces
     /// the bare `None`/`fallback_result()` the two matchers used to return —
@@ -103,6 +106,15 @@ impl ProxyResolution {
     pub(crate) fn overloaded(state: ProxyReqState) -> Self {
         Self {
             outcome: ProxyOutcome::Overloaded,
+            state,
+        }
+    }
+
+    /// Convenience constructor for the `StickyUnavailable` outcome.
+    #[cfg(feature = "proxy")]
+    pub(crate) fn sticky_unavailable(state: ProxyReqState) -> Self {
+        Self {
+            outcome: ProxyOutcome::StickyUnavailable,
             state,
         }
     }

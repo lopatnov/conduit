@@ -734,6 +734,8 @@ proxy:
 | `sticky.cookie`       | string               | —             | Cookie name for sticky sessions                                                |
 | `sticky.secret`       | string               | —             | HMAC-SHA256 secret — Conduit signs + verifies the cookie (prevents forgery)    |
 | `sticky.strict`       | boolean              | `false`       | Return 503 when the pinned upstream is down (instead of routing elsewhere)     |
+| `sticky.secure`       | boolean              | when `tls`    | `Secure` attribute of the cookie Conduit sets (needs `secret`)                 |
+| `sticky.maxAgeSecs`   | integer              | session       | `Max-Age` of the cookie Conduit sets (needs `secret`)                          |
 | `groups`              | object[]             | —             | Two-level LB groups: `[{name, targets, strategy}]`                             |
 | `groupStrategy`       | string               | `round-robin` | Outer strategy when `groups` is set                                            |
 | `priority`            | number (0–100)       | `50`          | Request priority for load shedding — see [Priority routing](#priority-routing) |
@@ -1399,7 +1401,9 @@ All the options of `sticky`:
 | --- | --- | --- | --- |
 | `cookie` | string | required | Cookie name to read (and, with `secret`, to set). |
 | `secret` | string | none | Key for signing and verifying. Use an environment variable (`"$STICKY_SECRET"`). |
-| `strict` | boolean | `false` | With `secret`: refuse with `503` instead of relocating when the pinned upstream is unhealthy. |
+| `strict` | boolean | `false` | With `secret`: refuse with `503` (reason `sticky_upstream_unavailable`) instead of relocating when the pinned upstream is unhealthy. |
+| `secure` | boolean | `Secure` when the site has `tls` | With `secret`: the `Secure` attribute of the cookie. `true` always (use it behind a load balancer that terminates TLS: Conduit then sees plain HTTP); `false` never. |
+| `maxAgeSecs` | integer ≥ 1 | session cookie | With `secret`: the `Max-Age` of the cookie. |
 
 **Use when:** the application keeps session state in the memory of one process
 (a shopping cart, a login held in the worker, an upload that must finish on the
@@ -1475,7 +1479,16 @@ proxy:
 | `strict: false` (default) | If the pinned upstream is unhealthy, fall back to the next available backend |
 | `strict: true` | If the pinned upstream is unhealthy, return `503 Service Unavailable` immediately |
 
-The injected cookie attributes are: `Path=/; HttpOnly; SameSite=Lax`.
+The injected cookie attributes are `Path=/; HttpOnly; SameSite=Lax`, plus `Secure` and `Max-Age` as configured:
+
+- `secure` unset means "when the matched site has `tls`". A plain-HTTP site gets no `Secure`, because a browser drops
+  a `Secure` cookie it received over HTTP and the affinity would silently end. Behind a load balancer that
+  terminates TLS, Conduit itself sees plain HTTP: set `secure: true` there.
+- `maxAgeSecs` unset means a session cookie (it ends with the browser session). It is an instruction to the browser,
+  not a check on the server: the signed value carries no expiry, so a client that keeps the cookie can still send it.
+  The pin is a preference for an upstream, not a credential. `0` is rejected (it would delete the cookie).
+- With `strict: true` the refusal is `503` with `"reason":"sticky_upstream_unavailable"` (the upstream is down; the
+  circuit breaker's `upstream_overloaded` is a different case).
 
 **How the pin is applied.** With a `secret` set, the verified cookie names one
 exact upstream, and Conduit routes to *that* upstream directly — the

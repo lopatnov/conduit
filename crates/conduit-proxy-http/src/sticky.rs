@@ -131,11 +131,16 @@ pub(crate) fn effective_strategy(
 pub(crate) fn make_sticky_cookie(
     sticky: Option<&StickyConfig>,
     chosen_url: &str,
-) -> Option<(String, String)> {
+) -> Option<crate::state::StickyCookie> {
     let cfg = sticky?;
     let secret = cfg.secret.as_deref()?;
     let signed = hmac_sign_sticky(chosen_url, secret);
-    Some((cfg.cookie.clone(), signed))
+    Some(crate::state::StickyCookie {
+        name: cfg.cookie.clone(),
+        value: signed,
+        secure: cfg.secure,
+        max_age_secs: cfg.max_age_secs,
+    })
 }
 
 /// Extract the value of a named cookie from the `Cookie` request header.

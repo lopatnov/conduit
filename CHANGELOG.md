@@ -7,8 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `sticky.secure` and `sticky.maxAgeSecs`: the `Secure` and `Max-Age` of the cookie Conduit sets in `secret` mode. `secure`
+  unset means "when the site has `tls`"; `maxAgeSecs` unset is a session cookie, `0` is rejected (#644).
+
 ### Changed
 
+- The sticky cookie of a site that has `tls` is now `Secure` unless `sticky.secure: false` says otherwise (a client that also
+  talks plain HTTP to that site will not send the cookie back there); a plain-HTTP site is unchanged (#644).
+- `sticky.cookie` must be a non-empty HTTP token: a name with `;`, a space or a control character is a validation error
+  (it was written into the `Set-Cookie` line unchanged).
+- A `sticky.strict` refusal answers `503` with the reason `sticky_upstream_unavailable` instead of `upstream_overloaded`
+  (the upstream is down, not overloaded; the status is the same) (#644).
 - **The systemd unit (and the `.deb`) is hardened further** (issue #670). `PrivateDevices`, `ProtectKernelTunables`,
   `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`,
   `RestrictSUIDSGID`, `RestrictRealtime`, `RestrictNamespaces`, `LockPersonality`, `RestrictAddressFamilies`,

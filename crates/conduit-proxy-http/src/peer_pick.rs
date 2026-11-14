@@ -107,7 +107,7 @@ pub(crate) fn pick_peer_with_retry(
     // Sticky sessions: extract and optionally verify the session cookie.
     let stickiness = sticky::resolve_sticky(opts.sticky, all_urls, ctx);
     if matches!(stickiness, Sticky::Reject) {
-        return Err(Box::new(ProxyResolution::overloaded(
+        return Err(Box::new(ProxyResolution::sticky_unavailable(
             ProxyReqState::default(),
         )));
     }
