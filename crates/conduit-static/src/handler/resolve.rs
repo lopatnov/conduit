@@ -154,6 +154,17 @@ pub(super) async fn find_file<'a>(
         return None;
     }
     for root in roots {
+        // An empty `rel` is the root itself, and the roots are tried in order. The generic lookup below cannot
+        // take it: on Windows `symlink_metadata("root/")` of a root that is a symlink or junction
+        // (`current -> releases/42`, a deployment the docs support) reports the link and not the directory, so
+        // `stat_no_symlink` refuses it. The root is the operator's choice, so its index is looked up directly
+        // (issue #595: this is reachable, as it was not on Unix).
+        if rel.is_empty() {
+            if let Some(p) = find_index(root, options).await {
+                return Some((root, p));
+            }
+            continue;
+        }
         if !parent_dirs_are_not_symlinks(root, rel).await {
             continue;
         }
@@ -166,17 +177,6 @@ pub(super) async fn find_file<'a>(
                 }
             }
             _ => {}
-        }
-    }
-    // An empty `rel` is the root itself. The loop above finds its index for a plain root, but on Windows
-    // `symlink_metadata("root/")` of a root that is a symlink or junction (`current -> releases/42`, a deployment
-    // the docs support) reports the link and not the directory, so `stat_no_symlink` refuses it there; the root is
-    // the operator's choice, so its index is looked up directly (issue #595: not unreachable, as it looked on Unix).
-    if rel.is_empty() {
-        for root in roots {
-            if let Some(p) = find_index(root, options).await {
-                return Some((root, p));
-            }
         }
     }
     None
@@ -624,6 +624,15 @@ mod tests {
             .await
             .expect("the index of a linked root");
         assert_eq!((root, path), (link.as_path(), link.join("index.html")));
+        // The roots are tried in order: a linked root ahead of a plain one that also holds an index wins.
+        let plain = base.path().join("public");
+        std::fs::create_dir(&plain).unwrap();
+        std::fs::write(plain.join("index.html"), "y").unwrap();
+        let roots = [link.clone(), plain.clone()];
+        let (root, _) = find_file(&roots, "", &StaticOptions::default())
+            .await
+            .expect("an index");
+        assert_eq!(root, link.as_path());
     }
 
     /// The same for a junction, which needs no privilege on Windows.
