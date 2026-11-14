@@ -20,6 +20,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (it was written into the `Set-Cookie` line unchanged).
 - A `sticky.strict` refusal answers `503` with the reason `sticky_upstream_unavailable` instead of `upstream_overloaded`
   (the upstream is down, not overloaded; the status is the same) (#644).
+- **The systemd unit (and the `.deb`) is hardened further** (issue #670). `PrivateDevices`, `ProtectKernelTunables`,
+  `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`,
+  `RestrictSUIDSGID`, `RestrictRealtime`, `RestrictNamespaces`, `LockPersonality`, `RestrictAddressFamilies`,
+  `SystemCallArchitectures=native`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and `UMask=0027`;
+  `systemd-analyze security` goes from 8.3 EXPOSED to 3.2 OK. The proxy, a static site, name resolution, the Admin API,
+  `systemctl reload` and port 80 through the `AmbientCapabilities` drop-in were run under a real systemd; the WASM
+  runtime, ACME, Redis and the Kubernetes provider were not.
 
 ---
 

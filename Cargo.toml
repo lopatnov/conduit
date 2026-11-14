@@ -112,7 +112,7 @@ dashmap  = "6"  # v7 is RC as of 2026-05 — upgrade after stable release
 mime_guess = "2"
 notify     = "8"
 regex      = "1"
-uuid       = { version = "1", features = ["v4"] }
+uuid       = { version = "1", features = ["v4", "fast-rng"] }
 
 # --- TLS (always needed) ---
 x509-parser = "0.18"

@@ -689,6 +689,128 @@ fn wasm_on_response_replacement_drops_stale_headers_and_uses_the_upstream_length
     assert_eq!(resp.text().unwrap(), "");
 }
 
+/// Issue #593: the same replacer in front of upstreams that need a closer look. A `304` has no body to replace and
+/// stays as the upstream sent it (no `Content-Length`); a `5xx` that `maskErrors` masks gets the generic body, not the
+/// plugin's (`on_response` does not run for it, `docs/wasm.md`).
+#[test]
+#[cfg(feature = "wasm")]
+fn wasm_on_response_with_a_304_and_a_masked_5xx() {
+    const REPLACER: &str = r#"(module
+      (import "conduit" "conduit_set_response_body" (func $set_body (param i32 i32)))
+      (memory (export "memory") 1)
+      (data (i32.const 0) "rewritten body")
+      (func (export "on_request") (result i32) i32.const 0)
+      (func (export "on_response") (param i32) (result i32)
+        (call $set_body (i32.const 0) (i32.const 14))
+        i32.const 0))"#;
+    let dir = tempfile::tempdir().unwrap();
+    let wasm_path = compile_wat_to_file(&dir, "replacer.wasm", REPLACER);
+    let not_modified =
+        start_fixed_upstream("HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n");
+    let failing = start_fixed_upstream(
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 11\r\nConnection: close\r\n\r\nsecret boom",
+    );
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "maskErrors": true,
+            "middleware": [{ "type": "wasm", "path": wasm_path }],
+            "proxy": {
+                "/304": { "targets": [format!("http://127.0.0.1:{not_modified}")] },
+                "/boom": { "targets": [format!("http://127.0.0.1:{failing}")] }
+            }
+        }]
+    });
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+
+    let resp = common::get(srv.url("/304")).unwrap();
+    assert_eq!(resp.status(), 304);
+    assert!(
+        resp.headers().get("content-length").is_none(),
+        "a 304 must not gain a Content-Length"
+    );
+    assert_eq!(resp.text().unwrap(), "");
+
+    let resp = common::get(srv.url("/boom")).unwrap();
+    assert_eq!(resp.status(), 500);
+    let body = resp.text().unwrap();
+    assert!(!body.contains("secret"), "the upstream body leaked: {body}");
+    assert!(
+        !body.contains("rewritten"),
+        "the plugin does not run for a masked 5xx: {body}"
+    );
+    assert!(body.contains("Internal Server Error"), "{body}");
+}
+
+/// Issue #593: a response served from the cache again is the one that was stored, replaced once (the plugin's body,
+/// no second upstream request). Needs the cache as well as the plugin.
+#[test]
+#[cfg(all(feature = "wasm", feature = "cache"))]
+fn wasm_on_response_replaces_a_cached_response_once() {
+    const REPLACER: &str = r#"(module
+      (import "conduit" "conduit_set_response_body" (func $set_body (param i32 i32)))
+      (memory (export "memory") 1)
+      (data (i32.const 0) "rewritten body")
+      (func (export "on_request") (result i32) i32.const 0)
+      (func (export "on_response") (param i32) (result i32)
+        (call $set_body (i32.const 0) (i32.const 14))
+        i32.const 0))"#;
+    let dir = tempfile::tempdir().unwrap();
+    let wasm_path = compile_wat_to_file(&dir, "replacer.wasm", REPLACER);
+    // Counts its requests, so that the second answer can be shown to come from the cache.
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let cacheable = {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("cacheable bind");
+        let port = listener.local_addr().expect("local_addr").port();
+        let hits = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nCache-Control: max-age=60\r\nConnection: close\r\n\r\nhello",
+                );
+            }
+        });
+        port
+    };
+
+    let port = free_port();
+    let admin_port = free_port();
+    let cfg = serde_json::json!({
+        "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+        "sites": [{
+            "port": port,
+            "middleware": [{ "type": "wasm", "path": wasm_path }],
+            "proxy": {
+                "/cached": {
+                    "targets": [format!("http://127.0.0.1:{cacheable}")],
+                    "cache": { "store": "memory", "ttlSecs": 60 }
+                }
+            }
+        }]
+    });
+    let srv = common::TestServer::start_with_config(port, admin_port, cfg);
+
+    let first = common::get(srv.url("/cached")).unwrap();
+    assert_eq!(first.status(), 200);
+    assert_eq!(first.text().unwrap(), "rewritten body");
+    let second = common::get(srv.url("/cached")).unwrap();
+    assert_eq!(second.status(), 200);
+    assert_eq!(second.text().unwrap(), "rewritten body");
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the second answer must come from the cache, not from the upstream"
+    );
+}
+
 // ── Rhai resource-limit tests ─────────────────────────────────────────────────
 
 /// A Rhai script with an infinite loop must NOT hang the server forever.

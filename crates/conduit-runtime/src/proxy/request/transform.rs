@@ -142,6 +142,24 @@ pub(super) fn extract_host(session: &Session) -> String {
     host_without_port(&request_host(session)).to_owned()
 }
 
+/// `X-Forwarded-For` value: the client's address appended to any chain already present.
+fn forwarded_for_value(existing: Option<&str>, ip: std::net::IpAddr) -> String {
+    match existing {
+        Some(existing) => format!("{existing}, {ip}"),
+        None => ip.to_string(),
+    }
+}
+
+/// `Via` value (RFC 9110 §7.6.3): this hop appended to any existing chain. A chain that cannot be a header value
+/// is replaced by this hop alone rather than failing the request.
+fn via_header_value(existing: Option<&str>) -> http::HeaderValue {
+    match existing {
+        Some(existing) => http::HeaderValue::try_from(format!("{existing}, 1.1 conduit"))
+            .unwrap_or_else(|_| http::HeaderValue::from_static("1.1 conduit")),
+        None => http::HeaderValue::from_static("1.1 conduit"),
+    }
+}
+
 /// Append `X-Forwarded-For` and `X-Forwarded-Proto` headers to the upstream request.
 pub(super) fn append_forwarded_headers(
     session: &Session,
@@ -149,24 +167,24 @@ pub(super) fn append_forwarded_headers(
     state: &crate::proxy::service::AppState,
     ctx: &Option<RequestCtx>,
 ) -> Result<()> {
-    // X-Forwarded-For: chain or start a new entry.
+    // X-Forwarded-For: chain or start a new entry. One allocation: the address is formatted
+    // straight into the final value (#486).
     if let Some(ip) = session
         .client_addr()
         .and_then(|a| a.as_inet())
-        .map(|a| a.ip().to_string())
+        .map(|a| a.ip())
     {
-        let xff = match upstream_request
-            .headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-        {
-            Some(existing) => format!("{existing}, {ip}"),
-            None => ip,
-        };
+        let xff = forwarded_for_value(
+            upstream_request
+                .headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok()),
+            ip,
+        );
         upstream_request.insert_header("x-forwarded-for", xff)?;
     }
 
-    // X-Forwarded-Proto: derive from whether the matched site has TLS.
+    // X-Forwarded-Proto: derive from whether the matched site has TLS. Static values: no copy.
     let site_idx = ctx.as_ref().map(|c| c.site_idx).unwrap_or(0);
     let proto = if state
         .config
@@ -176,9 +194,9 @@ pub(super) fn append_forwarded_headers(
         .and_then(|s| s.tls.as_ref())
         .is_some()
     {
-        "https"
+        http::HeaderValue::from_static("https")
     } else {
-        "http"
+        http::HeaderValue::from_static("http")
     };
     upstream_request.insert_header("x-forwarded-proto", proto)?;
 
@@ -194,14 +212,12 @@ pub(super) fn append_forwarded_headers(
 
     // Via: RFC 7230 §5.7 — identify the proxy hop.
     // Append to any existing Via header rather than replacing it.
-    let via_value = match upstream_request
-        .headers
-        .get("via")
-        .and_then(|v| v.to_str().ok())
-    {
-        Some(existing) => format!("{existing}, 1.1 conduit"),
-        None => "1.1 conduit".to_owned(),
-    };
+    let via_value = via_header_value(
+        upstream_request
+            .headers
+            .get("via")
+            .and_then(|v| v.to_str().ok()),
+    );
     upstream_request.insert_header("via", via_value)?;
 
     Ok(())
@@ -487,6 +503,32 @@ mod tests {
     // test modules -- `peer.rs` holds the "canonical" original location.
     fn make_ctx(upstream: UpstreamTarget) -> RequestCtx {
         RequestCtx::new(0, upstream, ProxyReqState::default(), None)
+    }
+
+    // ── forwarded_for_value / via_header_value ───────────────────────────────
+
+    #[test]
+    fn forwarded_for_starts_a_chain_or_extends_one() {
+        let v4: std::net::IpAddr = "203.0.113.7".parse().unwrap();
+        let v6: std::net::IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(forwarded_for_value(None, v4), "203.0.113.7");
+        assert_eq!(
+            forwarded_for_value(Some("198.51.100.1"), v4),
+            "198.51.100.1, 203.0.113.7"
+        );
+        assert_eq!(forwarded_for_value(None, v6), "2001:db8::1");
+    }
+
+    #[test]
+    fn via_names_this_hop_and_keeps_an_existing_chain() {
+        assert_eq!(via_header_value(None), "1.1 conduit");
+        assert_eq!(via_header_value(Some("1.0 edge")), "1.0 edge, 1.1 conduit");
+    }
+
+    #[test]
+    fn via_falls_back_to_this_hop_when_the_chain_is_not_a_header_value() {
+        // A newline cannot be part of a header value (header injection); the chain is dropped, the hop is named.
+        assert_eq!(via_header_value(Some("1.0 edge\r\nX: y")), "1.1 conduit");
     }
 
     // ── apply_upstream_path_transforms ───────────────────────────────────────
