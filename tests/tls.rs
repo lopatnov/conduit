@@ -138,6 +138,47 @@ fn tls_plain_http_site_unaffected() {
     assert_eq!(resp.status(), 200);
 }
 
+#[test]
+#[serial]
+fn tls_site_sends_hsts_and_its_plain_http_twin_does_not() {
+    // RFC 6797 section 7.2 (#723): the header goes over the secure connection only.
+    let (_dir, cert_path, key_path) = make_self_signed_cert();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let server = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "tls": { "cert": cert_path, "key": key_path },
+                "securityHeaders": { "hstsMaxAgeSecs": 63072000 },
+                "healthCheck": true
+            }]
+        }),
+    );
+    let url = format!("https://127.0.0.1:{}/__health__", server.port);
+    let resp = insecure_client().get(&url).send().expect("HTTPS GET");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("strict-transport-security")
+            .and_then(|v| v.to_str().ok()),
+        Some("max-age=63072000; includeSubDomains")
+    );
+    // a client cannot switch it off over TLS by sending X-Forwarded-Proto: http
+    let resp = insecure_client()
+        .get(&url)
+        .header("x-forwarded-proto", "http")
+        .send()
+        .expect("HTTPS GET");
+    assert!(
+        resp.headers().get("strict-transport-security").is_some(),
+        "X-Forwarded-Proto: http must not remove HSTS from a TLS response"
+    );
+}
+
 /// Issue #644: on a site with `tls` the sticky cookie is `Secure` unless `sticky.secure` says otherwise (the
 /// default is "when the site has TLS"; the plain-HTTP site of `tests/proxy.rs` gets none).
 #[test]

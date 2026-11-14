@@ -158,6 +158,16 @@ impl Default for UpstreamEntry {
 /// after a traffic pause.
 const EWMA_DECAY_SECS: f64 = 10.0;
 
+/// The latency a failed request counts as in the estimate when it was faster than this (microseconds).
+///
+/// A peer that answers every request with an error right away records tiny latencies, so its `p2c` cost stays
+/// the lowest and it keeps attracting traffic: the fast-failing-peer problem (#734). A response of 500 or more
+/// (a connect failure or timeout is fed in as one, see `request/retry.rs`) is therefore charged at least one
+/// second. Peak EWMA believes a rise at once and lets it decay over [`EWMA_DECAY_SECS`], so one failure is enough
+/// to send the traffic elsewhere for a few seconds, and a peer that keeps failing stays at the top. A slow failure
+/// keeps its own, longer, latency. Prior art: linkerd2-proxy charges a failure as a default RTT or more.
+const FAILURE_PENALTY_US: u64 = 1_000_000;
+
 /// How long a half-open promotion holds the upstream closed while it waits for the probe request's
 /// result. If no result arrives in this time (the strategy picked another upstream, or the request
 /// never completed), the upstream is offered again (issue #650).
@@ -194,7 +204,11 @@ pub fn record_request_latency(
 
     let mut entry = status_mut(registry, url);
 
-    let sample = elapsed_us as f64;
+    let sample = if status >= 500 {
+        elapsed_us.max(FAILURE_PENALTY_US)
+    } else {
+        elapsed_us
+    } as f64;
     if entry.ewma_last_sample_secs > 0.0 {
         let delta = (ts_f64 - entry.ewma_last_sample_secs).max(0.0);
         let w = (-delta / EWMA_DECAY_SECS).exp();
@@ -722,6 +736,27 @@ mod tests {
             (v - 100_000.0).abs() < 1.0,
             "a peak replaces the estimate, got {v}"
         );
+    }
+
+    #[test]
+    fn a_fast_failure_is_charged_the_penalty_latency_but_a_slow_one_keeps_its_own() {
+        // #734: a peer that errors at once must not look cheap
+        let reg = UpstreamRegistry::new();
+        record_request_latency(&reg, "http://bad:1", 300, 503);
+        let v = reg.statuses.get("http://bad:1").unwrap().ewma_latency_us;
+        assert!(
+            (v - FAILURE_PENALTY_US as f64).abs() < 1.0,
+            "a 300 us 503 counts as the penalty, got {v}"
+        );
+        record_request_latency(&reg, "http://slow:1", 5_000_000, 504);
+        let v = reg.statuses.get("http://slow:1").unwrap().ewma_latency_us;
+        assert!(
+            (v - 5_000_000.0).abs() < 1.0,
+            "a 5 s 504 keeps its 5 s, got {v}"
+        );
+        record_request_latency(&reg, "http://ok:1", 300, 404);
+        let v = reg.statuses.get("http://ok:1").unwrap().ewma_latency_us;
+        assert!((v - 300.0).abs() < 1.0, "a 4xx is no failure here, got {v}");
     }
 
     #[test]

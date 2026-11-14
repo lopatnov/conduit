@@ -104,8 +104,8 @@ e2e_start_conduit() {
 # client COMMAND...: a throw-away client container on the network, with $WORK mounted at /conf.
 client() { docker run --rm --network "$NET" -v "$WORK:/conf:ro" conduit-e2e-client "$@"; }
 
-# jqe FILTER: jq -e on stdin, in the client image (the host may not have jq).
-jqe() { docker run --rm -i conduit-e2e-client jq -e "$@"; }
+# jqe FILTER: jq -e on stdin, in the client image (the host may not have jq); it needs no network, so it has none.
+jqe() { docker run --rm -i --network none conduit-e2e-client jq -e "$@"; }
 
 # e2e_prove_isolation: a client cannot reach the Internet.
 e2e_prove_isolation() {

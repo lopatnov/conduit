@@ -550,6 +550,19 @@ mod tests {
             .count()
     }
 
+    /// #734: a peer that answers every request with an error at once must not look like the cheapest one. Before the
+    /// penalty its estimate was a few hundred microseconds against the healthy peer's two milliseconds, and it won
+    /// every comparison.
+    #[test]
+    fn p2c_keeps_away_from_a_peer_that_fails_fast() {
+        let reg = UpstreamRegistry::new();
+        let (u, w) = two(1, 1);
+        crate::health::record_request_latency(&reg, &u[0], 2_000, 200);
+        crate::health::record_request_latency(&reg, &u[1], 100, 503);
+        assert_eq!(p2c_wins(&u, &w, &reg, 1), 0);
+        assert_eq!(p2c_wins(&u, &w, &reg, 0), 200);
+    }
+
     /// Requests that never finish: how many of `n` land on each of `u`.
     fn p2c_held_open(
         u: &[String],

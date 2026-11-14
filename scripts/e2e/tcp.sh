@@ -104,11 +104,11 @@ ms=$(client sh -c 's=$(date +%s%3N); printf "x\n" | nc -w 8 app.test 9002 >/dev/
 [ -n "$ms" ] && [ "$ms" -le 2500 ] || fail "a blackhole target held the client for ${ms:-?} ms with connectTimeoutMs 1000"
 ok "a target that never answers is cut off in ${ms} ms (connectTimeoutMs: 1000)"
 
-# 6. one upstream goes down: round-robin keeps serving through the other one, or reports it, never hangs
+# 6. one upstream goes down: a failed connect goes on to the other target, so every connection is served (#725)
 docker stop "conduit-e2e-tcp-tcp1-$E2E_ID" >/dev/null
 ok_n=0; for _ in $(seq 1 6); do greet 9000 | grep -q 'tcp2' && ok_n=$((ok_n + 1)); done
 echo "with tcp1 down, $ok_n of 6 connections were served by tcp2"
-[ "$ok_n" -ge 3 ] || fail "with one target down fewer than half the connections were served ($ok_n of 6)"
-ok "one target down: $ok_n of 6 connections served by the live one, none hung"
+[ "$ok_n" -eq 6 ] || fail "with one target down only $ok_n of 6 connections were served by the live one"
+ok "one target down: 6 of 6 connections served by the live one, none dropped"
 
 echo "tcp scenario passed"

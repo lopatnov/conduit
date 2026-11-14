@@ -938,12 +938,14 @@ fn max_body_bytes_enforced_without_content_length() {
     stream.write_all(raw_req.as_bytes()).unwrap();
     let mut response = String::new();
     let _ = stream.read_to_string(&mut response);
-    // The upstream should NOT receive 200 bytes — the body must be truncated/dropped.
-    // Either we get a 413 from Conduit or the upstream receives truncated data.
-    // The key assertion: the upstream must not echo "received 200 bytes".
+    // The client is told (RFC 9110 section 15.5.14, #724), and the upstream never answers a cut-off body.
     assert!(
-        !response.contains("received 200 bytes"),
-        "chunked body exceeding maxBodyBytes must not fully reach upstream: {response:.100}"
+        response.starts_with("HTTP/1.1 413"),
+        "a chunked body over maxBodyBytes must be refused with 413: {response:.100}"
+    );
+    assert!(
+        !response.contains("received"),
+        "the upstream must not answer the request: {response:.100}"
     );
 }
 

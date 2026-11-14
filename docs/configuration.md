@@ -1251,6 +1251,12 @@ upstream however busy it was; with the in-flight factor an upstream twice as
 fast settles at about twice the in-flight requests of the slower one, and a busy
 upstream hands requests back to its sibling.
 
+**Failures count as slow.** A response of 500 or more, a connect failure and a timeout are charged to the estimate as at
+least one second, however fast the error came. Without that, an upstream that answers every request with an error right
+away would have the lowest latency in the pool and attract the traffic (the fast-failing-peer problem). One failure
+moves the traffic away from that upstream for a few seconds (the estimate decays with a 10 s time constant); one that
+keeps failing stays out. It shows in `ewma_latency_ms` of `GET /upstreams`.
+
 **Weights.** The cost is divided by `weight`, so at equal latency a weight-3
 upstream carries about three times the in-flight requests of a weight-1 upstream
 when the pool has two upstreams. With more, only two random samples are compared
@@ -2316,7 +2322,7 @@ limits:
 
 | Field                   | Type   | Default | Description                                                                                                                   |
 | ----------------------- | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `maxBodyBytes`          | number | —       | Max request body size — returns `413` if exceeded                                                                             |
+| `maxBodyBytes`          | number | —       | Max request body size — returns `413` if exceeded (declared `Content-Length`, or the bytes actually received for a chunked body)                                                                             |
 | `maxHeaderBytes`        | number | —       | Max request header size                                                                                                       |
 | `timeoutSecs`           | number | —       | Global request timeout                                                                                                        |
 | `maxInflightRequests`   | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)                                                             |
@@ -3527,6 +3533,7 @@ securityHeaders:
 | `hstsMaxAgeSecs`        | number   | — (not set)                       | `Strict-Transport-Security: max-age=<N>`                                             |
 | `hstsIncludeSubDomains` | bool     | `true` when hstsMaxAgeSecs is set | Append `; includeSubDomains` to HSTS header                                          |
 | `hstsPreload`           | bool     | `false`                           | Append `; preload` to HSTS header (see [hstspreload.org](https://hstspreload.org))   |
+| `hstsOverHttp`          | bool     | `false`                           | Also send HSTS on plain-HTTP responses (see the note below)                          |
 | `csp`                   | string   | — (not set)                       | `Content-Security-Policy`                                                            |
 | `xFrameOptions`         | string   | `SAMEORIGIN`                      | `X-Frame-Options`                                                                    |
 | `referrerPolicy`        | string   | `strict-origin-when-cross-origin` | `Referrer-Policy`                                                                    |
@@ -3538,6 +3545,9 @@ securityHeaders:
 >
 > **HSTS and CSP** are only set when explicitly configured.
 > HSTS should only be used on HTTPS sites — omit it for HTTP-only configs.
+> RFC 6797 section 7.2 forbids sending it over plain HTTP, so Conduit sends it only when the client
+> connection is TLS or the request carries `X-Forwarded-Proto: https` (a TLS-terminating load balancer).
+> If such a balancer does not set that header, set `hstsOverHttp: true`.
 >
 > **Permissions-Policy** restricts access to browser APIs (geolocation, camera, microphone, etc.).
 > See the [Permissions Policy spec](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy).
@@ -4031,6 +4041,12 @@ sites:
 | `targets`          | string[] | —             | Upstream `host:port` addresses — **required** |
 | `strategy`         | string   | `round-robin` | `"round-robin"` or `"random"`                 |
 | `connectTimeoutMs` | number   | `5000`        | Upstream connect timeout (ms)                 |
+
+> **Failover:** a connect error or timeout is not the end of the connection: the other targets are tried once
+> each, starting from the one picked, and a target that just failed is passed over for 5 seconds while another
+> one is available, so a dead target does not cost a connect timeout per connection. Worst case, when every
+> target is down, a client waits `connectTimeoutMs` for each of them before it is dropped. Once a connection
+> is relayed it is not moved to another target.
 
 > **Note:** `tcp` cannot be combined with `proxy`, `static`, or other HTTP
 > features on the same site. Use a separate port/site for HTTP traffic.

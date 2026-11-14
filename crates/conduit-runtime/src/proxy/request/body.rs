@@ -56,7 +56,13 @@ pub(crate) async fn request_body_filter(
                 .and_then(|l| l.max_body_bytes)
         };
         if enforce_max_body_bytes(req_ctx, body, chunk_len, max_body) {
-            return Ok(());
+            // Refuse the request instead of forwarding it cut at a chunk boundary: the upstream would answer a
+            // truncated document as if it were complete, and the client would not be told (#724; RFC 9110
+            // section 15.5.14).
+            return Err(pingora_core::Error::explain(
+                pingora_core::ErrorType::HTTPStatus(413),
+                "request body exceeds limits.maxBodyBytes",
+            ));
         }
 
         // Slow-loris upload defense: leaky-bucket minimum-rate check (#51).
@@ -140,7 +146,7 @@ pub(crate) async fn request_body_filter(
 
 /// Enforce the `maxBodyBytes` hard limit on actual received bytes.
 ///
-/// Returns `true` when the limit was exceeded (caller should return early).
+/// Returns `true` when the limit was exceeded (the caller refuses the request with 413).
 /// Mutates `body` to `None` to drop the chunk and sets `body_too_large` on the
 /// context.  Logs a warning only on the first violation.
 pub(super) fn enforce_max_body_bytes(
@@ -161,8 +167,7 @@ pub(super) fn enforce_max_body_bytes(
             tracing::warn!(
                 actual = req_ctx.limits.actual_body_bytes,
                 max,
-                "request body exceeded maxBodyBytes (chunked/no Content-Length) \
-                 — body dropped, upstream will receive truncated request"
+                "request body exceeded maxBodyBytes (chunked/no Content-Length) — refusing with 413"
             );
         }
         req_ctx.body_buffer.clear();

@@ -22,6 +22,13 @@ pub struct SecurityHeadersOptions {
     /// Add `preload` directive to the HSTS header for submission to the preload list.
     #[serde(rename = "hstsPreload", skip_serializing_if = "Option::is_none")]
     pub hsts_preload: Option<bool>,
+    /// Send `Strict-Transport-Security` on responses to plain-HTTP requests too (default: `false`).
+    ///
+    /// RFC 6797 section 7.2 forbids the header over non-secure transport, so by default it is sent only when the
+    /// client connection is TLS or the request carries `X-Forwarded-Proto: https` (a TLS-terminating load balancer).
+    /// Set this to `true` only when such a balancer does not set that header.
+    #[serde(rename = "hstsOverHttp", skip_serializing_if = "Option::is_none")]
+    pub hsts_over_http: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub csp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

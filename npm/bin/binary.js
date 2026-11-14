@@ -456,3 +456,30 @@ export async function ensureBinary({ verifyExisting = false, write = (s) => proc
   say(`[conduit] Installed: ${dest}`);
   return { path: dest, downloaded: true };
 }
+
+/**
+ * Starts the native binary and resolves with the child once it has been spawned.
+ *
+ * A freshly installed file can be refused with ETXTBSY ("text file busy") for a moment on Linux: a descriptor opened for
+ * writing is still held by a process that was forked at the same instant and has not yet executed (#732, seen once as
+ * a flake of the launcher test). The error is transient, so it is retried a few times with a short pause; every other
+ * error, and the last ETXTBSY, is thrown as it is.
+ */
+export async function startBinary(path, args, { spawn, retries = 5, delayMs = 40, options = {} } = {}) {
+  const launch = spawn ?? (await import("node:child_process")).spawn;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await new Promise((resolveChild, rejectChild) => {
+        const child = launch(path, args, options);
+        child.once("error", rejectChild);
+        child.once("spawn", () => {
+          child.removeListener("error", rejectChild);
+          resolveChild(child);
+        });
+      });
+    } catch (err) {
+      if (err?.code !== "ETXTBSY" || attempt >= retries) throw err;
+      await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
+    }
+  }
+}
