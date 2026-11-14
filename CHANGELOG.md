@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+---
+
+## [2.3.1] — 2026-11-14
+
 ### Fixed
 
 - **The npm package no longer carries the binaries, so it can be published again** (issue #712). `npm publish` of

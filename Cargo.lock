@@ -2739,7 +2739,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lopatnov-conduit"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-acme"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2828,7 +2828,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-admin"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2850,7 +2850,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-auth-consumers"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "base64 0.23.1",
  "indexmap 2.14.2",
@@ -2868,7 +2868,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-auth-forward"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2885,7 +2885,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-auth-jwt"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2907,7 +2907,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-cache"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2930,7 +2930,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-cli"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2950,7 +2950,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-compression"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-compression",
  "bytes",
@@ -2961,7 +2961,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-config"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "indexmap 2.14.2",
@@ -2995,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-config-core"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3012,7 +3012,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-core"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3027,7 +3027,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-cors"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-faults"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3054,7 +3054,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-hotreload"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3071,7 +3071,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-ipfilter"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3085,7 +3085,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-k8s"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-limits"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3117,7 +3117,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-metrics"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3134,7 +3134,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-middleware"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-otlp"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "opentelemetry",
@@ -3169,7 +3169,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-plugin-wasm"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3183,7 +3183,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-proxy-http"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "base64 0.23.1",
  "dashmap 6.2.1",
@@ -3206,7 +3206,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-ratelimit"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "dashmap 6.2.1",
@@ -3220,7 +3220,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-redirects"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "lopatnov-conduit-config-core",
@@ -3231,7 +3231,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-runtime"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3285,7 +3285,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-script-rhai"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "dashmap 6.2.1",
  "rhai",
@@ -3296,7 +3296,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-security-headers"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3307,7 +3307,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-server"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3358,7 +3358,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-static"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-compression",
  "async-trait",
@@ -3387,7 +3387,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-tcp"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "lopatnov-conduit-config-core",
@@ -3399,7 +3399,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-upload"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "async-trait",
  "axum",
@@ -3417,7 +3417,7 @@ dependencies = [
 
 [[package]]
 name = "lopatnov-conduit-upstream"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "dashmap 6.2.1",
  "reqwest",
