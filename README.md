@@ -534,7 +534,7 @@ systemd unit, a sample `/etc/conduit/conduit.yaml` and a `conduit` service accou
 ([the steps](docs/deployment.md#debian-and-ubuntu-the-deb-package)).
 
 ```bash
-sudo apt install ./conduit_2.3.0_amd64.deb
+sudo apt install ./conduit_2.3.1_amd64.deb
 ```
 
 ### Docker
