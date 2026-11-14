@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`p2c` no longer favours an upstream that fails fast** (issue #734). A response of 500 or more (and a connect failure or
+  timeout) now counts as at least one second in the latency estimate, so an upstream that answers every request with an
+  error right away stops looking like the cheapest one; `ewma_latency_ms` of `GET /upstreams` shows it.
+- **The npm launcher retries a start that fails with `ETXTBSY`** (issue #732). A freshly installed binary can be refused with
+  "text file busy" for a moment on Linux (it was seen once as a flake of the launcher test, so a user of `npx` could meet it);
+  the launcher tries again a few times with a short pause. The download is also reported complete only when the file is
+  closed, not when its last byte is written.
+
 ### Changed
 
 - **The systemd unit (and the `.deb`) is hardened further** (issue #670). `PrivateDevices`, `ProtectKernelTunables`,
@@ -16,6 +26,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `systemd-analyze security` goes from 8.3 EXPOSED to 3.2 OK. The proxy, a static site, name resolution, the Admin API,
   `systemctl reload` and port 80 through the `AmbientCapabilities` drop-in were run under a real systemd; the WASM
   runtime, ACME, Redis and the Kubernetes provider were not.
+  Upgrading: files Conduit creates (ACME account and certificates, logs, the disk cache) are no longer readable by other
+  users (`UMask=0027`), and a path it writes outside `/var/log/conduit` and `/var/cache/conduit` needs `ReadWritePaths=`
+  in a drop-in (`docs/deployment.md`) (#736).
 
 ---
 
