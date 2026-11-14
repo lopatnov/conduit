@@ -2,10 +2,10 @@
 //! auth/cross_site/proxy_loop/site/tls/warnings submodules moved into `crates/conduit-server`. Every item is
 //! re-exported here at its original path, so no call site changed.
 //!
-//! What stays here on purpose: the sixteen `conduit_x::warnings::COMPILED == cfg!(feature = "x")` compile-time
+//! What stays here on purpose: the seventeen `conduit_x::warnings::COMPILED == cfg!(feature = "x")` compile-time
 //! asserts below. They check each feature-owning crate's `COMPILED` const against the ROOT crate's own Cargo
 //! features (`cfg!()` always resolves against whichever crate physically compiles it) — moving them into
-//! `conduit-server` would force that crate to mirror sixteen feature names it otherwise has no reason to depend
+//! `conduit-server` would force that crate to mirror seventeen feature names it otherwise has no reason to depend
 //! on (`otlp`/`wasm`/`rhai`/`jwt`/`forward-auth`/... — see `crates/conduit-server/src/lib.rs`'s own doc comment)
 //! for zero runtime benefit, since the warning-dispatch functions themselves never read their own crate's
 //! `cfg!()`. `tests.rs`/`golden_tests.rs`/`testdata/` stay here too, for the same reason: they pin
@@ -56,6 +56,10 @@ const _: () = assert!(
 const _: () = assert!(
     conduit_cache::warnings::COMPILED == cfg!(feature = "cache"),
     "`conduit-cache`'s `cache` feature and the root crate's `cache` feature must be enabled together"
+);
+const _: () = assert!(
+    conduit_cache::warnings::DISK_COMPILED == cfg!(feature = "disk-cache"),
+    "`conduit-cache`'s `disk-cache` feature and the root crate's `disk-cache` feature must be enabled together"
 );
 const _: () = assert!(
     conduit_upload::warnings::COMPILED == cfg!(feature = "upload"),

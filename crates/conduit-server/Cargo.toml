@@ -99,6 +99,9 @@ consumers = []
 # on `crates/conduit-admin`'s `DELETE /cache/purge` handler (its own `cache` feature, asserted against this one
 # in `src/admin/api.rs`, matching the pre-move root-crate assert exactly).
 cache = ["lopatnov-conduit-cache/cache", "lopatnov-conduit-runtime/cache", "lopatnov-conduit-admin/cache"]
+# The disk store (`cache.store: "disk:<path>"`): the code, and the `disk-cache` flag the feature warnings and
+# `conduit features` read (issue #645).
+disk-cache = ["cache", "lopatnov-conduit-cache/disk-cache", "lopatnov-conduit-runtime/disk-cache"]
 # Auto-TLS via ACME/Let's Encrypt.
 acme = ["lopatnov-conduit-acme/acme", "lopatnov-conduit-runtime/acme"]
 # Raw TCP passthrough proxy services.

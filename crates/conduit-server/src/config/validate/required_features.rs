@@ -10,12 +10,13 @@
 
 use crate::config::schema::{AppConfig, SiteConfig};
 
-use super::warnings::{site_has_cache_config, site_uses_redis_store};
+use super::warnings::{site_has_cache_config, site_uses_disk_store, site_uses_redis_store};
 
 /// Every optional root feature a configuration can need, in the order they are printed.
 pub const FEATURE_ORDER: &[&str] = &[
     "proxy",
     "cache",
+    "disk-cache",
     "redis",
     "static",
     "compression",
@@ -34,9 +35,10 @@ pub const FEATURE_ORDER: &[&str] = &[
 
 /// Features this build was compiled with, among [`FEATURE_ORDER`].
 pub fn compiled_features() -> Vec<&'static str> {
-    let flags: [(&str, bool); 16] = [
+    let flags: [(&str, bool); 17] = [
         ("proxy", conduit_proxy_http::warnings::COMPILED),
         ("cache", conduit_cache::warnings::COMPILED),
+        ("disk-cache", conduit_cache::warnings::DISK_COMPILED),
         ("redis", conduit_ratelimit::warnings::COMPILED),
         ("static", conduit_static::warnings::COMPILED),
         ("compression", conduit_compression::warnings::COMPILED),
@@ -105,6 +107,9 @@ fn site_requires(site: &SiteConfig, need: &mut impl FnMut(&str)) {
     if site_has_cache_config(site) {
         need("cache");
     }
+    if site_uses_disk_store(site) {
+        need("disk-cache");
+    }
     if site_uses_redis_store(site) {
         need("redis");
     }
@@ -171,6 +176,22 @@ mod tests {
             "proxy": { "/api": { "targets": ["http://127.0.0.1:1"], "cache": { "store": "memory", "ttlSecs": 60 } } }
         }] }));
         assert_eq!(required_features(&cfg), vec!["cache"]);
+    }
+
+    /// Issue #645: a `disk:` store needs `disk-cache` as well as `cache`; `memory` and `redis://` stores do not.
+    #[test]
+    fn a_disk_store_needs_disk_cache() {
+        let with_store = |store: &str| {
+            config(serde_json::json!({ "sites": [{
+                "port": 8080,
+                "proxy": { "/api": { "targets": ["http://127.0.0.1:1"], "cache": { "store": store, "ttlSecs": 60 } } }
+            }] }))
+        };
+        assert_eq!(
+            required_features(&with_store("disk:/var/cache/conduit")),
+            vec!["cache", "disk-cache"]
+        );
+        assert_eq!(required_features(&with_store("memory")), vec!["cache"]);
     }
 
     #[test]

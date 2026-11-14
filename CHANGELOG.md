@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `disk-cache` gates the disk store now (#645): it was a flag that gated nothing. A `cache` build without it is a memory
+  (and, with `redis`, Redis) cache, and a route whose `cache.store` is `disk:<path>` is not cached there, with a start-up
+  warning and `conduit features` listing `disk-cache`. `standard`, `gateway` and `full` include it, so the published builds
+  keep the disk store; a custom `--features cache` build that used `disk:` stores needs `--features disk-cache`.
+
 ---
 
 ## [2.3.1] — 2026-11-14

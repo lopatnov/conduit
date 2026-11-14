@@ -677,3 +677,69 @@ fn stale_if_error_serves_stale_on_connection_error() {
         "exactly one warm-up hit + one revalidation hit (no retry configured)"
     );
 }
+
+/// Issue #645: the disk store is the `disk-cache` feature. With it, a `disk:` route caches (the upstream is asked
+/// once) and the entry is a file under the configured directory; without it the route is not cached and the start-up
+/// warning says why (`conduit features` reports `disk-cache` as needed).
+#[test]
+#[serial]
+fn disk_store_caches_with_the_feature_and_does_not_without_it() {
+    let upstream = MockUpstream::start();
+    let dir = tempfile::tempdir().expect("cache dir");
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": {
+                    "/disk": {
+                        "targets": [upstream.url()],
+                        "cache": { "store": format!("disk:{}", dir.path().display()), "ttlSecs": 30 }
+                    }
+                }
+            }]
+        }),
+    );
+
+    assert_eq!(
+        common::get(srv.url("/disk/item")).expect("GET 1").status(),
+        200
+    );
+    assert_eq!(
+        common::get(srv.url("/disk/item")).expect("GET 2").status(),
+        200
+    );
+    if cfg!(feature = "disk-cache") {
+        assert_eq!(
+            upstream.hit_count(),
+            1,
+            "the second request must come from the disk store"
+        );
+        let files: usize = std::fs::read_dir(dir.path())
+            .expect("cache dir")
+            .filter_map(Result::ok)
+            .map(|shard| std::fs::read_dir(shard.path()).map_or(0, Iterator::count))
+            .sum();
+        assert!(
+            files >= 1,
+            "the disk store must have written an entry under {}",
+            dir.path().display()
+        );
+    } else {
+        assert_eq!(
+            upstream.hit_count(),
+            2,
+            "without disk-cache the route is not cached"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("cache dir").count(),
+            0,
+            "without disk-cache nothing is written under the configured directory"
+        );
+    }
+}

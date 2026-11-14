@@ -196,6 +196,10 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         i,
         site_has_cache_config(site),
     ));
+    warnings.extend(conduit_cache::warnings::disk_feature_warning(
+        i,
+        site_uses_disk_store(site),
+    ));
     warnings.extend(conduit_upload::warnings::feature_warning(
         i,
         site.upload.as_ref(),
@@ -237,6 +241,22 @@ pub(super) fn site_has_cache_config(site: &SiteConfig) -> bool {
             matches!(
                 t,
                 crate::config::schema::ProxyRouteTarget::Full(cfg) if cfg.cache.is_some()
+            )
+        }),
+        _ => false,
+    }
+}
+
+/// `true` when a proxy route of `site` caches in a `disk:<path>` store (issue #645): the disk store is the
+/// `disk-cache` feature, and a build without it does not cache that route. Looks where `site_has_cache_config` does,
+/// the `proxy` route map.
+pub(super) fn site_uses_disk_store(site: &SiteConfig) -> bool {
+    match &site.proxy {
+        Some(crate::config::schema::ProxyConfig::Routes(routes)) => routes.values().any(|t| {
+            matches!(
+                t,
+                crate::config::schema::ProxyRouteTarget::Full(cfg)
+                    if cfg.cache.as_ref().is_some_and(|c| c.store.starts_with("disk:"))
             )
         }),
         _ => false,

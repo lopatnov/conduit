@@ -32,24 +32,19 @@
 //! `should_cache_request`, `cache_lock` — still has to compile). The Admin
 //! API's `DELETE /cache/purge` handler (`src/admin/api.rs`) also calls
 //! `cache::build_cache_key`/`cache::cache_storage` unconditionally. The
-//! `disk` module is likewise always compiled, matching the pre-extraction
-//! `src/proxy/cache_disk.rs` (also no feature gate) — it's only ever
-//! *invoked* from behind the root crate's own `#[cfg(feature = "cache")]`
-//! block in `request_phase.rs`.
+//! `disk` module is gated behind `disk-cache` (issue #645; it was always compiled before, which made the
+//! feature a marker that gated nothing).
 //!
-//! Only two things are genuinely gated behind this crate's own Cargo
-//! features, matching their pre-extraction gating exactly:
+//! Three things are gated behind this crate's own Cargo features:
 //! - `cache::should_early_refresh` — behind `cache` (was
 //!   `#[cfg(feature = "cache")]` on that one function in the pre-extraction
 //!   file).
 //! - the entire `redis` module — behind `redis` (was
 //!   `#![cfg(feature = "redis")]` on `src/proxy/cache_redis.rs`).
+//! - the entire `disk` module — behind `disk-cache`.
 //!
-//! `cache`/`disk-cache` are declared as marker features here (mirroring the
-//! pre-extraction root `cache = []` / `disk-cache = ["cache"]` — neither
-//! actually gates code in this crate beyond `should_early_refresh` above);
-//! the root crate's own `cache`/`disk-cache` features forward into them
-//! purely for documentation/consistency with every other extracted crate.
+//! `cache` is a marker feature here (mirroring the pre-extraction root `cache = []`); the root crate's own `cache`
+//! feature forwards into it for consistency with every other extracted crate.
 //! `redis` is forwarded from the root's own `redis` feature
 //! (`lopatnov-conduit-cache/redis`) — a *weak* dependency feature
 //! (`lopatnov-conduit-cache?/redis`) was considered to further insulate this
@@ -87,10 +82,13 @@
 //! `lopatnov-conduit-core` at all.
 
 pub mod cache;
+// Shared by the two storage backends that exist: disk and Redis.
+#[cfg(any(feature = "disk-cache", feature = "redis"))]
 pub mod common;
 pub mod config;
 #[cfg(feature = "cache")]
 pub mod ctx;
+#[cfg(feature = "disk-cache")]
 pub mod disk;
 #[cfg(feature = "redis")]
 pub mod redis;

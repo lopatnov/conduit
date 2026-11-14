@@ -80,7 +80,7 @@ Admin API.
 | `upload` | An endpoint that accepts multipart file uploads and writes them to a directory. | [`upload`](#upload) | `upload` is ignored. |
 | `redis` | Keeps rate-limit counters and cached responses in Redis, so several Conduit instances share them. | `rateLimit.store: "redis://..."`, `cache.store: "redis://..."` | Falls back to the in-memory store, **per instance**: with three instances each limit effectively triples. |
 | `cache` | HTTP response cache for proxied responses (memory store). Implies `proxy`. | [`proxy.*.cache`](#proxy-cache) | Responses are not cached. |
-| `disk-cache` | Names the on-disk cache store, `cache.store: "disk:/path"`. Implies `cache`. Today it adds no code of its own: the disk store is part of every `cache` build (#645). | `cache.store: "disk:/path"` | Same as `cache`. |
+| `disk-cache` | The on-disk cache store, `cache.store: "disk:/path"`: the code that writes cache files under a directory. Implies `cache`. A `cache` build without it is a memory (and, with `redis`, Redis) cache. | `cache.store: "disk:/path"` | The route is **not cached** and nothing is written under the directory; the start-up log and `conduit validate` say so. |
 | `acme` | Obtains and renews certificates from Let's Encrypt on its own. | [`tls.acme`](#auto-tls-via-lets-encrypt) | `tls.acme` is ignored: no certificate is requested. |
 | `fault-injection` | Adds delays or errors to a share of the requests, to test how clients and upstreams behave under failure. | [`faultInjection`](#fault-injection) | `faultInjection` is ignored (nothing is broken on purpose). |
 | `otlp` | Exports traces to an OpenTelemetry collector over OTLP. | [`global.otlp`](#opentelemetry-tracing) | `global.otlp` is ignored: no traces are exported. |
@@ -97,8 +97,8 @@ A bundle is a name for several features. `✓` means the bundle includes the fea
 | `compression` | ✓ | ✓ | ✓ | ✓ |
 | `static` | ✓ | | ✓ | ✓ |
 | `hotreload` | ✓ | | ✓ | ✓ |
-| `jwt`, `consumers`, `forward-auth`, `cache`, `acme` | ✓ | ✓ | | ✓ |
-| `rhai`, `wasm`, `tcp`, `upload`, `redis`, `disk-cache`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` | | | | ✓ |
+| `jwt`, `consumers`, `forward-auth`, `cache`, `disk-cache`, `acme` | ✓ | ✓ | | ✓ |
+| `rhai`, `wasm`, `tcp`, `upload`, `redis`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` | | | | ✓ |
 
 - **`standard`**: the default set plus the authentication, cache and automatic-TLS stack most
   self-hosted reverse proxies and API gateways need. This is what the published "standard"
