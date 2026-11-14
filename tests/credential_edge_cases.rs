@@ -351,17 +351,21 @@ fn jwt_refuses_tokens_signed_with_the_wrong_key_whatever_its_length_and_oversize
         "the right token was refused: {ok:?}"
     );
     // a token signed with an empty key, with keys of the sshole lengths, and with a key that is the secret plus a byte
-    for key in [
-        Vec::new(),
-        vec![b'k'; 255],
-        vec![b'k'; 256],
-        vec![b'k'; 1024],
-        vec![b'k'; 1025],
-        format!("{secret}x").into_bytes(),
-        secret.as_bytes()[..secret.len() - 1].to_vec(),
+    // (the labels are constants: a label built from a key's length is secret-derived to the cleartext-logging scan)
+    for (label, key) in [
+        ("an empty key", Vec::new()),
+        ("a 255-byte key", vec![b'k'; 255]),
+        ("a 256-byte key", vec![b'k'; 256]),
+        ("a 1024-byte key", vec![b'k'; 1024]),
+        ("a 1025-byte key", vec![b'k'; 1025]),
+        ("the secret plus a byte", format!("{secret}x").into_bytes()),
+        (
+            "the secret less a byte",
+            secret.as_bytes()[..secret.len() - 1].to_vec(),
+        ),
     ] {
         let code = status(&client, &srv, "authorization", bearer(&token(&key)));
-        assert_refused(&format!("jwt signed with a {}-byte key", key.len()), code);
+        assert_refused(&format!("jwt signed with {label}"), code);
     }
     // oversized or empty tokens
     for len in LENGTHS {
