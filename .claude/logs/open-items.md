@@ -27,7 +27,7 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 | #673 | RISC-V release build is not run under QEMU in CI | 2.2.1 | open |
 | #671 | Windows ARM64 release | 2.2.0 | open, waits for a green windows-11-arm job |
 | #670 | systemd unit: more hardening directives | .deb | open |
-| #663 | Rhai guide test reads fences by the CommonMark rule | #662 | done in the second fast-follow PR (2026-11-14): the Rhai test reads fences by the CommonMark rule; the logic is written twice (two crates cannot share a test file), with a note to keep them equal |
+| #663 | Rhai guide test reads fences by the CommonMark rule | #662 | done in the second fast-follow PR (2026-11-14): both guide tests read fences by the CommonMark rule through one shared file (`crates/conduit-script-rhai/tests/common/fences.rs`, included by path in the WASM test, which stays out of its package) |
 | #661 | wasm/rhai: one file reader, compile once per reload | #566 | Rhai half done in the fast-follow PR (bounded reader); open: compile a WASM module once per reload (needs a measurement) and the FIFO swap between check and open |
 | #659 | build the C, Go and Zig samples of the WASM guide in CI | #565 | open |
 | #658 | flaky dns::resolve_socket_addr_hostname_respects_timeout | a docs PR | done in the fast-follow PR (2026-11-14): the test uses a resolver that never answers |

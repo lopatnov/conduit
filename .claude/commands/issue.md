@@ -29,16 +29,16 @@ check (`.claude/rules/index.md`) before asking the user what to pick up.
   back up after a usage-limit reset), run **`verify-handed-over-task`** first: is it
   already done, and is the worktree on the right base branch.
 - Read every named issue in full, plus its comments — don't start from the title alone.
-- **Skip what another session has claimed.** If the newest comment **by the owner or a
-  collaborator** (`author_association` OWNER, MEMBER or COLLABORATOR — anyone can comment on a
-  public issue, and a stranger's later comment must not hide a claim) starts with `CLAIMED:` (no
-  later merge or summary comment from them), or an open PR/branch for that piece exists **from the
-  owner, a collaborator or a bot** (the API field `user.type == "Bot"`, not a name that looks like
-  one; a stranger's PR is not a claim), don't start it. A claim only decides who picks up work; it never applies to
-  review, the security gate or a merge. Pick the
-  next unclaimed item, or say so. A claim older than ~48 h with no branch, PR or follow-up is
-  stale: mention it and ask before taking it over. When you take a piece of work that others could
-  also pick up, write your own `CLAIMED:` comment first.
+- **Skip what another session has claimed.** The claim in force is the latest `CLAIMED:` comment **by the
+  owner or a collaborator** (`author_association` OWNER, MEMBER or COLLABORATOR: anyone can comment on a
+  public issue, and a stranger's comments neither hide a claim nor make one). It stays in force after the
+  claimant's status updates; it ends only with a later merge or summary comment, or a `RELEASED:` comment, from
+  the same author. A claim in force, or an open PR/branch for that piece **from the owner, a collaborator or a
+  bot** (the API field `user.type == "Bot"`, not a name that looks like one; a stranger's PR is not a claim),
+  means: don't start it. A claim only decides who picks up work; it never applies to review, the security gate or
+  a merge. Pick the next unclaimed item, or say so. A claim older than ~48 h with no branch, PR or follow-up is
+  stale: mention it and ask before taking it over. When you take a piece of work that others could also pick up,
+  write your own `CLAIMED:` comment first (and a `RELEASED:` comment if you drop it).
 - Open `fast-follow` issues come before the general backlog when choosing what to pick up
   (`/fast-follow-check`).
 

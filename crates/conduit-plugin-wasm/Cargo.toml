@@ -9,6 +9,9 @@ rust-version = "1.97"
 description = "WASM plugin middleware backend for conduit's feature-driven workspace (issue #114/#141)"
 license.workspace    = true
 repository.workspace = true
+# The guide test includes a test file of `lopatnov-conduit-script-rhai` by path (issue #663), which exists only in
+# the workspace checkout, so it stays out of the package.
+exclude = ["tests/guide_examples.rs"]
 
 [lib]
 name = "conduit_plugin_wasm"

@@ -11,67 +11,15 @@
 //! the test says so and passes.
 
 mod common;
-
-/// One ```rhai block: its text, the 1-based line of its opening fence and whether it is marked as a fragment.
-struct Block {
-    text: String,
-    line: usize,
-    skipped: bool,
-}
-
-/// A fence line: its character, its length and what follows it (CommonMark: three or more backticks or tildes).
-///
-/// The same rule as `crates/conduit-plugin-wasm/tests/guide_examples.rs` (issue #663): two crates cannot share a
-/// test file without breaking the standalone packaging of either, so the logic is written twice. Keep them equal.
-fn fence(line: &str) -> Option<(char, usize, &str)> {
-    let line = line.trim_start();
-    let ch = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
-    let run = line.chars().take_while(|c| *c == ch).count();
-    (run >= 3).then(|| (ch, run, &line[run..]))
-}
-
-/// The ```rhai blocks of `markdown`. `open` is the fence being read (character, length) and, when it is a `rhai`
-/// block, the block; a fence of another language is tracked too, so that a line inside it is never taken for a
-/// fence, and a fence closes only on the same character, at least as long, with nothing after it.
-fn blocks(markdown: &str) -> Vec<Block> {
-    let (mut found, mut skip_next) = (Vec::new(), false);
-    let mut open: Option<(char, usize, Option<Block>)> = None;
-    for (index, line) in markdown.lines().enumerate() {
-        match (open.take(), fence(line)) {
-            (Some((ch, len, block)), Some((c, run, rest)))
-                if c == ch && run >= len && rest.trim().is_empty() =>
-            {
-                found.extend(block);
-            }
-            (Some((ch, len, mut block)), _) => {
-                if let Some(b) = block.as_mut() {
-                    b.text.push_str(line);
-                    b.text.push('\n');
-                }
-                open = Some((ch, len, block));
-            }
-            (None, Some((ch, len, info))) => {
-                let is_rhai = info.split_whitespace().next() == Some("rhai");
-                let block = is_rhai.then(|| Block {
-                    text: String::new(),
-                    line: index + 1,
-                    skipped: skip_next,
-                });
-                open = Some((ch, len, block));
-            }
-            (None, None) => {}
-        }
-        skip_next = line.contains("docs-check: skip");
-    }
-    found
-}
+#[path = "common/fences.rs"]
+mod fences;
 
 #[test]
 fn every_rhai_block_of_the_guide_compiles() {
     let Some(markdown) = common::guide("rhai.md") else {
         return;
     };
-    let found = blocks(&markdown);
+    let found = fences::blocks(&markdown, "rhai");
     assert!(
         found.len() >= 10,
         "the guide is expected to hold many rhai blocks, found {}",
@@ -91,46 +39,6 @@ fn every_rhai_block_of_the_guide_compiles() {
         "rhai blocks that do not compile:\n{}",
         failures.join("\n")
     );
-}
-
-#[test]
-fn the_block_extractor_finds_blocks_and_honours_the_skip_marker() {
-    let md = "text\n```rhai\nlet a = 1;\n```\n<!-- docs-check: skip (a fragment) -->\n```rhai\nlet b =\n```\n```yaml\nx: 1\n```\n";
-    let found = blocks(md);
-    assert_eq!(found.len(), 2);
-    assert_eq!((found[0].line, found[0].skipped), (2, false));
-    assert_eq!(found[0].text, "let a = 1;\n");
-    assert_eq!((found[1].line, found[1].skipped), (6, true));
-}
-
-#[test]
-fn fences_follow_commonmark_rules() {
-    // A longer fence is not closed by a shorter run, a tilde fence is found, and a rhai fence inside another
-    // language's block is not a block (issue #663).
-    let md = [
-        "````rhai",
-        "let a = 1;",
-        "```",
-        "(still inside)",
-        "````",
-        "~~~rhai",
-        "let b = 2;",
-        "~~~",
-        "```yaml",
-        "```rhai",
-        "not a block",
-        "```",
-    ]
-    .join("\n");
-    let found = blocks(&md);
-    assert_eq!(
-        found.len(),
-        2,
-        "{:?}",
-        found.iter().map(|b| &b.text).collect::<Vec<_>>()
-    );
-    assert_eq!(found[0].text, "let a = 1;\n```\n(still inside)\n");
-    assert_eq!(found[1].text, "let b = 2;\n");
 }
 
 #[test]
