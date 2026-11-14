@@ -114,6 +114,17 @@ pub(super) fn validate_acme_host(
             ));
         }
     }
+    if tls
+        .acme
+        .as_ref()
+        .and_then(|a| a.profile.as_deref())
+        .is_some_and(|p| p.trim().is_empty())
+    {
+        errors.push(ValidationError::new(
+            format!("{prefix}.tls.acme.profile"),
+            "tls.acme.profile must not be empty: leave it out to get the CA's default profile",
+        ));
+    }
     let Some(host) = host else {
         errors.push(ValidationError::new(
             format!("{prefix}.host"),

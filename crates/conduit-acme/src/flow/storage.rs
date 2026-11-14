@@ -166,6 +166,26 @@ impl Drop for PendingPair {
     }
 }
 
+/// The name of a private-key format that is a real key but not the PKCS#8 `PRIVATE KEY` this module reads (issue #555), or
+/// `None`. A key an operator placed there in one of these forms is not wrong, only unreadable here: without this the
+/// pair would be called "unreadable or mismatched" and the key file silently replaced by a new one.
+pub(super) fn unsupported_key_format(key_pem: &str) -> Option<&'static str> {
+    [
+        (
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "PKCS#1 (RSA PRIVATE KEY)",
+        ),
+        ("-----BEGIN EC PRIVATE KEY-----", "SEC1 (EC PRIVATE KEY)"),
+        (
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+            "encrypted PKCS#8 (ENCRYPTED PRIVATE KEY)",
+        ),
+    ]
+    .into_iter()
+    .find(|(marker, _)| key_pem.contains(marker))
+    .map(|(_, name)| name)
+}
+
 /// `true` when `key_pem` is the private key of the leaf certificate in
 /// `cert_pem`. Compares the raw public key — no new dependency (`rcgen` and
 /// `x509-parser` are already used here).
@@ -204,6 +224,35 @@ mod tests {
     fn mode_of(path: &Path) -> u32 {
         use std::os::unix::fs::PermissionsExt;
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_key_that_is_not_pkcs8_is_named() {
+        assert_eq!(
+            unsupported_key_format(
+                "-----BEGIN RSA PRIVATE KEY-----\nMII\n-----END RSA PRIVATE KEY-----\n"
+            ),
+            Some("PKCS#1 (RSA PRIVATE KEY)")
+        );
+        assert_eq!(
+            unsupported_key_format(
+                "-----BEGIN EC PRIVATE KEY-----\nMHc\n-----END EC PRIVATE KEY-----\n"
+            ),
+            Some("SEC1 (EC PRIVATE KEY)")
+        );
+        assert_eq!(
+            unsupported_key_format(
+                "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMII\n-----END ENCRYPTED PRIVATE KEY-----\n"
+            ),
+            Some("encrypted PKCS#8 (ENCRYPTED PRIVATE KEY)")
+        );
+        let (_, pkcs8) = pair("example.com");
+        assert_eq!(
+            unsupported_key_format(&pkcs8),
+            None,
+            "a PKCS#8 key is the supported form"
+        );
+        assert_eq!(unsupported_key_format("garbage"), None);
     }
 
     // ── cached_pair_matches ──────────────────────────────────────────────────
