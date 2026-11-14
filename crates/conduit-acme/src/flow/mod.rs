@@ -40,37 +40,25 @@ const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the validation phase (authorizations, challenge, polling until the order is ready) may take in all.
 const VALIDATION_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// A step of an order that did not finish in time. The CA may or may not have acted on the request, so it is told
-/// apart from a refusal: a timed-out order is never retried on the spot (see `run_acme_order`).
-#[derive(Debug)]
-struct StepTimedOut(String);
-
-impl std::fmt::Display for StepTimedOut {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for StepTimedOut {}
-
-/// `true` when a failed `newOrder` that named the old certificate may be tried once more without it: the CA refused.
-/// A timeout is not a refusal: the CA may have accepted the order without answering, and a second one would duplicate it.
+/// `true` when a failed `newOrder` that named the old certificate may be tried once more without it: only when the
+/// CA answered with an ACME problem document, i.e. refused the order (or the link). A timeout or a transport error does
+/// not tell whether the CA acted on the request, and a second order could duplicate the first.
 fn may_retry_without_replaces(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<StepTimedOut>().is_none()
+    matches!(
+        error.downcast_ref::<instant_acme::Error>(),
+        Some(instant_acme::Error::Api(_))
+    )
 }
 
-/// Run `fut` for at most `limit`; a timeout is a [`StepTimedOut`] error naming the step.
+/// Run `fut` for at most `limit`; a timeout is an error naming the step.
 async fn bounded<T>(
     step: &str,
     limit: Duration,
     fut: impl std::future::Future<Output = anyhow::Result<T>>,
 ) -> anyhow::Result<T> {
-    tokio::time::timeout(limit, fut).await.map_err(|_| {
-        anyhow::Error::new(StepTimedOut(format!(
-            "{step} timed out after {} s",
-            limit.as_secs()
-        )))
-    })?
+    tokio::time::timeout(limit, fut)
+        .await
+        .map_err(|_| anyhow::anyhow!("{step} timed out after {} s", limit.as_secs()))?
 }
 
 /// The most days before expiry at which renewal starts. A certificate with a shorter life renews earlier in proportion
@@ -477,7 +465,18 @@ mod tests {
     use super::*;
 
     #[tokio::test(start_paused = true)]
-    async fn only_a_refusal_not_a_timeout_is_retried_without_replaces() {
+    async fn only_a_refusal_by_the_ca_is_retried_without_replaces() {
+        let refusal = anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {
+            r#type: Some("urn:ietf:params:acme:error:malformed".to_owned()),
+            detail: Some("the certificate was already replaced".to_owned()),
+            status: Some(409),
+            subproblems: Vec::new(),
+        }));
+        assert!(may_retry_without_replaces(&refusal));
+        // the refusal keeps counting through added context
+        assert!(may_retry_without_replaces(&refusal.context("new-order")));
+
+        // a timeout, a transport failure or any other error does not say the CA refused anything
         let timed_out = bounded::<()>("ACME new-order request", Duration::from_secs(60), async {
             std::future::pending().await
         })
@@ -485,9 +484,10 @@ mod tests {
         .expect_err("never finishes");
         assert!(timed_out.to_string().contains("timed out"));
         assert!(!may_retry_without_replaces(&timed_out));
-        assert!(may_retry_without_replaces(&anyhow::anyhow!(
-            "the CA refused the link"
+        assert!(!may_retry_without_replaces(&anyhow::Error::new(
+            instant_acme::Error::Str("connection reset")
         )));
+        assert!(!may_retry_without_replaces(&anyhow::anyhow!("other")));
     }
 
     #[test]
