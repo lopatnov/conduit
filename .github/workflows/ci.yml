@@ -1360,7 +1360,7 @@ jobs:
             -e CARGO_TARGET_DIR=/src/target/musl-alpine \
             rust:1-alpine sh -euxc '
               apk add --no-cache build-base cmake perl pkgconf git
-              ldd --version 2>&1 | head -1   # musl libc, not glibc
+              ldd --version 2>&1 | grep -i musl   # fail the job if this is not musl libc
               cargo test --locked --features standard --test credential_edge_cases
             '
 
