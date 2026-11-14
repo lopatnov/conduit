@@ -7,6 +7,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The feature warnings and `conduit features` now see a `cache` block on a `routes[]` entry (they looked at the `proxy` route
+  map only), and a `redis://` cache store counts as needing `redis` (only rate-limit stores did); a build without `redis`
+  warns that such a route will not be cached (#737).
+
 ### Changed
 
 - `disk-cache` gates the disk store now (#645): it was a flag that gated nothing. A `cache` build without it is a memory

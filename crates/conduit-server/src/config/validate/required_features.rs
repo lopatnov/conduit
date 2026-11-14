@@ -10,7 +10,9 @@
 
 use crate::config::schema::{AppConfig, SiteConfig};
 
-use super::warnings::{site_has_cache_config, site_uses_disk_store, site_uses_redis_store};
+use super::warnings::{
+    site_has_cache_config, site_uses_disk_store, site_uses_redis_cache_store, site_uses_redis_store,
+};
 
 /// Every optional root feature a configuration can need, in the order they are printed.
 pub const FEATURE_ORDER: &[&str] = &[
@@ -110,7 +112,7 @@ fn site_requires(site: &SiteConfig, need: &mut impl FnMut(&str)) {
     if site_uses_disk_store(site) {
         need("disk-cache");
     }
-    if site_uses_redis_store(site) {
+    if site_uses_redis_store(site) || site_uses_redis_cache_store(site) {
         need("redis");
     }
     if site.static_files.is_some() || site.fallback.is_some() {
@@ -192,6 +194,28 @@ mod tests {
             vec!["cache", "disk-cache"]
         );
         assert_eq!(required_features(&with_store("memory")), vec!["cache"]);
+    }
+
+    /// Issue #737: a cache on a `routes[]` entry counts like one on the `proxy` map, and a `redis://` cache store needs
+    /// `redis` (it used to look at rate-limit stores only).
+    #[test]
+    fn caches_on_routes_entries_and_redis_cache_stores_are_seen() {
+        let routes_entry = config(serde_json::json!({ "sites": [{
+            "port": 8080,
+            "routes": [{ "match": { "path": "/api/**" }, "proxy": {
+                "targets": ["http://127.0.0.1:1"],
+                "cache": { "store": "disk:/var/cache/conduit", "ttlSecs": 60 }
+            } }]
+        }] }));
+        assert_eq!(
+            required_features(&routes_entry),
+            vec!["cache", "disk-cache"]
+        );
+        let redis_cache = config(serde_json::json!({ "sites": [{
+            "port": 8080,
+            "proxy": { "/api": { "targets": ["http://127.0.0.1:1"], "cache": { "store": "redis://127.0.0.1:6379", "ttlSecs": 60 } } }
+        }] }));
+        assert_eq!(required_features(&redis_cache), vec!["cache", "redis"]);
     }
 
     #[test]

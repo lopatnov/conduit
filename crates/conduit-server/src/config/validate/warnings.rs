@@ -200,6 +200,10 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
         i,
         site_uses_disk_store(site),
     ));
+    warnings.extend(conduit_cache::warnings::redis_feature_warning(
+        i,
+        site_uses_redis_cache_store(site),
+    ));
     warnings.extend(conduit_upload::warnings::feature_warning(
         i,
         site.upload.as_ref(),
@@ -234,33 +238,46 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
     ));
 }
 
-/// Return `true` when any proxy route in the site has a `cache` config block.
-pub(super) fn site_has_cache_config(site: &SiteConfig) -> bool {
-    match &site.proxy {
-        Some(crate::config::schema::ProxyConfig::Routes(routes)) => routes.values().any(|t| {
-            matches!(
-                t,
-                crate::config::schema::ProxyRouteTarget::Full(cfg) if cfg.cache.is_some()
-            )
-        }),
-        _ => false,
+/// Every `cache` block of a proxy route of `site`: the legacy `proxy` route map and each `routes[]` entry's proxy
+/// action (issue #737: the predicates below used to look at the map only, so a `cache` on a `routes[]` entry was
+/// invisible to the feature warnings and to `conduit features`). Only the full route form can carry a cache.
+fn iter_route_cache_configs(
+    site: &SiteConfig,
+) -> impl Iterator<Item = &conduit_cache::CacheConfig> {
+    let proxy_map = match &site.proxy {
+        Some(crate::config::schema::ProxyConfig::Routes(routes)) => Some(routes.values()),
+        _ => None,
     }
+    .into_iter()
+    .flatten();
+    let routes_array = site
+        .routes
+        .iter()
+        .flatten()
+        .filter_map(|route| route.proxy.as_ref());
+    proxy_map
+        .chain(routes_array)
+        .filter_map(|target| match target {
+            crate::config::schema::ProxyRouteTarget::Full(cfg) => cfg.cache.as_ref(),
+            _ => None,
+        })
+}
+
+/// Return `true` when any proxy route in the site (`proxy` map or `routes[]`) has a `cache` config block.
+pub(super) fn site_has_cache_config(site: &SiteConfig) -> bool {
+    iter_route_cache_configs(site).next().is_some()
 }
 
 /// `true` when a proxy route of `site` caches in a `disk:<path>` store (issue #645): the disk store is the
-/// `disk-cache` feature, and a build without it does not cache that route. Looks where `site_has_cache_config` does,
-/// the `proxy` route map.
+/// `disk-cache` feature, and a build without it does not cache that route.
 pub(super) fn site_uses_disk_store(site: &SiteConfig) -> bool {
-    match &site.proxy {
-        Some(crate::config::schema::ProxyConfig::Routes(routes)) => routes.values().any(|t| {
-            matches!(
-                t,
-                crate::config::schema::ProxyRouteTarget::Full(cfg)
-                    if cfg.cache.as_ref().is_some_and(|c| c.store.starts_with("disk:"))
-            )
-        }),
-        _ => false,
-    }
+    iter_route_cache_configs(site).any(|cache| cache.store.starts_with("disk:"))
+}
+
+/// `true` when a proxy route of `site` caches in a `redis://`/`rediss://` store (issue #737): the Redis cache store is
+/// the `redis` feature, and a build without it does not cache that route.
+pub(super) fn site_uses_redis_cache_store(site: &SiteConfig) -> bool {
+    iter_route_cache_configs(site).any(|cache| is_redis_url(&cache.store))
 }
 
 /// Return `true` when `site`'s site-, route- (`proxy` map or `routes[]`,

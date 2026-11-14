@@ -8,7 +8,7 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
-| #737 | feature warnings and `conduit features` miss a `cache` block on `routes[].proxy` and a `redis://` cache store | the `disk-cache` gate (#645) | open: filed with the PR, a separate fix (one walk over every proxy route of a site) |
+| #737 | feature warnings and `conduit features` miss a `cache` block on `routes[].proxy` and a `redis://` cache store | the `disk-cache` gate (#645) | done in the disk-cache PR (2026-11-14, pulled in at the end): one walk over every proxy route of a site (`proxy` map and `routes[]`), a `redis://` cache store needs `redis` |
 | #725 | tcp proxy: a connect failure drops the client's connection instead of trying the next target | filed by the owner, 2026-11-14 | open (not mine; listed so the ledger and the fast-follow issues agree) |
 | #645 | disk-cache is a marker feature | balancer work (#631) | done in the disk-cache PR (2026-11-14): the disk store is behind `disk-cache`, which is in `standard`, `gateway` and `full` |
 | #714 | kube 5.0.0 (#694): needs `k8s-openapi` 0.29, a Kubernetes minimum-version decision (`v1_32` is gone) and a fix of `conduit-k8s` | the Dependabot triage of 2026-11-13 | done in the deps PR (2026-11-14, owner away: decided by me): `v1_33` (the oldest set 0.29 offers), kube 5.1, `conduit-k8s` needed no code change; kube 5.1 needs Rust 1.95, so the crate carries its own `rust-version` and the `msrv` job no longer checks `kubernetes` |
