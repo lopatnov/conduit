@@ -42,7 +42,8 @@ const VALIDATION_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// `true` when a failed `newOrder` that named the old certificate may be tried once more without it: only when the
 /// CA answered with an ACME problem document that identifies the `replaces` link as the cause (RFC 9773 §5). That is
-/// `alreadyReplaced`, or `malformed`/`unauthorized` whose detail names the `replaces` field; those two types are also
+/// `alreadyReplaced`, or `malformed`/`unauthorized` whose detail names the link (the stem "replace": `replaces`,
+/// `replaced`, `replacement`); those two types are also
 /// used for unrelated faults (a deactivated account, a bad request), which a second order would only repeat. A timeout
 /// or a transport error does not tell whether the CA acted on the request, and a second order could duplicate the
 /// first; `rateLimited`, `serverInternal` and the like say nothing about the link, and retrying at once would only add
@@ -64,7 +65,7 @@ fn may_retry_without_replaces(error: &anyhow::Error) -> bool {
         "malformed" | "unauthorized" => problem
             .detail
             .as_deref()
-            .is_some_and(|d| d.to_ascii_lowercase().contains("replaces")),
+            .is_some_and(|d| d.to_ascii_lowercase().contains("replace")),
         _ => false,
     }
 }
@@ -500,10 +501,16 @@ mod tests {
         )));
         // `malformed` and `unauthorized` count only when the detail names the `replaces` field
         for kind in ["malformed", "unauthorized"] {
-            assert!(
-                may_retry_without_replaces(&problem(kind, "invalid `Replaces` value")),
-                "{kind}"
-            );
+            for detail in [
+                "invalid `Replaces` value",
+                "not the account that requested the certificate being replaced",
+                "the replacement certificate does not match",
+            ] {
+                assert!(
+                    may_retry_without_replaces(&problem(kind, detail)),
+                    "{kind}: {detail}"
+                );
+            }
             assert!(
                 !may_retry_without_replaces(&problem(kind, "account is deactivated")),
                 "{kind}"
