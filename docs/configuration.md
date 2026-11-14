@@ -4015,6 +4015,12 @@ sites:
 | `strategy`         | string   | `round-robin` | `"round-robin"` or `"random"`                 |
 | `connectTimeoutMs` | number   | `5000`        | Upstream connect timeout (ms)                 |
 
+> **Failover:** a connect error or timeout is not the end of the connection: the other targets are tried once
+> each, starting from the one picked, and a target that just failed is passed over for 5 seconds while another
+> one is available, so a dead target does not cost a connect timeout per connection. Worst case, when every
+> target is down, a client waits `connectTimeoutMs` for each of them before it is dropped. Once a connection
+> is relayed it is not moved to another target.
+
 > **Note:** `tcp` cannot be combined with `proxy`, `static`, or other HTTP
 > features on the same site. Use a separate port/site for HTTP traffic.
 

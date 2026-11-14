@@ -16,10 +16,14 @@
 //!       strategy: round-robin     # optional; default
 //!       connectTimeoutMs: 5000    # optional
 //! ```
+//!
+//! A connect error or timeout is not the end of the connection: the remaining targets are tried once each, in
+//! order from the one picked, and a target that just failed is left out of the pick for [`DOWN_FOR`] so that a dead
+//! one does not cost a connect timeout per connection (#725; nginx `proxy_next_upstream` + `fail_timeout`).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use pingora_core::apps::ServerApp;
@@ -28,6 +32,9 @@ use pingora_core::server::ShutdownWatch;
 use tokio::net::TcpStream;
 
 use crate::config::TcpConfig;
+
+/// How long a target that failed to connect is passed over while another one is available.
+const DOWN_FOR: Duration = Duration::from_secs(5);
 
 /// Raw TCP proxy application.
 ///
@@ -43,6 +50,9 @@ pub struct TcpProxy {
     random: bool,
     /// Upstream connect timeout.
     connect_timeout: Duration,
+    /// Per target: milliseconds after `epoch` until which it is passed over (0 = not marked down).
+    down_until_ms: Vec<AtomicU64>,
+    epoch: Instant,
 }
 
 impl TcpProxy {
@@ -58,16 +68,60 @@ impl TcpProxy {
             counter: AtomicUsize::new(0),
             random,
             connect_timeout,
+            down_until_ms: cfg.targets.iter().map(|_| AtomicU64::new(0)).collect(),
+            epoch: Instant::now(),
         }
     }
 
-    /// Pick a target using round-robin or random selection.
-    fn pick_target(&self) -> Option<&str> {
+    fn now_ms(&self) -> u64 {
+        // +1 so that a mark made at the very first millisecond is not the "not down" value 0.
+        self.epoch.elapsed().as_millis() as u64 + 1
+    }
+
+    fn is_down(&self, idx: usize) -> bool {
+        self.down_until_ms[idx].load(Ordering::Relaxed) > self.now_ms()
+    }
+
+    fn mark_down(&self, idx: usize) {
+        let until = self.now_ms() + DOWN_FOR.as_millis() as u64;
+        self.down_until_ms[idx].store(until, Ordering::Relaxed);
+    }
+
+    /// The order in which to try the targets for one connection: every target once, starting at the picked one;
+    /// those marked down come last, so they are tried only when nothing else is left.
+    fn try_order(&self) -> Vec<usize> {
         let n = self.targets.len();
         if n == 0 {
-            return None;
+            return Vec::new();
         }
-        let idx = if self.random {
+        let start = self.pick_index();
+        let cyclic = (0..n).map(|k| (start + k) % n);
+        let (up, down): (Vec<usize>, Vec<usize>) = cyclic.partition(|&i| !self.is_down(i));
+        up.into_iter().chain(down).collect()
+    }
+
+    /// Connect to the first target that answers, marking each one that does not as down.
+    async fn connect_any(&self) -> Option<(TcpStream, &str)> {
+        for idx in self.try_order() {
+            let target = self.targets[idx].as_str();
+            match tokio::time::timeout(self.connect_timeout, TcpStream::connect(target)).await {
+                Ok(Ok(stream)) => return Some((stream, target)),
+                Ok(Err(e)) => tracing::warn!(target, "TCP proxy: upstream connect error: {e}"),
+                Err(_) => tracing::warn!(
+                    target,
+                    timeout_ms = self.connect_timeout.as_millis(),
+                    "TCP proxy: upstream connect timed out"
+                ),
+            }
+            self.mark_down(idx);
+        }
+        None
+    }
+
+    /// Pick a target index using round-robin or random selection.
+    fn pick_index(&self) -> usize {
+        let n = self.targets.len();
+        if self.random {
             // splitmix64 from nanoseconds — same RNG used elsewhere in Conduit.
             let seed = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -79,8 +133,16 @@ impl TcpProxy {
             (x as usize) % n
         } else {
             self.counter.fetch_add(1, Ordering::Relaxed) % n
-        };
-        Some(&self.targets[idx])
+        }
+    }
+
+    /// Pick a target using round-robin or random selection.
+    #[cfg(test)]
+    fn pick_target(&self) -> Option<&str> {
+        if self.targets.is_empty() {
+            return None;
+        }
+        Some(&self.targets[self.pick_index()])
     }
 }
 
@@ -93,31 +155,13 @@ impl ServerApp for TcpProxy {
         mut downstream: Stream,
         _shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
-        let target = match self.pick_target() {
-            Some(t) => t.to_owned(),
-            None => {
-                tracing::warn!("TCP proxy: no upstream targets configured");
-                return None;
-            }
-        };
-
-        let upstream_result =
-            tokio::time::timeout(self.connect_timeout, TcpStream::connect(&target)).await;
-
-        let mut upstream = match upstream_result {
-            Ok(Ok(stream)) => stream,
-            Ok(Err(e)) => {
-                tracing::warn!(target, "TCP proxy: upstream connect error: {e}");
-                return None;
-            }
-            Err(_) => {
-                tracing::warn!(
-                    target,
-                    timeout_ms = self.connect_timeout.as_millis(),
-                    "TCP proxy: upstream connect timed out"
-                );
-                return None;
-            }
+        if self.targets.is_empty() {
+            tracing::warn!("TCP proxy: no upstream targets configured");
+            return None;
+        }
+        let Some((mut upstream, target)) = self.connect_any().await else {
+            tracing::warn!("TCP proxy: no upstream target could be reached");
+            return None;
         };
 
         tracing::debug!(target, "TCP proxy: relaying connection");
@@ -172,6 +216,70 @@ mod tests {
         assert!(picks[..3].contains(&"a:1".to_owned()));
         assert!(picks[..3].contains(&"b:2".to_owned()));
         assert!(picks[..3].contains(&"c:3".to_owned()));
+    }
+
+    // ── failover (#725) ──────────────────────────────────────────────────────
+
+    /// An address nothing listens on: bind to port 0, note the port, close the listener.
+    fn dead_addr() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let a = l.local_addr().unwrap().to_string();
+        drop(l);
+        a
+    }
+
+    #[test]
+    fn a_target_marked_down_is_tried_last() {
+        let proxy = make_proxy(&["a:1", "b:2", "c:3"], None);
+        proxy.mark_down(0);
+        for _ in 0..6 {
+            let order = proxy.try_order();
+            assert_eq!(order.len(), 3, "every target once: {order:?}");
+            assert_eq!(
+                *order.last().unwrap(),
+                0,
+                "the down target is last: {order:?}"
+            );
+        }
+        // all down: still every target once, none dropped
+        proxy.mark_down(1);
+        proxy.mark_down(2);
+        let mut order = proxy.try_order();
+        order.sort_unstable();
+        assert_eq!(order, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn the_down_mark_expires() {
+        let proxy = make_proxy(&["a:1", "b:2"], None);
+        proxy.down_until_ms[0].store(proxy.now_ms() + 1, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!proxy.is_down(0));
+        proxy.mark_down(1);
+        assert!(proxy.is_down(1));
+    }
+
+    #[tokio::test]
+    async fn a_connect_failure_goes_on_to_the_next_target() {
+        let live = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live_addr = live.local_addr().unwrap().to_string();
+        let dead = dead_addr();
+        let proxy = make_proxy(&[dead.as_str(), live_addr.as_str()], None);
+        // Six connections, round-robin over a dead and a live target: all reach the live one (before #725, 3 of 6).
+        for k in 0..6 {
+            let (_stream, target) = proxy.connect_any().await.expect("a target answers");
+            assert_eq!(target, live_addr, "connection {k}");
+        }
+        assert!(
+            proxy.is_down(0),
+            "the dead target is passed over for a while"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_target_answering_ends_the_connection_attempt() {
+        let proxy = make_proxy(&[dead_addr().as_str(), dead_addr().as_str()], None);
+        assert!(proxy.connect_any().await.is_none());
     }
 
     #[test]
