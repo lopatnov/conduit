@@ -37,7 +37,7 @@ e2e_cleanup() {
     echo "--- conduit log"
     docker logs "$APP" 2>&1 | tail -30 || true
   fi
-  docker rm -f "$APP" "$UP" >/dev/null 2>&1 || true
+  docker rm -f "$APP" "$UP" ${E2E_WHO:-} >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -53,6 +53,13 @@ ok() {
 
 # e2e_build_client: the client image. It needs the Internet, so it is built before the network exists.
 e2e_build_client() {
+  # E2E_SKIP_CLIENT_BUILD=1: the image `conduit-e2e-client` was built by hand (a sandbox whose build containers cannot
+  # reach the Debian mirror); it needs curl, nghttp, jq, openssl and nc.
+  if [ -n "${E2E_SKIP_CLIENT_BUILD:-}" ]; then
+    docker image inspect conduit-e2e-client >/dev/null || fail "E2E_SKIP_CLIENT_BUILD is set but there is no conduit-e2e-client image"
+    docker pull -q "$E2E_HTTPBIN" >/dev/null
+    return
+  fi
   docker build -q -t conduit-e2e-client - >/dev/null <<EOF
 FROM $E2E_DEBIAN
 RUN apt-get update -qq \\
@@ -79,7 +86,8 @@ e2e_network() {
 }
 
 # e2e_start_conduit CONFIG: copy CONFIG to $WORK/conduit.yaml and start the binary on it; /conf in the container is $WORK
-# (the certificate is /conf/cert.pem and /conf/key.pem). Returns when conduit answers on URL (the second argument).
+# (the certificate is /conf/cert.pem and /conf/key.pem). Returns when conduit answers on URL (the second argument); more
+# arguments are given to the curl that waits (a client certificate, for instance).
 e2e_start_conduit() {
   cp "$1" "$WORK/conduit.yaml"
   docker run -d --name "$APP" --network "$NET" --ip 192.0.2.20 --network-alias app.test \
@@ -87,7 +95,7 @@ e2e_start_conduit() {
     conduit -c /conf/conduit.yaml >/dev/null
   local up=""
   for _ in $(seq 1 50); do
-    if client curl -sS --max-time 10 --cacert /conf/cert.pem -o /dev/null "$2" 2>/dev/null; then up=1; break; fi
+    if client curl -sS --max-time 10 --cacert /conf/cert.pem "${@:3}" -o /dev/null "$2" 2>/dev/null; then up=1; break; fi
     sleep 0.5
   done
   [ -n "$up" ] || fail "conduit does not answer on $2"
@@ -105,4 +113,40 @@ e2e_prove_isolation() {
     fail "the test network has a route to the Internet"
   fi
   ok "isolated network"
+}
+
+# e2e_who_upstreams NAME...: one tiny upstream per name (who1.test is the first, 192.0.2.11, and so on); a GET to any path
+# answers with the name, so a client can tell which of them the balancer chose. They run the client image (python3).
+# HTTP on port 8080; the same server also answers `/slow` after two seconds (for least-conn) and `/status/N` with N.
+e2e_who_upstreams() {
+  local i=0 name
+  for name in "$@"; do
+    i=$((i + 1))
+    docker run -d --name "conduit-e2e-who-$name-$E2E_ID" --network "$NET" --ip "192.0.2.$((10 + i))" \
+      --network-alias "$name.test" conduit-e2e-client python3 -c '
+import http.server, sys, time
+name = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def do_GET(self):
+        code = 200
+        if self.path.startswith("/slow"):
+            time.sleep(2)
+        elif self.path.startswith("/status/"):
+            code = int(self.path.rsplit("/", 1)[1])
+        body = (name + "\n").encode()
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+    do_POST = do_GET
+    do_HEAD = do_GET
+    def log_message(self, *a):
+        pass
+http.server.ThreadingHTTPServer(("0.0.0.0", 8080), H).serve_forever()
+' "$name" >/dev/null
+    E2E_WHO="${E2E_WHO:-} conduit-e2e-who-$name-$E2E_ID"
+  done
+  sleep 1
 }
