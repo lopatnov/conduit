@@ -765,7 +765,8 @@ For disk-backed persistent cache add `--features disk-cache`.
 
 ### `disk-cache` — Disk-backed cache
 
-Enables `cache.store: "disk:/path"`. Cache entries are written atomically
+Enables `cache.store: "disk:/path"` (the code that writes cache files; without it a route with a `disk:` store is not
+cached, and the start-up log says so). It is part of the `standard`, `gateway` and `full` bundles. Cache entries are written atomically
 (`.tmp` → rename) and survive restarts. Useful for large response bodies or
 when Redis is not available.
 

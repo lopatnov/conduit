@@ -47,8 +47,8 @@ tempfile   = { workspace = true }
 # src/lib.rs doc comment: only `cache::should_early_refresh` is actually
 # gated by it in this crate).
 cache = []
-# Marker feature — mirrors the pre-extraction root `disk-cache = ["cache"]`.
-# The `disk` module itself has no feature gate, matching pre-extraction.
+# Gates the `disk` module (the disk store, `cache.store: "disk:<path>"`), issue #645: a build without it contains no
+# code that writes cache files under a configured path.
 disk-cache = ["cache"]
 # Gates the entire `redis` module (mirrors the pre-extraction
 # `#![cfg(feature = "redis")]` on src/proxy/cache_redis.rs).
