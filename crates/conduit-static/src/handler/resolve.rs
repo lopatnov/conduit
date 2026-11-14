@@ -168,13 +168,6 @@ pub(super) async fn find_file<'a>(
             _ => {}
         }
     }
-    if rel.is_empty() {
-        for root in roots {
-            if let Some(p) = find_index(root, options).await {
-                return Some((root, p));
-            }
-        }
-    }
     None
 }
 
