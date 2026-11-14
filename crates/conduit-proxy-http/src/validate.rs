@@ -136,6 +136,16 @@ pub fn validate_route_config(
             "timeoutMs must be at least 1 (milliseconds)",
         ));
     }
+    if let Some(sticky) = &cfg.sticky {
+        // The name is written into a `Set-Cookie` line as it is: a `;`, a space or a control character in it would
+        // add attributes to the cookie or make the browser drop it (the security review of #731).
+        if !is_cookie_name(&sticky.cookie) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.sticky.cookie"),
+                "the cookie name must be a non-empty HTTP token (letters, digits and !#$%&'*+-.^_`|~)",
+            ));
+        }
+    }
     if cfg
         .sticky
         .as_ref()
@@ -167,6 +177,14 @@ pub fn validate_route_config(
             ));
         }
     }
+}
+
+/// `true` for a non-empty RFC 9110 `token`: the grammar of a cookie name (RFC 6265 section 4.1.1).
+fn is_cookie_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
 /// `sticky` that does nothing (issue #644): on a route with `groups` it is never read (`resolve_grouped`
@@ -666,6 +684,47 @@ mod tests {
         assert!(
             warnings[0].contains("is ignored for group 'pinned'"),
             "{warnings:?}"
+        );
+    }
+
+    /// The security review of #731: the cookie name goes into a `Set-Cookie` line unchanged, so it must be a token.
+    #[test]
+    fn sticky_cookie_name_must_be_a_token() {
+        for good in [
+            "sid",
+            "srv_id",
+            "SERVERID",
+            "session.id",
+            "a-b",
+            "x!#$%&'*+^`|~",
+        ] {
+            assert!(is_cookie_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "a b",
+            "a;b",
+            "a=b",
+            "a\r\nb",
+            "a,b",
+            "a\"b",
+            "caf\u{e9}",
+        ] {
+            assert!(!is_cookie_name(bad), "{bad:?}");
+        }
+        let mut cfg = route(Some(LoadBalanceStrategy::RoundRobin), None);
+        cfg.sticky = Some(StickyConfig {
+            cookie: "bad; Domain=evil".to_owned(),
+            secret: None,
+            strict: None,
+            secure: None,
+            max_age_secs: None,
+        });
+        let mut errors = Vec::new();
+        validate_route_config(&cfg, "p", &mut errors);
+        assert!(
+            errors.iter().any(|e| e.path.ends_with("sticky.cookie")),
+            "{errors:?}"
         );
     }
 
