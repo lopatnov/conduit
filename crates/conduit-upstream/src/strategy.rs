@@ -191,7 +191,7 @@ fn p2c_cost(health: &UpstreamRegistry, weighted: &[(String, u32)], index: usize,
     let latency = health
         .statuses
         .get(url)
-        .map(|e| e.ewma_latency_us)
+        .map(|e| crate::health::decayed_ewma_us(&e, crate::health::now_secs_f64()))
         .unwrap_or(P2C_DEFAULT_LATENCY_US);
     let in_flight = health.conn_load(url) as f64 + 1.0;
     match targets::weight_for(weighted, index, url) {

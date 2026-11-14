@@ -133,6 +133,13 @@ class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "who"
     sys_version = ""
+    def parse_request(self):
+        # every request line that parses, whatever the method: a smuggled `GPOST /` never reaches do_GET (Python
+        # answers 501 for it), and the oracle must still see it
+        ok = super().parse_request()
+        if ok and self.path != "/seen":
+            SEEN.append(self.command + " " + self.path)
+        return ok
     def do_GET(self):
         code = 200
         if self.path == "/seen":
@@ -142,7 +149,6 @@ class H(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        SEEN.append(self.command + " " + self.path)
         if self.path.startswith("/headers"):
             body = json.dumps({k: v for k, v in self.headers.items()}).encode()
             self.send_response(200)

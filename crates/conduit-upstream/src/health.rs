@@ -34,7 +34,7 @@ pub(crate) fn now_secs() -> u64 {
 
 /// Return the current Unix timestamp as fractional seconds (for EWMA decay).
 #[inline]
-fn now_secs_f64() -> f64 {
+pub(crate) fn now_secs_f64() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -158,23 +158,32 @@ impl Default for UpstreamEntry {
 /// after a traffic pause.
 const EWMA_DECAY_SECS: f64 = 10.0;
 
-/// EWMA mixing factor for new samples (α = 0.1 → ~10-sample effective window).
-const EWMA_ALPHA: f64 = 0.1;
-
 /// How long a half-open promotion holds the upstream closed while it waits for the probe request's
 /// result. If no result arrives in this time (the strategy picked another upstream, or the request
 /// never completed), the upstream is offered again (issue #650).
 pub const HALF_OPEN_PROBE_TIMEOUT_SECS: u64 = 10;
 
+/// The Peak EWMA estimate `entry` would have at `now_secs`: the stored value decayed for the time since its last
+/// sample, `ewma × e^(-Δt / DECAY_SECS)` (the stored value as it is while there has been no sample).
+///
+/// The decay is applied when the estimate is **read**, as Tower's `PeakEwma` does, and not only when a sample
+/// arrives. Otherwise a peer whose estimate went up (a slow first response, a cold connection) is never compared
+/// as cheap again: the strategy stops picking it, so it never gets the sample that would lower the estimate (the
+/// router-balancing e2e scenario saw `p2c` leave one of three peers at zero requests).
+pub fn decayed_ewma_us(entry: &UpstreamEntry, now_secs: f64) -> f64 {
+    if entry.ewma_last_sample_secs > 0.0 {
+        let delta = (now_secs - entry.ewma_last_sample_secs).max(0.0);
+        entry.ewma_latency_us * (-delta / EWMA_DECAY_SECS).exp()
+    } else {
+        entry.ewma_latency_us
+    }
+}
+
 /// Update the Peak EWMA latency for `url` after completing a proxy request.
 ///
-/// Uses **time-based exponential decay** before mixing in the new sample:
-///
-///   decayed  = old_ewma × e^(-Δt / DECAY_SECS)
-///   new_ewma = decayed + α × sample
-///
-/// This matches linkerd2-proxy's `PeakEwma` approach: measurements automatically
-/// decay between traffic bursts so old slow periods don't bias future routing.
+/// Follows linkerd2-proxy / Tower `PeakEwma`: the old estimate is decayed for the time since the last sample, a
+/// sample above it replaces it at once (the *peak*: slowness is believed immediately), a lower one is mixed in with
+/// the weight `1 - e^(-Δt / DECAY_SECS)`. The first sample of an upstream becomes its estimate.
 pub fn record_request_latency(
     registry: &UpstreamRegistry,
     url: &str,
@@ -185,17 +194,19 @@ pub fn record_request_latency(
 
     let mut entry = registry.statuses.entry(url.to_owned()).or_default();
 
-    // Apply time-based decay since the last sample.
-    let delta = if entry.ewma_last_sample_secs > 0.0 {
-        (ts_f64 - entry.ewma_last_sample_secs).max(0.0)
+    let sample = elapsed_us as f64;
+    if entry.ewma_last_sample_secs > 0.0 {
+        let delta = (ts_f64 - entry.ewma_last_sample_secs).max(0.0);
+        let w = (-delta / EWMA_DECAY_SECS).exp();
+        let decayed = entry.ewma_latency_us * w;
+        entry.ewma_latency_us = if sample > decayed {
+            sample
+        } else {
+            decayed + (1.0 - w) * sample
+        };
     } else {
-        0.0 // first sample — no decay
-    };
-    let decay = (-delta / EWMA_DECAY_SECS).exp();
-    let decayed = entry.ewma_latency_us * decay;
-
-    // Mix in the new sample.
-    entry.ewma_latency_us = decayed + EWMA_ALPHA * elapsed_us as f64;
+        entry.ewma_latency_us = sample;
+    }
     entry.ewma_last_sample_secs = ts_f64;
 
     // Passive health: track consecutive 5xx responses.
@@ -664,15 +675,35 @@ mod tests {
     // ── Peak EWMA + Outlier Detection ────────────────────────────────────────
 
     #[test]
-    fn ewma_latency_updates_toward_sample() {
+    fn ewma_first_sample_becomes_the_estimate_and_a_peak_replaces_it_at_once() {
         let reg = UpstreamRegistry::new();
-        // Default EWMA is 30_000 µs (30 ms).  The first sample has no time-based
-        // decay (ewma_last_sample_secs == 0.0 → decay = e^0 = 1.0).
-        // After first sample: 1.0 * 30_000 + 0.1 * 100_000 = 30_000 + 10_000 = 40_000
-        record_request_latency(&reg, "http://u:4000", 100_000, 200); // 100 ms
+        record_request_latency(&reg, "http://u:4000", 2_000, 200); // 2 ms
         let v = reg.statuses.get("http://u:4000").unwrap().ewma_latency_us;
-        // Allow small floating-point tolerance.
-        assert!((v - 40_000.0).abs() < 1.0, "expected ≈40_000, got {v}");
+        assert!(
+            (v - 2_000.0).abs() < 1.0,
+            "first sample is the estimate, got {v}"
+        );
+        record_request_latency(&reg, "http://u:4000", 100_000, 200); // a slow one: believed at once
+        let v = reg.statuses.get("http://u:4000").unwrap().ewma_latency_us;
+        assert!(
+            (v - 100_000.0).abs() < 1.0,
+            "a peak replaces the estimate, got {v}"
+        );
+    }
+
+    #[test]
+    fn ewma_decays_while_nobody_samples_the_peer() {
+        let reg = UpstreamRegistry::new();
+        record_request_latency(&reg, "http://u:4000", 100_000, 200);
+        let e = reg.statuses.get("http://u:4000").unwrap();
+        let at = e.ewma_last_sample_secs;
+        let now = decayed_ewma_us(&e, at);
+        let later = decayed_ewma_us(&e, at + EWMA_DECAY_SECS);
+        assert!((now - 100_000.0).abs() < 1.0);
+        assert!(
+            (later - 100_000.0 / std::f64::consts::E).abs() < 1.0,
+            "one decay constant later the estimate is 1/e of it, got {later}"
+        );
     }
 
     #[test]

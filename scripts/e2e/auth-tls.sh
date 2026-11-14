@@ -125,7 +125,7 @@ restart "$WORK/apikey.yaml" http://app.test:8080/get -H 'X-API-Key: key-one'
 [ "$(code $U/get)" = 401 ] || fail "apiKey: no key served"
 [ "$(code -H 'X-API-Key: nope' $U/get)" = 401 ] || fail "apiKey: wrong key served"
 [ "$(code -H 'X-API-Key: key-two' $U/get)" = 200 ] || fail "apiKey: second key refused"
-[ "$(code -H 'X-API-Key:' $U/get)" = 401 ] || fail "apiKey: empty key served"
+[ "$(code -H 'X-API-Key;' $U/get)" = 401 ] || fail "apiKey: empty key served"
 ok "api key: 401 without, wrong and empty; 200 with either configured key"
 
 # ── 4. Consumers: identity is set by Conduit, never by the client ──

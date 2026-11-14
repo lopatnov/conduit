@@ -50,8 +50,8 @@ zap() { docker run --rm --network "$NET" -v "$WORK/zap:/zap/wrk:rw" "$E2E_ZAP" "
 echo "--- ZAP baseline (passive)"
 status=0
 zap zap-baseline.py -t http://app.test:8080/ -m 1 -T 3 -J baseline.json -s -z "-silent -config connection.timeoutInSecs=5" || status=$?
-# 0 = clean, 1 = warnings, 2 = failures: any of them is a finding
-[ "$status" = 0 ] || fail "ZAP baseline exit status $status (1 = warnings, 2 = failures); see the alerts above and $WORK/zap/baseline.json"
+# 0 = clean, 1 = at least one FAIL, 2 = WARNs only, 3 = ZAP itself failed: any non-zero is a finding
+[ "$status" = 0 ] || fail "ZAP baseline exit status $status (1 = failures, 2 = warnings, 3 = ZAP error); see the alerts above and $WORK/zap/baseline.json"
 ok "ZAP baseline: no warning, no failure"
 
 if [ -n "${E2E_ZAP_ACTIVE:-}" ]; then

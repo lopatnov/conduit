@@ -100,7 +100,7 @@ ok "half-close: the reply arrives after the client has shut down its write side"
 start=$(date +%s)
 client sh -c 'printf "x\n" | nc -w 8 app.test 9002 >/dev/null' || true
 took=$(( $(date +%s) - start ))
-[ "$took" -le 6 ] || fail "a blackhole target held the client for ${took}s with connectTimeoutMs 1000"
+[ "$took" -le 2 ] || fail "a blackhole target held the client for ${took}s with connectTimeoutMs 1000"
 ok "a target that never answers is cut off in ${took}s (connectTimeoutMs: 1000)"
 
 # 6. one upstream goes down: round-robin keeps serving through the other one, or reports it, never hangs
