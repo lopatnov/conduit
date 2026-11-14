@@ -289,6 +289,7 @@
             "hstsMaxAgeSecs":        { "type": "integer", "minimum": 0, "description": "max-age for Strict-Transport-Security (seconds). 0 disables HSTS." },
             "hstsIncludeSubDomains": { "type": "boolean", "description": "Add includeSubDomains to HSTS. Default: true when hstsMaxAgeSecs is set." },
             "hstsPreload":           { "type": "boolean", "description": "Add preload directive to HSTS for preload list submission." },
+            "hstsOverHttp":          { "type": "boolean", "description": "Send Strict-Transport-Security on plain-HTTP responses too. Default false: it is sent only over TLS or when the request carries X-Forwarded-Proto: https (RFC 6797 section 7.2)." },
             "csp":                   { "type": "string", "description": "Content-Security-Policy header value." },
             "xFrameOptions":         { "type": "string", "enum": ["DENY", "SAMEORIGIN"], "description": "X-Frame-Options value." },
             "referrerPolicy":        { "type": "string", "description": "Referrer-Policy header value." },

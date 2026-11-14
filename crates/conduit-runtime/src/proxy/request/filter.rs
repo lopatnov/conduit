@@ -257,9 +257,18 @@ impl ConduitProxy {
 
         // Compute security headers once; reused both in the full extra_headers set
         // and in the preflight path that injects security headers without CORS headers.
+        // HSTS only goes to a client that reached us over TLS, or through a TLS-terminating balancer that says
+        // so with `X-Forwarded-Proto: https` (RFC 6797 section 7.2, #723).
+        let secure_transport = session.digest().is_some_and(|d| d.ssl_digest.is_some())
+            || session
+                .req_header()
+                .headers
+                .get("x-forwarded-proto")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("https"));
         let sec_only: Vec<(String, String)> = security_cfg
             .as_ref()
-            .map(security_headers::header_entries)
+            .map(|c| security_headers::header_entries_for(c, secure_transport))
             .unwrap_or_default();
 
         // ── Build planned response headers (CORS + security + custom) ────────

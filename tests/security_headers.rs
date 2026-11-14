@@ -137,10 +137,12 @@ fn security_headers_object_hsts_and_csp() {
     let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
 
-    // RFC 6797: Strict-Transport-Security must only be honored over HTTPS.
-    // We don't assert HSTS here since this is a cleartext HTTP test; the header
-    // may or may not be emitted but browsers will ignore it over HTTP anyway.
-    // HSTS behavior over TLS is tested in tests/tls.rs.
+    // RFC 6797 section 7.2: no Strict-Transport-Security over plain HTTP (#723); the over-TLS and
+    // X-Forwarded-Proto cases are below and in tests/tls.rs.
+    assert!(
+        resp.headers().get("strict-transport-security").is_none(),
+        "HSTS must not be sent over plain HTTP"
+    );
 
     let csp = resp
         .headers()
@@ -148,4 +150,47 @@ fn security_headers_object_hsts_and_csp() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert_eq!(csp, "default-src 'self'", "CSP value mismatch: '{csp}'");
+}
+
+// ── HSTS and the transport (RFC 6797 section 7.2, #723) ───────────────────
+
+fn hsts_of(sec: serde_json::Value, forwarded_proto: Option<&str>) -> Option<String> {
+    let srv = srv_with_sec(sec);
+    let mut req = common::local_client().get(srv.url("/index.html"));
+    if let Some(p) = forwarded_proto {
+        req = req.header("x-forwarded-proto", p);
+    }
+    let resp = req.send().expect("GET");
+    assert_eq!(resp.status(), 200);
+    resp.headers()
+        .get("strict-transport-security")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+#[test]
+#[serial]
+fn hsts_is_sent_behind_a_tls_terminating_balancer_that_says_so() {
+    let sec = serde_json::json!({ "hstsMaxAgeSecs": 63072000 });
+    assert_eq!(hsts_of(sec.clone(), None), None, "plain HTTP: no HSTS");
+    assert_eq!(
+        hsts_of(sec.clone(), Some("http")),
+        None,
+        "X-Forwarded-Proto: http: no HSTS"
+    );
+    assert_eq!(
+        hsts_of(sec.clone(), Some("HTTPS")).as_deref(),
+        Some("max-age=63072000; includeSubDomains"),
+        "X-Forwarded-Proto: https (any case): HSTS"
+    );
+}
+
+#[test]
+#[serial]
+fn hsts_over_http_opts_in_for_a_balancer_that_sends_no_forwarded_proto() {
+    let sec = serde_json::json!({ "hstsMaxAgeSecs": 300, "hstsOverHttp": true });
+    assert_eq!(
+        hsts_of(sec, None).as_deref(),
+        Some("max-age=300; includeSubDomains")
+    );
 }

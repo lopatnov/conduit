@@ -5,6 +5,26 @@ use conduit_core::util::host::host_without_port;
 ///
 /// Returns an empty vec when `securityHeaders: false`.
 pub fn header_entries(cfg: &SecurityHeadersConfig) -> Vec<(String, String)> {
+    header_entries_for(cfg, true)
+}
+
+/// Like [`header_entries`], for a request that arrived over a secure transport (`secure`) or not.
+///
+/// `Strict-Transport-Security` is left out of a response to a plain-HTTP request (RFC 6797 section 7.2: a host
+/// MUST NOT send it over non-secure transport) unless `hstsOverHttp` is set. `secure` is true for a TLS connection
+/// and for a request that carries `X-Forwarded-Proto: https`; the header is not authenticated, but all a client
+/// gains by forging it is a header that user agents ignore over HTTP.
+pub fn header_entries_for(cfg: &SecurityHeadersConfig, secure: bool) -> Vec<(String, String)> {
+    let mut h = header_entries_all(cfg);
+    let over_http =
+        matches!(cfg, SecurityHeadersConfig::Options(o) if o.hsts_over_http == Some(true));
+    if !secure && !over_http {
+        h.retain(|(k, _)| !k.eq_ignore_ascii_case("strict-transport-security"));
+    }
+    h
+}
+
+fn header_entries_all(cfg: &SecurityHeadersConfig) -> Vec<(String, String)> {
     match cfg {
         SecurityHeadersConfig::Enabled(false) => vec![],
         SecurityHeadersConfig::Enabled(true) => defaults(),
@@ -149,6 +169,30 @@ mod tests {
             "includeSubDomains must be on by default"
         );
         assert!(!sts.1.contains("preload"), "preload must be off by default");
+    }
+
+    #[test]
+    fn hsts_is_left_out_over_plain_http_unless_asked_for() {
+        let with = |over_http: Option<bool>| {
+            SecurityHeadersConfig::Options(SecurityHeadersOptions {
+                hsts_max_age_secs: Some(63_072_000),
+                hsts_over_http: over_http,
+                ..Default::default()
+            })
+        };
+        let has_sts =
+            |h: &[(String, String)]| h.iter().any(|(k, _)| k == "Strict-Transport-Security");
+        // secure transport: sent
+        assert!(has_sts(&header_entries_for(&with(None), true)));
+        // plain HTTP: left out, the other headers stay
+        let plain = header_entries_for(&with(None), false);
+        assert!(!has_sts(&plain));
+        assert!(plain.iter().any(|(k, _)| k == "X-Content-Type-Options"));
+        assert!(!has_sts(&header_entries_for(&with(Some(false)), false)));
+        // opted in: sent over plain HTTP too
+        assert!(has_sts(&header_entries_for(&with(Some(true)), false)));
+        // the default for callers that do not know the transport is unchanged
+        assert!(has_sts(&header_entries(&with(None))));
     }
 
     #[test]

@@ -3506,6 +3506,7 @@ securityHeaders:
 | `hstsMaxAgeSecs`        | number   | — (not set)                       | `Strict-Transport-Security: max-age=<N>`                                             |
 | `hstsIncludeSubDomains` | bool     | `true` when hstsMaxAgeSecs is set | Append `; includeSubDomains` to HSTS header                                          |
 | `hstsPreload`           | bool     | `false`                           | Append `; preload` to HSTS header (see [hstspreload.org](https://hstspreload.org))   |
+| `hstsOverHttp`          | bool     | `false`                           | Also send HSTS on plain-HTTP responses (see the note below)                          |
 | `csp`                   | string   | — (not set)                       | `Content-Security-Policy`                                                            |
 | `xFrameOptions`         | string   | `SAMEORIGIN`                      | `X-Frame-Options`                                                                    |
 | `referrerPolicy`        | string   | `strict-origin-when-cross-origin` | `Referrer-Policy`                                                                    |
@@ -3517,6 +3518,9 @@ securityHeaders:
 >
 > **HSTS and CSP** are only set when explicitly configured.
 > HSTS should only be used on HTTPS sites — omit it for HTTP-only configs.
+> RFC 6797 section 7.2 forbids sending it over plain HTTP, so Conduit sends it only when the client
+> connection is TLS or the request carries `X-Forwarded-Proto: https` (a TLS-terminating load balancer).
+> If such a balancer does not set that header, set `hstsOverHttp: true`.
 >
 > **Permissions-Policy** restricts access to browser APIs (geolocation, camera, microphone, etc.).
 > See the [Permissions Policy spec](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Permissions-Policy).
