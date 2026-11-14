@@ -5,7 +5,13 @@
     "acme": {
       "email": "admin@example.com",
       "storage": "./certs",
-      "challenge": "http-01"
+      "challenge": "http-01",
+      "orderTimeoutSecs": 60,
+      "validationTimeoutSecs": 180,
+      "ariTimeoutSecs": 30,
+      "retryAfterMinSecs": 300,
+      "retryAfterMaxSecs": 86400,
+      "checkIntervalSecs": 43200
     },
     "httpRedirectPort": 80
   },

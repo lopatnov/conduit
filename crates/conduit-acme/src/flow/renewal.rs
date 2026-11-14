@@ -22,10 +22,7 @@ use super::{
     ari, cache_state, load_or_create_account, load_or_obtain_with, pair_paths,
     stored_account_exists, unix_now, AcmeCertPaths, CacheState, ChallengeSource,
 };
-use crate::config::AcmeConfig;
-
-/// How often the certificates are checked at most; a CA's ARI `Retry-After` can bring the next check earlier.
-const CHECK_INTERVAL: Duration = Duration::from_secs(12 * 3600);
+use crate::config::{AcmeConfig, AcmeTimings};
 
 /// One certificate to keep fresh.
 #[derive(Debug, Clone)]
@@ -113,9 +110,9 @@ async fn ca_advice(job: &RenewalJob, cert_pem: &str) -> Option<ari::Advice> {
                 return None;
             }
         };
-        ari::advice(&account, cert_pem, unix_now()).await
+        ari::advice(&account, cert_pem, unix_now(), &job.acme.timings()).await
     };
-    tokio::time::timeout(ari::PROBE_TIMEOUT, probe)
+    tokio::time::timeout(job.acme.timings().ari_probe, probe)
         .await
         .unwrap_or_else(|_| {
             tracing::warn!(
@@ -126,8 +123,9 @@ async fn ca_advice(job: &RenewalJob, cert_pem: &str) -> Option<ari::Advice> {
         })
 }
 
-/// Check every certificate every 12 hours until `shutdown` fires; sooner when a CA's renewal information
-/// (`Retry-After`) asks to be consulted again earlier, never more often than every 5 minutes.
+/// Check every certificate every `tls.acme.checkIntervalSecs` (12 hours by default) until `shutdown` fires; sooner when a
+/// CA's renewal information (`Retry-After`) asks to be consulted again earlier, never more often than
+/// `retryAfterMinSecs` (5 minutes by default).
 ///
 /// The first check is one interval after start: startup issuance has just run
 /// the same check, and an immediate second order for a site whose issuance
@@ -137,7 +135,16 @@ pub async fn run_renewal_loop(
     challenges: Arc<DashMap<String, String>>,
     shutdown: watch::Receiver<bool>,
 ) {
-    run_loop(jobs, challenges, shutdown, CHECK_INTERVAL).await;
+    let period = check_period(&jobs);
+    run_loop(jobs, challenges, shutdown, period).await;
+}
+
+/// One loop serves every site: the shortest configured `checkIntervalSecs` wins (12 hours when none is set).
+fn check_period(jobs: &[RenewalJob]) -> Duration {
+    jobs.iter()
+        .map(|job| job.acme.timings().check_interval)
+        .min()
+        .unwrap_or_else(|| AcmeTimings::default().check_interval)
 }
 
 /// What the loop knows about one job between checks.
@@ -259,6 +266,7 @@ mod tests {
                 storage: None,
                 challenge: None,
                 profile: None,
+                ..Default::default()
             },
             domain: "example.com".to_owned(),
             storage_dir: dir.to_path_buf(),
@@ -802,6 +810,76 @@ mod tests {
                 .as_secs();
             assert!((low..=high).contains(&secs), "hint {hint}s gave {secs}s");
         }
+    }
+
+    #[tokio::test]
+    async fn configured_retry_after_clamps_replace_the_defaults() {
+        // `retryAfterMinSecs` and `retryAfterMaxSecs` (issue #746): a hint is kept within them, not within 5 minutes
+        // and a day.
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 10);
+        let ca = MockCa::start(Ari::Window {
+            start: now() + 20 * 86_400,
+            end: now() + 21 * 86_400,
+        })
+        .await;
+        let mut job = job_for(dir.path(), &ca).await;
+        job.acme.retry_after_min_secs = Some(60);
+        job.acme.retry_after_max_secs = Some(7200);
+        let challenges = Arc::new(DashMap::new());
+        for (hint, low, high) in [(1, 55, 60), (86_400, 7195, 7200), (1800, 1795, 1800)] {
+            ca.retry_after_secs
+                .store(hint, std::sync::atomic::Ordering::SeqCst);
+            let mut ask_ca_at = None;
+            renew_scheduled(&job, &challenges, &mut ask_ca_at)
+                .await
+                .unwrap();
+            let secs = ask_ca_at
+                .expect("remembered")
+                .saturating_duration_since(Instant::now())
+                .as_secs();
+            assert!((low..=high).contains(&secs), "hint {hint}s gave {secs}s");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_inverted_clamp_does_not_panic() {
+        // `validate` rejects min > max, but a config that skipped it must not take the renewal loop down
+        // (`Duration::clamp` panics on it).
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 10);
+        let ca = MockCa::start(Ari::Window {
+            start: now() + 20 * 86_400,
+            end: now() + 21 * 86_400,
+        })
+        .await;
+        let mut job = job_for(dir.path(), &ca).await;
+        job.acme.retry_after_min_secs = Some(7200);
+        job.acme.retry_after_max_secs = Some(60);
+        let mut ask_ca_at = None;
+        renew_scheduled(&job, &Arc::new(DashMap::new()), &mut ask_ca_at)
+            .await
+            .unwrap();
+        assert!(ask_ca_at.is_some());
+    }
+
+    #[test]
+    fn the_loop_period_is_the_shortest_configured_check_interval() {
+        // `checkIntervalSecs` (issue #746): one loop serves all sites, so the shortest interval counts.
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut a = job(dir.path());
+        let mut b = job(dir.path());
+        assert_eq!(
+            check_period(&[a.clone(), b.clone()]),
+            Duration::from_secs(12 * 3600)
+        );
+        a.acme.check_interval_secs = Some(7200);
+        assert_eq!(
+            check_period(&[a.clone(), b.clone()]),
+            Duration::from_secs(7200)
+        );
+        b.acme.check_interval_secs = Some(600);
+        assert_eq!(check_period(&[a, b]), Duration::from_secs(600));
     }
 
     #[tokio::test]

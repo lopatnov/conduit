@@ -794,13 +794,20 @@ RFC 9773, Let's Encrypt does) the same check also asks it for the renewal window
 it, which can be earlier than the rule above (for example after a mass revocation) and never later; the renewal order
 then names the certificate it replaces (`replaces`), which Let's Encrypt exempts from its rate limits. A CA without ARI,
 an unreachable CA or a failed ARI request changes nothing: the rule above decides. The CA's `Retry-After` is honoured:
-it is not asked about a certificate again before that (5 minutes to 24 hours), and that certificate is checked sooner than every
+it is not asked about a certificate again before that (by default 5 minutes to 24 hours), and that certificate is checked sooner than every
 12 hours when the CA asks to be consulted earlier (the other certificates keep their own 12-hour cadence). The renewed files are written to the
 storage directory, but the running process keeps serving the certificate it
 loaded at startup — **restart Conduit within that window** (any restart
 or deploy does it) so the new certificate is picked up before the old one
 expires. Swapping the renewed certificate into the running listeners is not
 implemented yet.
+
+Every time limit is configurable under `tls.acme` (seconds, 1 to 86400; a typo cannot turn a limit into no limit), with
+the values below as the defaults: `orderTimeoutSecs` (60, one request of an order), `validationTimeoutSecs` (180, the
+whole challenge validation), `ariTimeoutSecs` (30, the whole renewal-information probe), `retryAfterMinSecs` (300) and
+`retryAfterMaxSecs` (86400, the bounds for the CA's `Retry-After`; the minimum must not exceed the maximum) and
+`checkIntervalSecs` (43200, between two renewal checks; the renewal loop is shared by all ACME sites, so the shortest
+value counts). Like the rest of `tls.acme` they are read at start-up: a change needs a restart.
 
 Each file is written atomically (staged, `fsync`ed, renamed over the old one),
 so a crash never leaves a truncated key; the certificate and key are two files,

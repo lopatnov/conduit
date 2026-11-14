@@ -248,7 +248,13 @@
             "directory": { "type": "string" },
             "storage":   { "type": "string" },
             "challenge": { "type": "string", "enum": ["http-01"] },
-            "profile":   { "type": "string", "minLength": 1, "description": "Certificate profile to ask the CA for (for example classic, tlsserver, shortlived at Let's Encrypt). Absent: the CA's default." }
+            "profile":   { "type": "string", "minLength": 1, "description": "Certificate profile to ask the CA for (for example classic, tlsserver, shortlived at Let's Encrypt). Absent: the CA's default." },
+            "orderTimeoutSecs":      { "type": "integer", "minimum": 1, "maximum": 86400, "default": 60, "description": "Seconds one request of an order (account setup, new order, finalize, certificate download) may take." },
+            "validationTimeoutSecs": { "type": "integer", "minimum": 1, "maximum": 86400, "default": 180, "description": "Seconds the whole challenge validation may take." },
+            "ariTimeoutSecs":        { "type": "integer", "minimum": 1, "maximum": 86400, "default": 30, "description": "Seconds the whole ACME Renewal Information probe may take; one request of it gets half." },
+            "retryAfterMinSecs":     { "type": "integer", "minimum": 1, "maximum": 86400, "default": 300, "description": "The least seconds to wait before asking the CA about a certificate again, whatever its Retry-After says. Must not exceed retryAfterMaxSecs." },
+            "retryAfterMaxSecs":     { "type": "integer", "minimum": 1, "maximum": 86400, "default": 86400, "description": "The most seconds to wait before asking the CA again, whatever its Retry-After says." },
+            "checkIntervalSecs":     { "type": "integer", "minimum": 1, "maximum": 86400, "default": 43200, "description": "Seconds between two renewal checks of a certificate. One loop serves all sites; the shortest value counts." }
           }
         }
       }
