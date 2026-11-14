@@ -306,6 +306,21 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+UMask=0027
 LogsDirectory=conduit
 LogsDirectoryMode=0750
 CacheDirectory=conduit
@@ -313,6 +328,15 @@ CacheDirectoryMode=0750
 
 EnvironmentFile=-/etc/conduit/conduit.env
 ```
+
+The extra hardening (`systemd-analyze security --offline=true contrib/conduit.service` gives 3.2 "OK", it was 8.3
+"EXPOSED") was started under a real systemd (Ubuntu 24.04 in a privileged container) with the unit as shipped: the
+reverse proxy and a static site, name resolution of the upstream, the Admin API, `systemctl reload`, and port 80 through
+the `AmbientCapabilities=CAP_NET_BIND_SERVICE` drop-in all worked with no permission error in the journal. Not run under
+the unit: the WASM runtime, ACME against a CA, Redis and the Kubernetes provider. `MemoryDenyWriteExecute=` is left out on
+purpose (the WASM runtime maps memory that is writable and then executable), and `CapabilityBoundingSet=` keeps
+`CAP_NET_BIND_SERVICE` so that the drop-in above keeps working. If a feature you use needs more, loosen one line with
+`systemctl edit conduit`.
 
 `LogsDirectory=` and `CacheDirectory=` make systemd create `/var/log/conduit` and `/var/cache/conduit` (owned by the
 service user) at every start and keep them writable under `ProtectSystem=strict`, so a deleted directory is

@@ -134,7 +134,7 @@ text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fil
   <rect class="acc" x="490" y="66" width="3.4" height="98" rx="1.7"/>
   <g class="None" transform="translate(504 66) scale(0.833)"><g class="ico"><path d="M12 21v-8M12 13L5 6M12 13l7-7"/><path d="M5 10V6h4M19 10V6h-4"/></g></g>
   <text class="b" x="532" y="81">Reverse proxy</text>
-  <text class="m" x="504" y="102">8 balancing strategies · health checks</text>
+  <text class="m" x="504" y="102">9 balancing strategies · health checks</text>
   <text class="m" x="504" y="119">retries · circuit breaker · cache</text>
   <text class="m" x="504" y="136">request and response transforms</text>
   </g>

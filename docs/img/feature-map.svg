@@ -68,7 +68,7 @@ text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fil
   <rect class="acc" x="253.0" y="30" width="3.4" height="118" rx="1.7"/>
   <g class="None" transform="translate(267.0 30) scale(0.833)"><g class="ico"><path d="M12 21v-8M12 13L5 6M12 13l7-7"/><path d="M5 10V6h4M19 10V6h-4"/></g></g>
   <text class="b" x="295.0" y="45">Proxy and balancing</text>
-  <text class="m" x="267.0" y="69">8 balancing strategies</text>
+  <text class="m" x="267.0" y="69">9 balancing strategies</text>
   <text class="m" x="267.0" y="89">sticky sessions, weights</text>
   <text class="m" x="267.0" y="109">backup targets, mirroring</text>
   <text class="m" x="267.0" y="129">WebSocket, HTTP/2 upstream</text>

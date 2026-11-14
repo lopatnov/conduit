@@ -16,6 +16,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Refusing to start would be stricter and is put to the owner (the examples and the documentation use such references
   on purpose).
 
+### Changed
+
+- **The systemd unit (and the `.deb`) is hardened further** (issue #670). `PrivateDevices`, `ProtectKernelTunables`,
+  `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`,
+  `RestrictSUIDSGID`, `RestrictRealtime`, `RestrictNamespaces`, `LockPersonality`, `RestrictAddressFamilies`,
+  `SystemCallArchitectures=native`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and `UMask=0027`;
+  `systemd-analyze security` goes from 8.3 EXPOSED to 3.2 OK. The proxy, a static site, name resolution, the Admin API,
+  `systemctl reload` and port 80 through the `AmbientCapabilities` drop-in were run under a real systemd; the WASM
+  runtime, ACME, Redis and the Kubernetes provider were not.
+
 ---
 
 ## [2.3.1] — 2026-11-14
