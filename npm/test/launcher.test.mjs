@@ -12,7 +12,8 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assetFor } from "../bin/platform.js";
-import { cacheAllowed } from "../bin/binary.js";
+import { EventEmitter } from "node:events";
+import { cacheAllowed, startBinary } from "../bin/binary.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
@@ -125,6 +126,37 @@ test("a redirect to the storage is followed, and the source shown is the one tha
   assert.equal(r.stdout, "hello-from-conduit via redirect\n");
   assert.deepEqual(t.urls, [`/${ASSET}`, `/storage/${ASSET}`]);
   assert.ok(r.stderr.includes(`From: ${t.base}/${ASSET}`), r.stderr);
+});
+
+/** A spawn that fails with `errors` in turn (each as an "error" event, the way Node reports it), then succeeds. */
+function fakeSpawn(errors) {
+  const calls = [];
+  const spawnFn = (path, args, options) => {
+    calls.push({ path, args, options });
+    const child = new EventEmitter();
+    const err = errors[calls.length - 1];
+    setImmediate(() => (err ? child.emit("error", err) : child.emit("spawn")));
+    return child;
+  };
+  return { spawnFn, calls };
+}
+const busy = () => Object.assign(new Error("spawn ETXTBSY"), { code: "ETXTBSY" });
+
+test("a binary that is busy for a moment (ETXTBSY) is started on a later attempt (#732)", async () => {
+  const { spawnFn, calls } = fakeSpawn([busy(), busy()]);
+  const child = await startBinary("/bin/x", ["a"], { spawn: spawnFn, delayMs: 1 });
+  assert.ok(child);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[2].args, ["a"]);
+});
+
+test("a binary that stays busy is reported after the retries, and other errors at once", async () => {
+  const stuck = fakeSpawn(Array.from({ length: 10 }, busy));
+  await assert.rejects(startBinary("/bin/x", [], { spawn: stuck.spawnFn, retries: 3, delayMs: 1 }), { code: "ETXTBSY" });
+  assert.equal(stuck.calls.length, 4);
+  const missing = fakeSpawn([Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" })]);
+  await assert.rejects(startBinary("/bin/x", [], { spawn: missing.spawnFn, delayMs: 1 }), { code: "ENOENT" });
+  assert.equal(missing.calls.length, 1);
 });
 
 test("the second run downloads nothing", { skip: !runnable }, async () => {

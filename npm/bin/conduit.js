@@ -7,8 +7,7 @@
  * transparently.
  */
 
-import { spawn } from "node:child_process";
-import { ensureBinary } from "./binary.js";
+import { ensureBinary, startBinary } from "./binary.js";
 
 let binaryPath;
 try {
@@ -21,13 +20,16 @@ try {
 // --------------------------------------------------------------------------
 // Spawn
 // --------------------------------------------------------------------------
-const child = spawn(binaryPath, process.argv.slice(2), {
-  stdio: "inherit",
-  env: process.env,
-});
+let child;
+try {
+  child = await startBinary(binaryPath, process.argv.slice(2), { options: { stdio: "inherit", env: process.env } });
+} catch (err) {
+  console.error(`[conduit] Failed to start binary: ${err.message}`);
+  process.exit(1);
+}
 
 child.on("error", (err) => {
-  console.error(`[conduit] Failed to start binary: ${err.message}`);
+  console.error(`[conduit] ${err.message}`);
   process.exit(1);
 });
 
