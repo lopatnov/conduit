@@ -39,7 +39,7 @@ fn fallback_custom_status_and_text_body() {
         serde_json::json!({}),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/any-path")).expect("GET");
+    let resp = common::get(srv.url("/any-path")).expect("GET");
     assert_eq!(
         resp.status().as_u16(),
         503,
@@ -62,7 +62,7 @@ fn fallback_json_body_is_returned() {
         serde_json::json!({}),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/missing")).expect("GET");
+    let resp = common::get(srv.url("/missing")).expect("GET");
     assert_eq!(resp.status().as_u16(), 404);
 
     let body: serde_json::Value = resp.json().expect("JSON body");
@@ -86,7 +86,7 @@ fn fallback_serves_file_with_200() {
     );
 
     // Any path not found falls back to serving the SPA shell.
-    let resp = reqwest::blocking::get(srv.url("/deep/route/here")).expect("GET");
+    let resp = common::get(srv.url("/deep/route/here")).expect("GET");
     assert_eq!(resp.status().as_u16(), 200);
     let body = resp.text().expect("body");
     assert!(
@@ -111,7 +111,7 @@ fn no_fallback_config_returns_404() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/no-such-path")).expect("GET");
+    let resp = common::get(srv.url("/no-such-path")).expect("GET");
     assert_eq!(
         resp.status().as_u16(),
         404,
@@ -140,7 +140,7 @@ fn fallback_by_accept_html_returns_spa() {
         serde_json::json!({}),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     // HTML client → SPA shell
     let html_resp = client
@@ -176,7 +176,7 @@ fn fallback_custom_headers_are_sent() {
         serde_json::json!({}),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/missing")).expect("GET");
+    let resp = common::get(srv.url("/missing")).expect("GET");
     assert_eq!(resp.status().as_u16(), 404);
     assert_eq!(
         resp.headers()

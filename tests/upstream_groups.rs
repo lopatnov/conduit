@@ -88,7 +88,7 @@ fn groups_round_robin_distributes_across_groups() {
 
     let server = grouped_server(vec![a1.url()], vec![b1.url()], "round-robin");
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     // 4 requests: round-robin across 2 groups → 2 to each
     for _ in 0..4 {
         client.get(server.url("/")).send().expect("GET");
@@ -111,7 +111,7 @@ fn groups_ip_hash_routes_consistently_to_same_group() {
 
     let server = grouped_server(vec![a1.url()], vec![b1.url()], "ip-hash");
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     // All requests from 127.0.0.1 must land in the same group.
     for _ in 0..6 {
         client.get(server.url("/")).send().expect("GET");
@@ -163,7 +163,7 @@ fn groups_intra_group_round_robin_across_targets() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     for _ in 0..6 {
         client.get(server.url("/")).send().expect("GET");
     }

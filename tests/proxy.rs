@@ -75,7 +75,7 @@ fn proxy_single_string_passthrough() {
     let upstream = MockUpstream::start("hello from upstream");
     let server = proxy_server(serde_json::json!(upstream.url()));
 
-    let resp = reqwest::blocking::get(server.url("/anything")).expect("GET");
+    let resp = common::get(server.url("/anything")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "hello from upstream");
     assert_eq!(upstream.hit_count(), 1);
@@ -90,12 +90,12 @@ fn proxy_routes_map_path_matching() {
     }));
 
     // Path that matches /api → proxied
-    let resp = reqwest::blocking::get(server.url("/api/users")).expect("GET /api/users");
+    let resp = common::get(server.url("/api/users")).expect("GET /api/users");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "api response");
 
     // Path that doesn't match → 404 fallback
-    let resp = reqwest::blocking::get(server.url("/other")).expect("GET /other");
+    let resp = common::get(server.url("/other")).expect("GET /other");
     assert_eq!(resp.status(), 404);
 }
 
@@ -110,7 +110,7 @@ fn proxy_round_robin_distributes_requests() {
 
     // Send 4 requests — round-robin should split 2/2
     for _ in 0..4 {
-        let _ = reqwest::blocking::get(server.url("/ping")).expect("GET");
+        let _ = common::get(server.url("/ping")).expect("GET");
     }
 
     let a = upstream_a.hit_count();
@@ -175,7 +175,7 @@ fn proxy_strip_prefix_rewrites_path() {
         }),
     );
 
-    let resp = reqwest::blocking::get(server.url("/api/users")).expect("GET");
+    let resp = common::get(server.url("/api/users")).expect("GET");
     assert_eq!(resp.status(), 200);
 
     // Poll until the upstream thread captures the path (up to 1 s).
@@ -232,7 +232,7 @@ fn proxy_x_forwarded_for_header_set() {
     });
 
     let server = proxy_server(serde_json::json!(format!("http://127.0.0.1:{port}")));
-    let _ = reqwest::blocking::get(server.url("/check")).expect("GET");
+    let _ = common::get(server.url("/check")).expect("GET");
 
     // Poll until the upstream thread captures the header (up to 1 s).
     let xff = {
@@ -255,7 +255,7 @@ fn proxy_health_not_forwarded_to_upstream() {
     let server = proxy_server(serde_json::json!(upstream.url()));
 
     // Health check should be served locally, not forwarded
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET /__health__");
+    let resp = common::get(server.url("/__health__")).expect("GET /__health__");
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().expect("JSON");
     assert_eq!(body["status"], "ok");
@@ -311,7 +311,7 @@ fn proxy_retry_connection_error_falls_through_to_working_upstream() {
         2,
     );
 
-    let resp = reqwest::blocking::get(server.url("/test")).expect("GET");
+    let resp = common::get(server.url("/test")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "retry-ok");
     assert_eq!(
@@ -351,7 +351,7 @@ fn proxy_retry_no_retry_without_condition() {
         }),
     );
 
-    let resp = reqwest::blocking::get(server.url("/test")).expect("GET");
+    let resp = common::get(server.url("/test")).expect("GET");
     // Without retry, Pingora returns 502 Bad Gateway for a refused connection.
     assert_eq!(resp.status(), 502);
     assert_eq!(
@@ -393,7 +393,7 @@ fn proxy_retry_on_5xx_falls_through_to_working_upstream() {
         2,
     );
 
-    let resp = reqwest::blocking::get(server.url("/anything")).expect("GET");
+    let resp = common::get(server.url("/anything")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "5xx-retry-ok");
     assert!(
@@ -443,7 +443,7 @@ fn mask_errors_replaces_5xx_body() {
             }]
         }),
     );
-    let resp = reqwest::blocking::get(srv.url("/")).expect("GET /");
+    let resp = common::get(srv.url("/")).expect("GET /");
     assert_eq!(resp.status().as_u16(), 500);
     let body = resp.text().unwrap();
     // Real error body must be replaced by generic JSON.
@@ -497,7 +497,7 @@ fn request_transform_injects_header() {
         }),
     );
 
-    reqwest::blocking::get(srv.url("/")).expect("GET /");
+    common::get(srv.url("/")).expect("GET /");
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let captured = captured_headers.lock().unwrap().clone();
@@ -546,7 +546,7 @@ fn x_forwarded_host_injected() {
         }),
     );
 
-    reqwest::blocking::get(srv.url("/")).expect("GET /");
+    common::get(srv.url("/")).expect("GET /");
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let captured = captured_headers.lock().unwrap().clone();
@@ -604,7 +604,7 @@ fn mirror_fires_request_to_shadow_backend() {
     );
 
     // Fire a request to the primary.
-    let resp = reqwest::blocking::get(srv.url("/")).expect("GET /");
+    let resp = common::get(srv.url("/")).expect("GET /");
     assert_eq!(resp.status().as_u16(), 200, "primary must respond with 200");
     assert_eq!(
         resp.text().unwrap(),
@@ -648,7 +648,7 @@ fn sticky_cookie_routes_same_client_to_same_backend() {
         }),
     );
 
-    let client = reqwest::blocking::Client::builder().build().unwrap();
+    let client = common::local_client_builder().build().unwrap();
 
     // Send 10 requests with the same cookie value — all must hit the same backend.
     let mut hits_a = 0usize;
@@ -783,7 +783,7 @@ fn sticky_hmac_secret_sets_signed_cookie_and_pins_backend() {
         }),
     );
 
-    let client = reqwest::blocking::Client::builder().build().unwrap();
+    let client = common::local_client_builder().build().unwrap();
 
     // First request: no cookie — the server picks a backend and must set a
     // signed Set-Cookie pinned to it.
@@ -876,7 +876,7 @@ fn sticky_hmac_strict_mode_rejects_stale_pin_with_503() {
         }),
     );
 
-    let client = reqwest::blocking::Client::builder().build().unwrap();
+    let client = common::local_client_builder().build().unwrap();
     let first = client.get(srv.url("/")).send().expect("GET / (pin to B)");
     assert_eq!(first.status().as_u16(), 200);
     let cookie_value = extract_set_cookie(&first, "sid");
@@ -910,7 +910,7 @@ fn sticky_hmac_strict_mode_rejects_stale_pin_with_503() {
     // fixed sleep, to keep this robust under CI scheduling jitter.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let body: serde_json::Value = reqwest::blocking::get(srv.admin_url("/upstreams"))
+        let body: serde_json::Value = common::get(srv.admin_url("/upstreams"))
             .expect("GET /upstreams")
             .json()
             .expect("parse JSON");

@@ -741,7 +741,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("a");
         std::fs::write(&path, b"x").unwrap();
-        hand_to_pool(vec![path.clone()], |_| panic!("OS can't spawn worker thread"));
+        hand_to_pool(vec![path.clone()], |_| {
+            panic!("OS can't spawn worker thread")
+        });
         assert!(!path.exists(), "the fallback must remove the file");
     }
 

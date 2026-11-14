@@ -30,7 +30,7 @@ fn srv_with_response_time(enabled: serde_json::Value) -> (common::TestServer, te
 #[serial]
 fn response_time_header_present_when_enabled() {
     let (srv, _dir) = srv_with_response_time(serde_json::json!(true));
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(
         resp.headers().get("x-response-time").is_some(),
@@ -42,7 +42,7 @@ fn response_time_header_present_when_enabled() {
 #[serial]
 fn response_time_value_is_numeric_ms() {
     let (srv, _dir) = srv_with_response_time(serde_json::json!(true));
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
 
     let val = resp
@@ -72,7 +72,7 @@ fn response_time_value_is_numeric_ms() {
 fn response_time_on_health_endpoint() {
     // X-Response-Time should also appear on the built-in health endpoint.
     let (srv, _dir) = srv_with_response_time(serde_json::json!(true));
-    let resp = reqwest::blocking::get(srv.url("/__health__")).expect("GET");
+    let resp = common::get(srv.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(
         resp.headers().get("x-response-time").is_some(),
@@ -86,7 +86,7 @@ fn response_time_on_health_endpoint() {
 #[serial]
 fn response_time_header_absent_when_disabled() {
     let (srv, _dir) = srv_with_response_time(serde_json::json!(false));
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(
         resp.headers().get("x-response-time").is_none(),
@@ -101,7 +101,7 @@ fn response_time_header_absent_when_disabled() {
 fn response_time_object_form_digits() {
     let (srv, _dir) = srv_with_response_time(serde_json::json!({ "digits": 0 }));
 
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
 
     let val = resp

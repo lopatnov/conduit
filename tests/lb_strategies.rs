@@ -120,7 +120,7 @@ fn wrr_distributes_by_weight() {
         }
     }));
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     // Send 8 requests — a should get 6, b should get 2 (3:1 ratio).
     for _ in 0..8 {
         client.get(server.url("/")).send().expect("GET");
@@ -155,7 +155,7 @@ fn least_conn_shares_concurrent_requests_by_weight() {
         }
     }));
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     std::thread::scope(|scope| {
         for _ in 0..16 {
             scope.spawn(|| {
@@ -187,7 +187,7 @@ fn least_bandwidth_steers_requests_away_from_the_upstream_moving_more_bytes() {
     let server = lb_server(serde_json::json!({
         "/": { "targets": [big.url(), small.url()], "strategy": "least-bandwidth" }
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     for _ in 0..120 {
         client
             .get(server.url("/"))
@@ -245,7 +245,7 @@ fn slot_is_held_while_in_flight_and_released_after(strategy: &str) {
     let server = lb_server(serde_json::json!({
         "/": { "targets": [a.url(), b.url()], "strategy": strategy }
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     // Warm up, so that both upstreams are listed by the admin API (an upstream is listed once it has a
     // recorded response). With two peers and equal start values the 20 picks all landing on one of them
@@ -305,7 +305,7 @@ fn ip_hash_routes_consistently() {
         }
     }));
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     // All requests come from the same IP (127.0.0.1), so they must all land
     // on the same upstream.  After N calls exactly one upstream has all hits.
     for _ in 0..6 {
@@ -340,7 +340,7 @@ fn consistent_hash_routes_consistently() {
         }
     }));
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     for _ in 0..6 {
         client.get(server.url("/")).send().expect("GET");
     }
@@ -370,7 +370,7 @@ fn lrt_falls_back_gracefully_without_probe_data() {
         }
     }));
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     for _ in 0..6 {
         client.get(server.url("/")).send().expect("GET");
     }
@@ -403,7 +403,7 @@ fn url_hash_routes_same_path_to_same_upstream() {
         }
     }));
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     // Same path "/same" must always go to the same upstream.
     for _ in 0..6 {
         client.get(server.url("/same")).send().expect("GET");

@@ -26,7 +26,7 @@ fn cors_server(cors: serde_json::Value) -> TestServer {
 #[serial]
 fn preflight_cors_true_returns_204() {
     let srv = cors_server(serde_json::json!(true));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .request(reqwest::Method::OPTIONS, srv.url("/api/data"))
         .header("Origin", "https://app.example.com")
@@ -40,7 +40,7 @@ fn preflight_cors_true_returns_204() {
 #[serial]
 fn preflight_sets_allow_origin_wildcard() {
     let srv = cors_server(serde_json::json!(true));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .request(reqwest::Method::OPTIONS, srv.url("/"))
         .header("Origin", "https://any.com")
@@ -62,7 +62,7 @@ fn preflight_with_specific_origin_echoes_origin() {
         "origins": ["https://allowed.com"],
         "methods": ["GET", "POST"]
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .request(reqwest::Method::OPTIONS, srv.url("/"))
         .header("Origin", "https://allowed.com")
@@ -96,7 +96,7 @@ fn preflight_disallowed_origin_returns_204_no_acao() {
     let srv = cors_server(serde_json::json!({
         "origins": ["https://allowed.com"]
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .request(reqwest::Method::OPTIONS, srv.url("/"))
         .header("Origin", "https://evil.com")
@@ -115,7 +115,7 @@ fn preflight_disallowed_origin_returns_204_no_acao() {
 #[serial]
 fn preflight_max_age_header_present() {
     let srv = cors_server(serde_json::json!(true));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .request(reqwest::Method::OPTIONS, srv.url("/"))
         .header("Origin", "https://a.com")
@@ -151,7 +151,7 @@ fn regular_get_has_acao_header_when_cors_enabled() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(srv.url("/index.html"))
         .header("Origin", "https://app.example.com")
@@ -178,7 +178,7 @@ fn credentials_true_sets_acac_header_on_preflight() {
         "origins": ["https://app.example.com"],
         "credentials": true
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .request(reqwest::Method::OPTIONS, srv.url("/api"))
         .header("Origin", "https://app.example.com")
@@ -206,7 +206,7 @@ fn credentials_true_echoes_origin_not_wildcard_on_preflight() {
         "origins": ["https://trusted.com"],
         "credentials": true
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .request(reqwest::Method::OPTIONS, srv.url("/"))
         .header("Origin", "https://trusted.com")
@@ -251,7 +251,7 @@ fn credentials_true_sets_acac_on_regular_response() {
     );
     Box::leak(Box::new(dir));
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(srv.url("/index.html"))
         .header("Origin", "https://app.example.com")
@@ -300,7 +300,7 @@ fn credentials_true_disallowed_origin_gets_no_acac() {
         "origins": ["https://allowed.com"],
         "credentials": true
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .request(reqwest::Method::OPTIONS, srv.url("/"))
         .header("Origin", "https://evil.com")
@@ -328,7 +328,7 @@ fn credentials_false_does_not_emit_acac() {
         "origins": ["https://app.example.com"],
         "credentials": false
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .request(reqwest::Method::OPTIONS, srv.url("/"))
         .header("Origin", "https://app.example.com")
@@ -365,7 +365,7 @@ fn no_cors_header_when_cors_disabled() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(srv.url("/index.html"))
         .header("Origin", "https://app.example.com")

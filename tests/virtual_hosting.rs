@@ -58,7 +58,7 @@ fn two_host_server() -> (
 fn request_with_app_host_serves_app_content() {
     let (srv, _app_dir, _admin_dir, _) = two_host_server();
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/index.html"))
         .header("Host", "app.example.com")
         .send()
@@ -74,7 +74,7 @@ fn request_with_app_host_serves_app_content() {
 fn request_with_admin_host_serves_admin_content() {
     let (srv, _app_dir, _admin_dir, _) = two_host_server();
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/index.html"))
         .header("Host", "admin.example.com")
         .send()
@@ -90,7 +90,7 @@ fn request_with_admin_host_serves_admin_content() {
 fn unknown_host_falls_through_to_catch_all() {
     let (srv, _app_dir, _admin_dir, _) = two_host_server();
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/"))
         .header("Host", "unknown.example.com")
         .send()
@@ -127,7 +127,7 @@ fn site_without_host_matches_any_request() {
     );
 
     // Request with an arbitrary Host header
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/index.html"))
         .header("Host", "anything.example.com")
         .send()
@@ -146,12 +146,12 @@ fn each_virtual_host_is_isolated() {
 
     // app.example.com should NOT find admin's index.html with different content —
     // we can't check file isolation directly, but we CAN verify the content differs.
-    let app_resp = reqwest::blocking::Client::new()
+    let app_resp = common::local_client()
         .get(srv.url("/index.html"))
         .header("Host", "app.example.com")
         .send()
         .expect("GET app");
-    let admin_resp = reqwest::blocking::Client::new()
+    let admin_resp = common::local_client()
         .get(srv.url("/index.html"))
         .header("Host", "admin.example.com")
         .send()

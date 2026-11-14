@@ -58,6 +58,11 @@ description: Playbook for writing/extending tests in conduit — when to reach f
    EOF via a write-side shutdown. If a client-role test in this repo ever gets a mysterious
    empty response with no error, this is the first thing to check before suspecting the code
    under test.
+5. **HTTP clients of integration tests: `common::get(url)`, `common::local_client()`,
+   `common::local_client_builder()`** — never `reqwest::blocking::get` or `Client::new()`. Those read
+   `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY` from the environment, and behind a proxy that does not exempt the
+   loopback every test fails with "server did not become ready" (issue #709; measured: with a dead proxy in the
+   environment the suites passed after the switch, and failed before it).
 
 ## Procedure — adding/extending tests for a change
 

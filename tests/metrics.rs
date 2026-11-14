@@ -30,7 +30,7 @@ fn metrics_server(metrics: serde_json::Value) -> TestServer {
 #[serial]
 fn metrics_endpoint_returns_200() {
     let srv = metrics_server(serde_json::json!({ "path": "/__metrics__" }));
-    let resp = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
+    let resp = common::get(srv.url("/__metrics__")).expect("send");
     assert_eq!(resp.status(), 200);
 }
 
@@ -38,7 +38,7 @@ fn metrics_endpoint_returns_200() {
 #[serial]
 fn metrics_content_type_is_prometheus_text() {
     let srv = metrics_server(serde_json::json!({ "path": "/__metrics__" }));
-    let resp = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
+    let resp = common::get(srv.url("/__metrics__")).expect("send");
     let ct = resp
         .headers()
         .get("content-type")
@@ -55,8 +55,8 @@ fn metrics_content_type_is_prometheus_text() {
 fn metrics_body_contains_prometheus_lines() {
     let srv = metrics_server(serde_json::json!({ "path": "/__metrics__" }));
     // Make a request first so counters are non-zero.
-    let _ = reqwest::blocking::get(srv.url("/__health__"));
-    let resp = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
+    let _ = common::get(srv.url("/__health__"));
+    let resp = common::get(srv.url("/__metrics__")).expect("send");
     let body = resp.text().expect("body");
     // Prometheus text format always includes HELP and TYPE comment lines.
     assert!(
@@ -72,7 +72,7 @@ fn metrics_with_token_no_auth_returns_401() {
         "path": "/__metrics__",
         "token": "secret-token"
     }));
-    let resp = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
+    let resp = common::get(srv.url("/__metrics__")).expect("send");
     assert_eq!(resp.status(), 401);
 }
 
@@ -83,7 +83,7 @@ fn metrics_with_token_wrong_token_returns_401() {
         "path": "/__metrics__",
         "token": "correct-token"
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(srv.url("/__metrics__"))
         .header("Authorization", "Bearer wrong-token")
@@ -99,7 +99,7 @@ fn metrics_with_token_correct_bearer_returns_200() {
         "path": "/__metrics__",
         "token": "my-secret"
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(srv.url("/__metrics__"))
         .header("Authorization", "Bearer my-secret")
@@ -116,7 +116,7 @@ fn metrics_bearer_scheme_is_case_insensitive() {
         "path": "/__metrics__",
         "token": "my-secret"
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     for (auth, expected) in [
         ("bearer my-secret", 200),
         ("BEARER my-secret", 200),
@@ -139,7 +139,7 @@ fn metrics_401_has_www_authenticate_header() {
         "path": "/__metrics__",
         "token": "tok"
     }));
-    let resp = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
+    let resp = common::get(srv.url("/__metrics__")).expect("send");
     assert_eq!(resp.status(), 401);
     let www_auth = resp
         .headers()
@@ -169,10 +169,10 @@ fn metrics_custom_path_works() {
         }),
     );
     // Custom path should work.
-    let resp = reqwest::blocking::get(srv.url("/internal/metrics")).expect("send");
+    let resp = common::get(srv.url("/internal/metrics")).expect("send");
     assert_eq!(resp.status(), 200, "custom metrics path should return 200");
     // Default path should NOT work.
-    let resp2 = reqwest::blocking::get(srv.url("/__metrics__")).expect("send");
+    let resp2 = common::get(srv.url("/__metrics__")).expect("send");
     assert_eq!(
         resp2.status(),
         404,

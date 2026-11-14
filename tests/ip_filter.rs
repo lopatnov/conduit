@@ -37,7 +37,7 @@ fn ip_deny_loopback_returns_403() {
     let server = server_with_ip_filter(serde_json::json!({
         "deny": ["127.0.0.1", "::1"]
     }));
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 403);
 }
 
@@ -48,7 +48,7 @@ fn ip_allow_whitelist_blocks_loopback() {
     let server = server_with_ip_filter(serde_json::json!({
         "allow": ["10.0.0.0/8"]
     }));
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 403);
 }
 
@@ -58,7 +58,7 @@ fn ip_allow_loopback_cidr_passes() {
     let server = server_with_ip_filter(serde_json::json!({
         "allow": ["127.0.0.0/8", "::1/128"]
     }));
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     // Should be 200 (health passes) not 403
     assert_eq!(resp.status(), 200);
 }
@@ -67,7 +67,7 @@ fn ip_allow_loopback_cidr_passes() {
 #[serial]
 fn ip_no_filter_allows_all() {
     let server = server_with_ip_filter(serde_json::json!({}));
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200);
 }
 
@@ -80,7 +80,7 @@ fn ip_filter_dry_run_logs_but_allows() {
         "deny": ["127.0.0.1", "::1"],
         "dryRun": true
     }));
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(
         resp.status(),
         200,
@@ -97,7 +97,7 @@ fn ip_filter_dry_run_false_still_enforces() {
         "deny": ["127.0.0.1", "::1"],
         "dryRun": false
     }));
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 403);
 }
 
@@ -108,10 +108,10 @@ fn ip_filter_dry_run_false_still_enforces() {
 fn dynamic_deny_list_blocks_after_admin_add_and_unblocks_after_remove() {
     // No static ipFilter rules — starts open.
     let server = server_with_ip_filter(serde_json::json!({}));
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200, "no rules yet — must be open");
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     // Add both loopback forms via the Admin API so the test is portable
     // across IPv4/IPv6 test runners, same as the static-config tests above.
@@ -124,7 +124,7 @@ fn dynamic_deny_list_blocks_after_admin_add_and_unblocks_after_remove() {
         assert_eq!(resp.status(), 200, "POST /ip-deny for {cidr} must succeed");
     }
 
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(
         resp.status(),
         403,
@@ -144,7 +144,7 @@ fn dynamic_deny_list_blocks_after_admin_add_and_unblocks_after_remove() {
         );
     }
 
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(
         resp.status(),
         200,
@@ -156,7 +156,7 @@ fn dynamic_deny_list_blocks_after_admin_add_and_unblocks_after_remove() {
 #[serial]
 fn ip_deny_add_invalid_cidr_returns_400() {
     let server = server_with_ip_filter(serde_json::json!({}));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .post(server.admin_url("/ip-deny"))
         .json(&serde_json::json!({ "cidr": "not-an-ip" }))
@@ -172,7 +172,7 @@ fn ip_deny_add_invalid_cidr_returns_400() {
 
     // The rejected entry must not have been added — the deny list is still
     // effectively empty, so a plain request must still pass.
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200);
 }
 
@@ -182,7 +182,7 @@ fn ip_deny_add_invalid_cidr_returns_400() {
 #[serial]
 fn limits_body_too_large_returns_413() {
     let server = server_with_limits(serde_json::json!({ "maxBodyBytes": 10 }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     // Send 100 bytes — exceeds the 10-byte limit declared via Content-Length
     let resp = client
         .post(server.url("/upload"))
@@ -196,7 +196,7 @@ fn limits_body_too_large_returns_413() {
 #[serial]
 fn limits_small_body_passes() {
     let server = server_with_limits(serde_json::json!({ "maxBodyBytes": 10000 }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .post(server.url("/anything"))
         .body("small")
@@ -211,7 +211,7 @@ fn limits_small_body_passes() {
 fn limits_headers_too_large_returns_431() {
     // Set a very small header limit — any real request will exceed it
     let server = server_with_limits(serde_json::json!({ "maxHeaderBytes": 50 }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(server.url("/anything"))
         .header("x-big", "a".repeat(200))
@@ -225,7 +225,7 @@ fn limits_headers_too_large_returns_431() {
 fn limits_health_exempt_from_body_limit() {
     // Health endpoint bypasses limits
     let server = server_with_limits(serde_json::json!({ "maxBodyBytes": 1 }));
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(resp.status(), 200);
 }
 
@@ -240,7 +240,7 @@ fn trust_proxy_xff_blocked_ip_returns_403() {
         "deny": ["1.2.3.4"],
         "trustProxy": true
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(server.url("/"))
         .header("X-Forwarded-For", "1.2.3.4")
@@ -262,7 +262,7 @@ fn trust_proxy_xff_allowed_ip_passes() {
         "deny":  ["0.0.0.0/0"],
         "trustProxy": true
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     let resp = client
         .get(server.url("/__health__"))
         .header("X-Forwarded-For", "10.1.2.3")
@@ -288,7 +288,7 @@ fn trust_proxy_forged_leftmost_xff_does_not_bypass_filter() {
         "allow": ["10.0.0.0/8"],
         "trustProxy": true
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     // Attacker forges the first (leftmost) XFF entry to look like an allowed IP.
     // The second entry simulates what a real trusted proxy would append (127.0.0.1).
     let resp = client
@@ -314,7 +314,7 @@ fn trust_proxy_false_uses_direct_ip_not_xff() {
         "deny": ["1.2.3.4"]
         // trustProxy not set → false
     }));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
     // Even though XFF says 1.2.3.4, the real IP is 127.0.0.1 → should pass.
     let resp = client
         .get(server.url("/__health__"))
@@ -340,7 +340,7 @@ fn trust_proxy_true_without_xff_header_falls_back_to_direct_ip() {
         "deny": ["127.0.0.1", "::1"],
         "trustProxy": true
     }));
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET");
+    let resp = common::get(server.url("/__health__")).expect("GET");
     assert_eq!(
         resp.status().as_u16(),
         403,

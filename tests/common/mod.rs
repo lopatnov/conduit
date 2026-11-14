@@ -331,10 +331,17 @@ fn probe_admin(url: &str) -> bool {
 /// environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`): a probe that went to a proxy could not tell that the server
 /// is up, and every test would fail with "server did not become ready" (issue #709).
 pub fn local_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .no_proxy()
-        .build()
-        .expect("local client")
+    local_client_builder().build().expect("local client")
+}
+
+/// [`local_client`] before it is built, for a test that sets more on it (a timeout, redirects, a certificate).
+pub fn local_client_builder() -> reqwest::blocking::ClientBuilder {
+    reqwest::blocking::Client::builder().no_proxy()
+}
+
+/// `GET url` with [`local_client`]: what `reqwest::blocking::get` does, without reading a proxy from the environment.
+pub fn get(url: impl reqwest::IntoUrl) -> reqwest::Result<reqwest::blocking::Response> {
+    local_client().get(url).send()
 }
 
 /// Start a minimal HTTP echo server on an OS-assigned free port.

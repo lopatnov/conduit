@@ -26,7 +26,7 @@ fn reload_hot_field_applies_without_restart() {
         common::TestServer::start_with_config(port, admin_port, base_config(port, admin_port));
 
     // Confirm v1 header before reload.
-    let r1 = reqwest::blocking::get(srv.url("/__health__")).expect("GET before reload");
+    let r1 = common::get(srv.url("/__health__")).expect("GET before reload");
     assert_eq!(
         r1.headers().get("x-version").and_then(|v| v.to_str().ok()),
         Some("v1")
@@ -51,7 +51,7 @@ fn reload_hot_field_applies_without_restart() {
     // must pick up the new Arc on the next request).
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let r2 = reqwest::blocking::get(srv.url("/__health__")).expect("GET after reload");
+    let r2 = common::get(srv.url("/__health__")).expect("GET after reload");
     assert_eq!(
         r2.headers().get("x-version").and_then(|v| v.to_str().ok()),
         Some("v2"),
@@ -226,7 +226,7 @@ fn reload_cors_change_takes_effect() {
     );
 
     // Before reload: no CORS headers.
-    let r1 = reqwest::blocking::Client::new()
+    let r1 = common::local_client()
         .get(srv.url("/__health__"))
         .header("Origin", "https://example.com")
         .send()
@@ -256,7 +256,7 @@ fn reload_cors_change_takes_effect() {
 
     std::thread::sleep(std::time::Duration::from_millis(100));
 
-    let r2 = reqwest::blocking::Client::new()
+    let r2 = common::local_client()
         .get(srv.url("/__health__"))
         .header("Origin", "https://example.com")
         .send()
@@ -298,7 +298,7 @@ fn reload_rate_limit_removal_takes_effect() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     // First request to a non-health path: should succeed.
     let r1 = client.get(srv.url("/")).send().expect("first GET");
@@ -376,7 +376,7 @@ fn reload_log_file_switch_takes_effect() {
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     // Send a request — should produce a log entry.
-    reqwest::blocking::get(srv.url("/__health__")).expect("GET after reload");
+    common::get(srv.url("/__health__")).expect("GET after reload");
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     assert!(log_path.exists(), "log file must be created after reload");

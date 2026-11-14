@@ -1,13 +1,12 @@
 mod common;
 
-use reqwest::blocking::Client;
 use serial_test::serial;
 
 #[test]
 #[serial]
 fn health_returns_200() {
     let server = common::TestServer::start_minimal();
-    let resp = reqwest::blocking::get(server.url("/__health__")).expect("GET /__health__");
+    let resp = common::get(server.url("/__health__")).expect("GET /__health__");
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().expect("JSON body");
     assert_eq!(body["status"], "ok");
@@ -17,7 +16,7 @@ fn health_returns_200() {
 #[serial]
 fn unknown_path_returns_404() {
     let server = common::TestServer::start_minimal();
-    let resp = reqwest::blocking::get(server.url("/does-not-exist")).expect("GET /does-not-exist");
+    let resp = common::get(server.url("/does-not-exist")).expect("GET /does-not-exist");
     assert_eq!(resp.status(), 404);
 }
 
@@ -25,7 +24,7 @@ fn unknown_path_returns_404() {
 #[serial]
 fn admin_status_returns_running() {
     let server = common::TestServer::start_minimal();
-    let resp = reqwest::blocking::get(server.admin_url("/status")).expect("GET /status");
+    let resp = common::get(server.admin_url("/status")).expect("GET /status");
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().expect("JSON body");
     assert_eq!(body["status"], "running");
@@ -57,7 +56,7 @@ fn server_with_admin_token(token: &str) -> common::TestServer {
 #[test]
 fn admin_token_correct_allows_access() {
     let srv = server_with_admin_token("my-secret-token");
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.admin_url("/status"))
         .header("authorization", "Bearer my-secret-token")
         .send()
@@ -82,7 +81,7 @@ fn admin_token_scheme_is_case_insensitive() {
         ("Basic my-secret-token", 401),
         ("Bearermy-secret-token", 401),
     ] {
-        let resp = Client::new()
+        let resp = common::local_client()
             .get(srv.admin_url("/status"))
             .header("authorization", auth)
             .send()
@@ -94,7 +93,7 @@ fn admin_token_scheme_is_case_insensitive() {
 #[test]
 fn admin_token_wrong_returns_401() {
     let srv = server_with_admin_token("correct-token");
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.admin_url("/status"))
         .header("authorization", "Bearer wrong-token")
         .send()
@@ -105,7 +104,7 @@ fn admin_token_wrong_returns_401() {
 #[test]
 fn admin_token_missing_returns_401() {
     let srv = server_with_admin_token("some-token");
-    let resp = Client::new()
+    let resp = common::local_client()
         .get(srv.admin_url("/status"))
         .send()
         .expect("GET /status without auth");
@@ -135,7 +134,7 @@ fn every_admin_route_requires_the_token() {
         (Method::DELETE, "/ip-deny"),
         (Method::POST, "/certs/reload"),
     ];
-    let client = Client::new();
+    let client = common::local_client();
     for (method, path) in routes {
         // no header, a wrong token, and the right token without the `Bearer ` scheme
         for auth in [None, Some("Bearer wrong-token"), Some("some-token")] {
@@ -204,7 +203,7 @@ fn certs_reload_accepts_valid_pair() {
     let (srv, cert_path, key_path) = server_with_tls();
     let (new_cert, new_key) = gen_cert_pair();
 
-    let resp = Client::new()
+    let resp = common::local_client()
         .post(srv.admin_url("/certs/reload"))
         .json(&serde_json::json!({ "cert": new_cert, "key": new_key }))
         .send()
@@ -253,7 +252,7 @@ fn certs_reload_rejects_mismatched_pair() {
     let (cert, _) = gen_cert_pair();
     let (_, other_key) = gen_cert_pair();
 
-    let resp = Client::new()
+    let resp = common::local_client()
         .post(srv.admin_url("/certs/reload"))
         .json(&serde_json::json!({ "cert": cert, "key": other_key }))
         .send()
@@ -273,7 +272,7 @@ fn certs_reload_rejects_mismatched_pair() {
 fn certs_reload_rejects_garbage_pem() {
     let (srv, _, _) = server_with_tls();
 
-    let resp = Client::new()
+    let resp = common::local_client()
         .post(srv.admin_url("/certs/reload"))
         .json(&serde_json::json!({ "cert": "not a cert", "key": "not a key" }))
         .send()
@@ -289,7 +288,7 @@ fn certs_reload_returns_400_when_no_tls_configured() {
     let srv = common::TestServer::start_minimal();
     let (cert, key) = gen_cert_pair();
 
-    let resp = Client::new()
+    let resp = common::local_client()
         .post(srv.admin_url("/certs/reload"))
         .json(&serde_json::json!({ "cert": cert, "key": key }))
         .send()

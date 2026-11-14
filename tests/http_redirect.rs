@@ -30,7 +30,7 @@ fn make_self_signed_cert() -> (TempDir, String, String) {
 
 /// Non-redirecting client for checking raw 3xx responses.
 fn no_redirect_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+    common::local_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client")

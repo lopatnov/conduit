@@ -39,7 +39,7 @@ fn srv_with_sec(sec: serde_json::Value) -> common::TestServer {
 #[serial]
 fn security_headers_true_sets_nosniff() {
     let srv = srv_with_sec(serde_json::json!(true));
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert_eq!(
         resp.headers()
@@ -54,7 +54,7 @@ fn security_headers_true_sets_nosniff() {
 #[serial]
 fn security_headers_true_sets_frame_options() {
     let srv = srv_with_sec(serde_json::json!(true));
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     let val = resp
         .headers()
@@ -68,7 +68,7 @@ fn security_headers_true_sets_frame_options() {
 #[serial]
 fn security_headers_true_sets_referrer_policy() {
     let srv = srv_with_sec(serde_json::json!(true));
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(
         resp.headers().get("referrer-policy").is_some(),
@@ -80,7 +80,7 @@ fn security_headers_true_sets_referrer_policy() {
 #[serial]
 fn security_headers_true_sets_xss_protection() {
     let srv = srv_with_sec(serde_json::json!(true));
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(
         resp.headers().get("x-xss-protection").is_some(),
@@ -94,7 +94,7 @@ fn security_headers_true_sets_xss_protection() {
 #[serial]
 fn security_headers_false_emits_no_headers() {
     let srv = srv_with_sec(serde_json::json!(false));
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(
         resp.headers().get("x-content-type-options").is_none(),
@@ -134,7 +134,7 @@ fn security_headers_object_hsts_and_csp() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/index.html")).expect("GET");
+    let resp = common::get(srv.url("/index.html")).expect("GET");
     assert_eq!(resp.status(), 200);
 
     // RFC 6797: Strict-Transport-Security must only be honored over HTTPS.

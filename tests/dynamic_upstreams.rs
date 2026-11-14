@@ -115,7 +115,7 @@ fn add_upstream_routes_traffic_to_new_target() {
 
     // All requests go to the original upstream before the override.
     for _ in 0..4 {
-        let resp = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let resp = common::get(srv.url("/")).expect("GET");
         assert_eq!(resp.status(), 200);
     }
     assert_eq!(
@@ -140,7 +140,7 @@ fn add_upstream_routes_traffic_to_new_target() {
 
     // After the override, traffic should distribute between original + added.
     for _ in 0..10 {
-        let r = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let r = common::get(srv.url("/")).expect("GET");
         assert_eq!(r.status(), 200);
     }
 
@@ -180,7 +180,7 @@ fn remove_upstream_stops_traffic_to_target() {
 
     // Warm up — both should receive traffic.
     for _ in 0..6 {
-        reqwest::blocking::get(srv.url("/")).expect("GET");
+        common::get(srv.url("/")).expect("GET");
     }
 
     let admin_addr = format!("127.0.0.1:{admin_port}");
@@ -209,7 +209,7 @@ fn remove_upstream_stops_traffic_to_target() {
 
     // After removing a, all new requests should go to b only.
     for _ in 0..8 {
-        let r = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let r = common::get(srv.url("/")).expect("GET");
         assert_eq!(r.status(), 200);
     }
 
@@ -303,7 +303,7 @@ fn weight_update_changes_distribution() {
     // With WRR the strategy must be configured explicitly; here we just confirm
     // that the weight change is accepted and requests still succeed.
     for _ in 0..4 {
-        let r = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let r = common::get(srv.url("/")).expect("GET");
         assert_eq!(r.status(), 200);
     }
 }
@@ -373,7 +373,7 @@ fn reload_clears_overrides() {
 
     // With the override active, both upstreams should get traffic.
     for _ in 0..10 {
-        reqwest::blocking::get(srv.url("/")).expect("GET");
+        common::get(srv.url("/")).expect("GET");
     }
     assert!(
         added.hit_count() > 0,
@@ -398,7 +398,7 @@ fn reload_clears_overrides() {
 
     // After reload, only original should receive traffic (override cleared).
     for _ in 0..6 {
-        let r = reqwest::blocking::get(srv.url("/")).expect("GET");
+        let r = common::get(srv.url("/")).expect("GET");
         assert_eq!(r.status(), 200);
     }
 

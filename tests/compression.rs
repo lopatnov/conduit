@@ -40,7 +40,7 @@ fn gzip_returned_when_accepted() {
     let (_dir, static_dir) = make_static_dir_with_large_file();
     let (srv, _, _) = compression_server(&static_dir, serde_json::json!(true));
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/data.txt"))
         .header("Accept-Encoding", "gzip")
         .send()
@@ -71,7 +71,7 @@ fn gzip_body_starts_with_magic_bytes() {
     let (_dir, static_dir) = make_static_dir_with_large_file();
     let (srv, _, _) = compression_server(&static_dir, serde_json::json!(true));
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/data.txt"))
         .header("Accept-Encoding", "gzip")
         .send()
@@ -101,7 +101,7 @@ fn brotli_preferred_when_both_accepted() {
     let (_dir, static_dir) = make_static_dir_with_large_file();
     let (srv, _, _) = compression_server(&static_dir, serde_json::json!(true));
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/data.txt"))
         .header("Accept-Encoding", "br, gzip")
         .send()
@@ -124,7 +124,7 @@ fn no_compression_without_accept_encoding() {
     let (_dir, static_dir) = make_static_dir_with_large_file();
     let (srv, _, _) = compression_server(&static_dir, serde_json::json!(true));
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/data.txt"))
         .send()
         .expect("send");
@@ -146,7 +146,7 @@ fn uncompressed_static_response_still_varies_on_accept_encoding() {
     let (srv, _, _) = compression_server(&static_dir, serde_json::json!(true));
 
     for accept in [None, Some("identity")] {
-        let mut req = reqwest::blocking::Client::new().get(srv.url("/data.txt"));
+        let mut req = common::local_client().get(srv.url("/data.txt"));
         if let Some(accept) = accept {
             req = req.header("Accept-Encoding", accept);
         }
@@ -171,7 +171,7 @@ fn uncompressed_static_response_still_varies_on_accept_encoding() {
 fn static_response_has_no_vary_when_compression_is_off() {
     let (_dir, static_dir) = make_static_dir_with_large_file();
     let (srv, _, _) = compression_server(&static_dir, serde_json::json!(false));
-    let resp = reqwest::blocking::get(srv.url("/data.txt")).expect("GET");
+    let resp = common::get(srv.url("/data.txt")).expect("GET");
     assert_eq!(resp.status(), 200);
     assert!(resp.headers().get("vary").is_none());
 }
@@ -182,7 +182,7 @@ fn no_compression_when_disabled() {
     let (_dir, static_dir) = make_static_dir_with_large_file();
     let (srv, _, _) = compression_server(&static_dir, serde_json::json!(false));
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/data.txt"))
         .header("Accept-Encoding", "gzip, br")
         .send()
@@ -204,7 +204,7 @@ fn no_compression_below_min_bytes() {
     let static_dir = dir.path().to_string_lossy().into_owned();
     let (srv, _, _) = compression_server(&static_dir, serde_json::json!(true));
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/tiny.txt"))
         .header("Accept-Encoding", "gzip")
         .send()
@@ -228,7 +228,7 @@ fn compression_options_form_works() {
         serde_json::json!({ "algorithms": ["gzip"], "level": 1, "minBytes": 0 }),
     );
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/data.txt"))
         .header("Accept-Encoding", "gzip")
         .send()
@@ -271,7 +271,7 @@ fn metrics_response_compressed_when_accepted() {
     let srv =
         metrics_compression_server(serde_json::json!({ "algorithms": ["gzip"], "minBytes": 0 }));
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/__metrics__"))
         .header("Accept-Encoding", "gzip")
         .send()
@@ -323,7 +323,7 @@ fn metrics_response_respects_default_min_bytes_threshold() {
     // cross exactly 1024 between calls), retry rather than assert on an
     // ambiguous measurement.
     let srv = metrics_compression_server(serde_json::json!(true));
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     for attempt in 0..5 {
         let before_len = client
@@ -403,7 +403,7 @@ fn fallback_body_compressed_when_accepted() {
         serde_json::json!({ "algorithms": ["gzip"], "minBytes": 0 }),
     );
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/missing"))
         .header("Accept-Encoding", "gzip")
         .send()
@@ -433,7 +433,7 @@ fn fallback_body_not_compressed_without_accept_encoding() {
         serde_json::json!({ "algorithms": ["gzip"], "minBytes": 0 }),
     );
 
-    let resp = reqwest::blocking::Client::new()
+    let resp = common::local_client()
         .get(srv.url("/missing"))
         .send()
         .expect("send");

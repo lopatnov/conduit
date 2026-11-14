@@ -40,7 +40,7 @@ fn routes_path_glob_matches() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/api/v1/users")).expect("GET /api/v1/users");
+    let resp = common::get(srv.url("/api/v1/users")).expect("GET /api/v1/users");
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -48,7 +48,7 @@ fn routes_path_glob_matches() {
     );
 
     // Path outside the glob should not match → fallback 404.
-    let resp2 = reqwest::blocking::get(srv.url("/other/path")).expect("GET /other");
+    let resp2 = common::get(srv.url("/other/path")).expect("GET /other");
     assert_eq!(
         resp2.status().as_u16(),
         404,
@@ -107,7 +107,7 @@ fn routes_hostname_upstream_resolves_and_proxies() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/api")).expect("GET /api");
+    let resp = common::get(srv.url("/api")).expect("GET /api");
     assert_eq!(
         resp.status().as_u16(),
         200,
@@ -172,7 +172,7 @@ fn routes_first_match_wins() {
         }),
     );
 
-    let body = reqwest::blocking::get(srv.url("/api/data"))
+    let body = common::get(srv.url("/api/data"))
         .expect("GET")
         .text()
         .expect("text");
@@ -219,7 +219,7 @@ fn routes_method_filter() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     // POST and PUT should match.
     let r_post = client.post(srv.url("/submit")).send().expect("POST");
@@ -275,7 +275,7 @@ fn routes_header_predicate() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     // Correct header value → proxied.
     let r_match = client
@@ -349,7 +349,7 @@ fn routes_query_predicate() {
         }),
     );
 
-    let client = reqwest::blocking::Client::new();
+    let client = common::local_client();
 
     // Matching query → proxied.
     let r_ok = client
@@ -415,7 +415,7 @@ fn routes_static_action() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/files/hello.txt")).expect("GET");
+    let resp = common::get(srv.url("/files/hello.txt")).expect("GET");
     assert_eq!(resp.status().as_u16(), 200);
     assert_eq!(resp.text().expect("body"), "hello from routes static");
 }
@@ -443,7 +443,7 @@ fn routes_no_match_returns_404() {
         }),
     );
 
-    let resp = reqwest::blocking::get(srv.url("/other")).expect("GET /other");
+    let resp = common::get(srv.url("/other")).expect("GET /other");
     assert_eq!(
         resp.status().as_u16(),
         404,
@@ -488,10 +488,10 @@ fn routes_empty_match_catches_all() {
     );
 
     // Any path should be routed.
-    let r1 = reqwest::blocking::get(srv.url("/anything")).expect("GET");
+    let r1 = common::get(srv.url("/anything")).expect("GET");
     assert_eq!(r1.status().as_u16(), 200, "empty match should catch all");
 
-    let r2 = reqwest::blocking::get(srv.url("/foo/bar/baz")).expect("GET deep");
+    let r2 = common::get(srv.url("/foo/bar/baz")).expect("GET deep");
     assert_eq!(
         r2.status().as_u16(),
         200,

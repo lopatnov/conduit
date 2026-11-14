@@ -8,7 +8,7 @@ mod common;
 use reqwest::blocking::Client;
 
 fn plain_client() -> Client {
-    Client::new()
+    common::local_client()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

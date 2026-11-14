@@ -195,15 +195,14 @@ fn tcp_proxy_site_does_not_disable_admin_api() {
         }),
     );
 
-    let unauthenticated =
-        reqwest::blocking::get(server.admin_url("/status")).expect("GET /status (no token)");
+    let unauthenticated = common::get(server.admin_url("/status")).expect("GET /status (no token)");
     assert_eq!(
         unauthenticated.status().as_u16(),
         401,
         "Admin API must still require its token for a tcp-only site"
     );
 
-    let authenticated = reqwest::blocking::Client::new()
+    let authenticated = common::local_client()
         .get(server.admin_url("/status"))
         .header("authorization", "Bearer tcp-site-admin-token")
         .send()
