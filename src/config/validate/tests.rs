@@ -2587,3 +2587,65 @@ fn consumers_shared_jwt_no_secret_or_jwks_rejected() {
         "sharedJwt without secret or jwksUrl must error: {e:?}"
     );
 }
+
+// ── unresolved credential references (#624) ─────────────────────────────
+
+const UNRESOLVED_CONFIG: &str = r#"{
+        "global": { "admin": { "token": "$CONDUIT_TEST_UNSET_ADMIN" } },
+        "sites": [{
+            "port": 8080,
+            "basicAuth": { "users": { "alice": "$CONDUIT_TEST_UNSET_PW" } },
+            "apiKey": { "keys": ["$CONDUIT_TEST_UNSET_KEY", "a-real-key-with-a-$-inside"] },
+            "jwtAuth": { "secret": "$CONDUIT_TEST_UNSET_JWT" },
+            "metrics": { "token": "$CONDUIT_TEST_UNSET_METRICS" },
+            "proxy": { "/app": { "targets": ["http://127.0.0.1:1"], "sticky": { "cookie": "s", "secret": "$CONDUIT_TEST_UNSET_STICKY" } } },
+            "routes": [{ "match": { "path": "/r/**" },
+                         "proxy": { "targets": ["http://127.0.0.1:1"], "sticky": { "cookie": "s", "secret": "$CONDUIT_TEST_UNSET_STICKY_R" } } }],
+            "consumers": { "sharedJwt": { "secret": "$CONDUIT_TEST_UNSET_SHARED" }, "consumers": [
+                { "username": "c1", "apiKey": "$CONDUIT_TEST_UNSET_C1" },
+                { "username": "c2", "basicAuth": { "password": "$CONDUIT_TEST_UNSET_C2" } },
+                { "username": "c3", "jwt": { "secret": "$CONDUIT_TEST_UNSET_C3" } }
+            ] }
+        }]
+    }"#;
+
+#[test]
+fn an_unset_variable_in_a_credential_is_warned_about_for_every_credential_kind() {
+    let warnings = feature_warnings(&parse(UNRESOLVED_CONFIG));
+    for place in [
+        "global.admin.token",
+        "sites[0].basicAuth.users[alice]",
+        "sites[0].apiKey.keys[0]",
+        "sites[0].jwtAuth.secret",
+        "sites[0].consumers.consumers[0].apiKey",
+        "sites[0].consumers.consumers[1].basicAuth.password",
+        "sites[0].consumers.consumers[2].jwt.secret",
+        "sites[0].consumers.sharedJwt.secret",
+        "sites[0].metrics.token",
+        "sites[0].proxy./app.sticky.secret",
+        "sites[0].routes[0].proxy.sticky.secret",
+    ] {
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.starts_with(place) && w.contains("is not set")),
+            "no unresolved-credential warning for {place}: {warnings:#?}"
+        );
+    }
+    assert!(
+        !warnings.iter().any(|w| w.contains("apiKey.keys[1]")),
+        "a key that merely contains a dollar sign is a literal: {warnings:#?}"
+    );
+}
+
+#[test]
+fn a_resolved_or_literal_credential_is_not_warned_about() {
+    let warnings = feature_warnings(&parse(
+        r#"{ "port": 8080, "basicAuth": { "users": { "alice": "pa$$word", "bob": "x$y" } },
+             "apiKey": { "keys": ["k-1234567890"] } }"#,
+    ));
+    assert!(
+        !warnings.iter().any(|w| w.contains("is not set")),
+        "{warnings:#?}"
+    );
+}

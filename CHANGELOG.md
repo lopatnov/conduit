@@ -12,6 +12,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `sticky.secure` and `sticky.maxAgeSecs`: the `Secure` and `Max-Age` of the cookie Conduit sets in `secret` mode. `secure`
   unset means "when the site has `tls`"; `maxAgeSecs` unset is a session cookie, `0` is rejected (#644).
 
+### Security
+
+- **A credential that is an unset environment variable is now warned about** (issue #624, the "sshole" class: a failed
+  lookup that degrades into a value an attacker can predict). `basicAuth` passwords, `apiKey` keys, `jwtAuth.secret`,
+  consumer keys, passwords and secrets, `consumers.sharedJwt.secret`, `metrics.token`, `sticky.secret` (on a `proxy`
+  route or a `routes[]` entry) and `global.admin.token` whose whole value is `$NAME` with `NAME` not set kept the text
+  `$NAME` and accepted it as the credential. `conduit validate`, start-up and reload now warn for each one.
+  Refusing to start would be stricter and is put to the owner (the examples and the documentation use such references
+  on purpose).
+
 ### Fixed
 
 - **`p2c` no longer favours an upstream that fails fast** (issue #734). A response of 500 or more (and a connect failure or

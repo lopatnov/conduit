@@ -309,6 +309,127 @@ fn check_consumer_jwt_secret_warnings(i: usize, site: &SiteConfig, warnings: &mu
     }
 }
 
+/// Warn when a credential is still the text of an environment variable reference (`$NAME`): the variable is not set,
+/// `interpolate` keeps the reference, and the reference itself becomes the password, key, secret or token. It is not a
+/// missing credential but a known one: anyone who has read the configuration, an example or the documentation can
+/// present it (and for a JWT secret, sign a token with it). This is the failure mode of issue #624 (the sshole class):
+/// a failed lookup that degrades into a value an attacker can predict.
+pub(super) fn check_unresolved_credential_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
+    let mut push = |place: String, value: &str| {
+        if let Some(name) = conduit_config_core::env::unresolved_reference(value) {
+            warnings.push(format!(
+                "{place} is the text `${name}`: the environment variable {name} is not set, so the text of the reference \
+                 itself is the credential and anyone who has seen this configuration can present it. Set {name} in the \
+                 environment of the process (for the systemd unit: `conduit.env`)."
+            ));
+        }
+    };
+    if let Some(token) = config
+        .global
+        .as_ref()
+        .and_then(|g| g.admin.as_ref())
+        .and_then(|a| a.token.as_deref())
+    {
+        push("global.admin.token".to_owned(), token);
+    }
+    for (i, site) in config.sites.iter().enumerate() {
+        site_auth_credentials(i, site, &mut push);
+        site_sticky_secrets(i, site, &mut push);
+        site_consumer_credentials(i, site, &mut push);
+    }
+}
+
+type PushCredential<'a> = dyn FnMut(String, &str) + 'a;
+
+/// The `basicAuth`, `apiKey`, `jwtAuth`, `consumers.sharedJwt` and `metrics` credentials of one site.
+fn site_auth_credentials(i: usize, site: &SiteConfig, push: &mut PushCredential<'_>) {
+    if let Some(basic) = &site.basic_auth {
+        for (user, password) in &basic.users {
+            push(
+                format!("sites[{i}].basicAuth.users[{}]", sanitize_for_log(user)),
+                password,
+            );
+        }
+    }
+    if let Some(api) = &site.api_key {
+        for (j, key) in api.keys.iter().enumerate() {
+            push(format!("sites[{i}].apiKey.keys[{j}]"), key);
+        }
+    }
+    if let Some(secret) = site.jwt_auth.as_ref().and_then(|j| j.secret.as_deref()) {
+        push(format!("sites[{i}].jwtAuth.secret"), secret);
+    }
+    if let Some(secret) = site
+        .consumers
+        .as_ref()
+        .and_then(|c| c.shared_jwt.as_ref())
+        .and_then(|s| s.secret.as_deref())
+    {
+        push(format!("sites[{i}].consumers.sharedJwt.secret"), secret);
+    }
+    if let Some(token) = site.metrics.as_ref().and_then(|m| m.token.as_deref()) {
+        push(format!("sites[{i}].metrics.token"), token);
+    }
+}
+
+/// The key that signs the sticky-session cookie: with the reference text as the key, anyone who has read the
+/// configuration can forge a cookie that pins a client to an upstream of their choosing (#733).
+fn site_sticky_secrets(i: usize, site: &SiteConfig, push: &mut PushCredential<'_>) {
+    if let Some(crate::config::schema::ProxyConfig::Routes(routes)) = &site.proxy {
+        for (name, target) in routes {
+            if let Some(secret) = sticky_secret(target) {
+                push(
+                    format!("sites[{i}].proxy.{}.sticky.secret", sanitize_for_log(name)),
+                    secret,
+                );
+            }
+        }
+    }
+    for (j, route) in site.routes.iter().flatten().enumerate() {
+        if let Some(secret) = route.proxy.as_ref().and_then(sticky_secret) {
+            push(
+                format!("sites[{i}].routes[{j}].proxy.sticky.secret"),
+                secret,
+            );
+        }
+    }
+}
+
+/// The per-consumer API key, password and JWT secret of one site.
+fn site_consumer_credentials(i: usize, site: &SiteConfig, push: &mut PushCredential<'_>) {
+    for (j, c) in site
+        .consumers
+        .iter()
+        .flat_map(|c| c.consumers.iter().enumerate())
+    {
+        if let Some(key) = c.api_key.as_deref() {
+            push(format!("sites[{i}].consumers.consumers[{j}].apiKey"), key);
+        }
+        if let Some(b) = &c.basic_auth {
+            push(
+                format!("sites[{i}].consumers.consumers[{j}].basicAuth.password"),
+                &b.password,
+            );
+        }
+        if let Some(secret) = c.jwt.as_ref().and_then(|j| j.secret.as_deref()) {
+            push(
+                format!("sites[{i}].consumers.consumers[{j}].jwt.secret"),
+                secret,
+            );
+        }
+    }
+}
+
+/// `sticky.secret` of a full proxy route target, if it sets one.
+fn sticky_secret(target: &crate::config::schema::ProxyRouteTarget) -> Option<&str> {
+    match target {
+        crate::config::schema::ProxyRouteTarget::Full(cfg) => {
+            cfg.sticky.as_ref().and_then(|s| s.secret.as_deref())
+        }
+        _ => None,
+    }
+}
+
 /// Warn when a metrics endpoint has no auth token configured.
 pub(super) fn check_metrics_auth_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     for (i, site) in config.sites.iter().enumerate() {

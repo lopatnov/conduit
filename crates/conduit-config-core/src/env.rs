@@ -54,6 +54,24 @@ pub fn interpolate(text: &str) -> String {
     result
 }
 
+/// The variable name when `value` is exactly one reference, `$NAME`, that [`interpolate`] left in place because the
+/// variable is not set; `None` for anything else (a literal that merely contains a `$`, such as `pa$$word` or
+/// `abc$def`, is not a reference).
+///
+/// A credential in this state is not missing but **known**: the text of the reference is the secret, and anyone who
+/// has seen the configuration (an example, a repository, the documentation) can present it.
+pub fn unresolved_reference(value: &str) -> Option<&str> {
+    let name = value.strip_prefix('$')?;
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    chars
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        .then_some(name)
+}
+
 /// The names of the environment variables that `text` refers to (`$NAME`) and that are set, in order of first
 /// appearance: the references [`interpolate`] and [`interpolate_yaml`] would replace by their values.
 pub fn resolved_references(text: &str) -> Vec<String> {
@@ -522,6 +540,22 @@ fn plain_problem(value: &str, place: Place) -> Option<&'static str> {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn a_whole_value_reference_is_unresolved() {
+        assert_eq!(unresolved_reference("$ALICE_PW"), Some("ALICE_PW"));
+        assert_eq!(unresolved_reference("$_x1"), Some("_x1"));
+    }
+
+    #[test]
+    fn anything_else_is_a_literal() {
+        for v in [
+            "", "$", "$$", "$1abc", "pa$$word", "abc$def", "$ABC def", "$ABC-", " $ABC", "$ABC\n",
+            "x$ABC",
+        ] {
+            assert_eq!(unresolved_reference(v), None, "{v:?}");
+        }
+    }
 
     #[test]
     #[serial]
