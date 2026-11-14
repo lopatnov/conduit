@@ -27,6 +27,7 @@ jobs:
   ci:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -73,6 +74,7 @@ jobs:
   msrv:
     name: MSRV (1.89)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -99,6 +101,7 @@ jobs:
   ci-features:
     name: All features (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -131,6 +134,7 @@ jobs:
   ci-standard:
     name: Standard feature bundle (Linux)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -182,6 +186,7 @@ jobs:
   footprint:
     name: Footprint report
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: read
     outputs:
@@ -245,6 +250,7 @@ jobs:
     name: Footprint report comment
     needs: footprint
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read        # the sparse checkout of scripts/ci
       pull-requests: write  # the comment
@@ -320,6 +326,7 @@ jobs:
   performance:
     name: Performance report
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: read
       pull-requests: read  # base-SHA lookup on `push` runs (scripts/ci/resolve_pr.sh)
@@ -644,6 +651,7 @@ jobs:
     name: Performance report comment
     needs: performance
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read        # the sparse checkout of scripts/ci
       pull-requests: write  # the comment
@@ -739,6 +747,7 @@ jobs:
   layer-boundaries:
     name: Layer boundaries (SiteConfig/AppConfig)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -756,6 +765,7 @@ jobs:
   docs-configs:
     name: Docs config examples
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -813,6 +823,7 @@ jobs:
   code-length:
     name: Code length report
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
       pull-requests: read  # base-SHA lookup on `push` runs (scripts/ci/resolve_pr.sh)
@@ -886,6 +897,7 @@ jobs:
     name: Code length report comment
     needs: code-length
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read        # the sparse checkout of scripts/ci
       pull-requests: write  # the comment
@@ -926,6 +938,7 @@ jobs:
   ci-hack:
     name: Feature isolation (cargo-hack)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -971,6 +984,7 @@ jobs:
   ci-no-proxy:
     name: Tests without the `proxy` feature
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1105,6 +1119,7 @@ jobs:
   debian:
     name: Debian ${{ matrix.release }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     container: rust:1-${{ matrix.codename }}
     strategy:
       fail-fast: false
@@ -1148,6 +1163,7 @@ jobs:
   docker-build:
     name: Docker image (${{ matrix.bundle }}, ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -1192,6 +1208,7 @@ jobs:
   cross-compile:
     name: Cross-compile ${{ matrix.target }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -1335,6 +1352,7 @@ jobs:
     name: Debian package (${{ matrix.arch }})
     needs: cross-compile
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -1373,6 +1391,7 @@ jobs:
   acme:
     name: ACME (Pebble)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     services:
       pebble:
@@ -1436,6 +1455,7 @@ jobs:
   e2e:
     name: End-to-end tests (Docker)
     runs-on: ubuntu-24.04  # the binary is built here and run in ubuntu:24.04: the same glibc
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1493,6 +1513,7 @@ jobs:
   workspace-publish-dryrun:
     name: Workspace publish dry-run
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -1521,6 +1542,7 @@ jobs:
   schema-superset-check:
     name: Config schema superset check
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
