@@ -442,6 +442,7 @@ pub(crate) fn detect_cold_changes(
                     ("directory", o.directory != n.directory),
                     ("storage", o.storage != n.storage),
                     ("challenge", o.challenge != n.challenge),
+                    ("profile", o.profile != n.profile),
                 ] {
                     if changed {
                         cold.push(format!("sites[{host}].tls.acme.{name}"));
@@ -572,6 +573,12 @@ mod tests {
             (
                 acme_site("ops@example.com", "https://ca.test/dir", "./elsewhere"),
                 "storage",
+            ),
+            (
+                cfg(
+                    r#"{"sites":[{"port":443,"host":"a.example.com","tls":{"acme":{"email":"ops@example.com","directory":"https://ca.test/dir","storage":"./certs","profile":"shortlived"}}}]}"#,
+                ),
+                "profile",
             ),
         ] {
             let cold = detect_cold_changes(&base, &new);
