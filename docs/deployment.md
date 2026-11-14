@@ -342,6 +342,17 @@ purpose (the WASM runtime maps memory that is writable and then executable), and
 service user) at every start and keep them writable under `ProtectSystem=strict`, so a deleted directory is
 recreated by the next start.
 
+Two things change for an operator who upgrades to this unit:
+
+- Under `ProtectSystem=strict` the whole file system is read-only for Conduit except these two directories and its
+  private `/tmp`. A path Conduit writes elsewhere (the ACME `storage` directory, a disk cache path, an upload directory,
+  a log file outside `/var/log/conduit`) must be added in a drop-in (`systemctl edit conduit`) as
+  `ReadWritePaths=/path/one /path/two`. The directory has to exist: a missing one stops the service from starting
+  (status 226).
+- With `UMask=0027` the files Conduit creates (ACME account and certificates, logs, the disk cache) are no longer
+  readable by other users: the owner and the group `conduit` can read them, everyone else cannot. A log shipper or a
+  monitoring agent that read them as an unrelated user needs to be added to that group.
+
 `ExecReload` wires `systemctl reload conduit` to a zero-downtime hot-reload via
 the Admin API — no connections are dropped.
 
