@@ -84,6 +84,12 @@ impl FilterChain {
 /// formatters and downstream handlers can include it.
 pub struct XRequestIdGuard;
 
+/// A new request id (UUID v4, lower-case hyphenated) written into `buf`: no `String`, and `fast-rng` draws from a
+/// thread-local ChaCha stream instead of a `getrandom` syscall per request (#486).
+fn fresh_request_id(buf: &mut [u8]) -> &str {
+    Uuid::new_v4().hyphenated().encode_lower(buf)
+}
+
 #[async_trait]
 impl RequestFilter for XRequestIdGuard {
     async fn apply<'a>(&self, ctx: &mut FilterContext<'a>) -> Result<FilterOutcome> {
@@ -93,10 +99,8 @@ impl RequestFilter for XRequestIdGuard {
             .headers
             .contains_key("x-request-id");
         if !has {
-            // Stack buffer, no `String`; `fast-rng` draws from a thread-local ChaCha stream
-            // instead of a `getrandom` syscall per request (#486).
             let mut buf = Uuid::encode_buffer();
-            let id: &str = Uuid::new_v4().hyphenated().encode_lower(&mut buf);
+            let id = fresh_request_id(&mut buf);
             let _ = ctx
                 .session
                 .req_header_mut()
@@ -507,6 +511,23 @@ async fn rate_limit_allowed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_ids_are_distinct_lowercase_v4_uuids() {
+        let mut a = Uuid::encode_buffer();
+        let mut b = Uuid::encode_buffer();
+        let (a, b) = (
+            fresh_request_id(&mut a).to_owned(),
+            fresh_request_id(&mut b).to_owned(),
+        );
+        assert_ne!(a, b);
+        for id in [&a, &b] {
+            assert_eq!(id.len(), 36);
+            assert_eq!(id, &id.to_lowercase());
+            let parsed = Uuid::parse_str(id).expect("a UUID");
+            assert_eq!(parsed.get_version_num(), 4);
+        }
+    }
 
     // ── LimitsGuard / IpConnSlotGuard / is_host_header_invalid /
     //    try_acquire_ip_slot / limits_rejection tests — moved to

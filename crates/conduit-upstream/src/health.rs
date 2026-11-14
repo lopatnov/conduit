@@ -540,6 +540,26 @@ mod tests {
     use crate::overrides::override_key;
     use crate::probes::{apply_probe_result, probe_http};
 
+    // ── status_mut: the first request creates the entry, later ones reuse it ──
+
+    #[test]
+    fn response_and_selection_counters_create_the_entry_then_accumulate() {
+        let registry = UpstreamRegistry::default();
+        record_upstream_selected(&registry, "http://a:1");
+        record_response_status(&registry, "http://a:1", 200);
+        record_response_status(&registry, "http://a:1", 404);
+        record_response_status(&registry, "http://a:1", 503);
+        record_upstream_selected(&registry, "http://a:1");
+        record_response_status(&registry, "http://b:2", 200);
+        let a = registry.statuses.get("http://a:1").expect("entry a");
+        assert_eq!(a.selected_total, 2);
+        assert_eq!(a.responses_2xx, 1);
+        assert_eq!(a.responses_4xx, 1);
+        assert_eq!(a.responses_5xx, 1);
+        let b = registry.statuses.get("http://b:2").expect("entry b");
+        assert_eq!((b.selected_total, b.responses_2xx), (0, 1));
+    }
+
     // ── site_label ───────────────────────────────────────────────────────────
 
     #[test]
