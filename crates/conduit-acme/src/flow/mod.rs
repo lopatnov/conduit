@@ -9,16 +9,17 @@
 //! (owner-only secret writes), [`renewal`] (the background renewal task).
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use dashmap::DashMap;
 use instant_acme::{
-    Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt,
-    NewAccount, NewOrder, RetryPolicy,
+    AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt, NewOrder, RetryPolicy,
 };
 
 use crate::config::AcmeConfig;
 
+mod account;
 mod ari;
 mod http01;
 #[cfg(test)]
@@ -29,10 +30,56 @@ mod storage;
 pub use http01::ChallengeSource;
 pub use renewal::{renew_if_due, run_renewal_loop, RenewalJob};
 
+use account::{fnv1a_64, load_or_create_account, stored_account_exists};
 use http01::ChallengeServer;
-use storage::{
-    cached_pair_matches, pair_paths, unsupported_key_format, write_secret_atomic, PendingPair,
-};
+use storage::{cached_pair_matches, pair_paths, unsupported_key_format, PendingPair};
+
+/// How long one request of an order may take. instant-acme's HTTP client has no timeout of its own, so a CA that
+/// accepts the connection and never answers would hold the sequential renewal loop (and startup) forever.
+const STEP_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the validation phase (authorizations, challenge, polling until the order is ready) may take in all.
+const VALIDATION_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// `true` when a failed `newOrder` that named the old certificate may be tried once more without it: only when the
+/// CA answered with an ACME problem document that identifies the `replaces` link as the cause (RFC 9773 §5). That is
+/// `alreadyReplaced`, or `malformed`/`unauthorized` whose detail names the link (the stem "replace": `replaces`,
+/// `replaced`, `replacement`); those two types are also
+/// used for unrelated faults (a deactivated account, a bad request), which a second order would only repeat. A timeout
+/// or a transport error does not tell whether the CA acted on the request, and a second order could duplicate the
+/// first; `rateLimited`, `serverInternal` and the like say nothing about the link, and retrying at once would only add
+/// load.
+fn may_retry_without_replaces(error: &anyhow::Error) -> bool {
+    let Some(instant_acme::Error::Api(problem)) = error.downcast_ref::<instant_acme::Error>()
+    else {
+        return false;
+    };
+    let Some(kind) = problem
+        .r#type
+        .as_deref()
+        .and_then(|t| t.strip_prefix("urn:ietf:params:acme:error:"))
+    else {
+        return false;
+    };
+    match kind {
+        "alreadyReplaced" => true,
+        "malformed" | "unauthorized" => problem
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.to_ascii_lowercase().contains("replace")),
+        _ => false,
+    }
+}
+
+/// Run `fut` for at most `limit`; a timeout is an error naming the step.
+async fn bounded<T>(
+    step: &str,
+    limit: Duration,
+    fut: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::time::timeout(limit, fut)
+        .await
+        .map_err(|_| anyhow::anyhow!("{step} timed out after {} s", limit.as_secs()))?
+}
 
 /// The most days before expiry at which renewal starts. A certificate with a shorter life renews earlier in proportion
 /// (see [`cert_renewal_due`]).
@@ -299,7 +346,12 @@ async fn run_acme_order(
         .unwrap_or_else(|| LetsEncrypt::Production.url())
         .to_owned();
 
-    let account = load_or_create_account(acme_cfg, &directory_url).await?;
+    let account = bounded(
+        "ACME account setup",
+        STEP_TIMEOUT,
+        load_or_create_account(acme_cfg, &directory_url),
+    )
+    .await?;
 
     let identifiers = [Identifier::Dns(domain.to_string())];
     let build_order = |replaces: Option<instant_acme::CertificateIdentifier<'static>>| {
@@ -316,21 +368,27 @@ async fn run_acme_order(
     // that names `replaces`). A CA may also refuse the link itself (RFC 9773 section 5: the certificate was already
     // replaced, or is not ours to replace): the order is then tried once more without it.
     let replaces = match previous_cert {
-        Some(pem) => ari::advice(&account, pem, unix_now(), renewal::CHECK_INTERVAL_SECS)
-            .await
-            .map(|a| a.id),
+        Some(pem) => ari::advice(&account, pem, unix_now()).await.map(|a| a.id),
         None => None,
     };
-    let mut order = match account.new_order(&build_order(replaces.clone())).await {
-        Ok(order) => order,
-        Err(e) if replaces.is_some() => {
-            tracing::warn!(error = %e, "the CA refused the order that replaces the old certificate — ordering without it");
+    let place_order = |replaces| async {
+        bounded("ACME new-order request", STEP_TIMEOUT, async {
             account
-                .new_order(&build_order(None))
+                .new_order(&build_order(replaces))
+                .await
+                .map_err(anyhow::Error::new)
+        })
+        .await
+    };
+    let mut order = match place_order(replaces.clone()).await {
+        Ok(order) => order,
+        Err(e) if replaces.is_some() && may_retry_without_replaces(&e) => {
+            tracing::warn!(error = %e, "the CA refused the order that replaces the old certificate — ordering without it");
+            place_order(None)
                 .await
                 .context("ACME new-order request failed")?
         }
-        Err(e) => return Err(anyhow::Error::new(e).context("ACME new-order request failed")),
+        Err(e) => return Err(e.context("ACME new-order request failed")),
     };
 
     // `Bind`: take the per-port lock and bind the challenge port before
@@ -351,38 +409,40 @@ async fn run_acme_order(
     // then propagated via `?` only after cleanup completes.
     let mut our_tokens: Vec<String> = Vec::new();
     let retry = RetryPolicy::default();
-    let flow_result: anyhow::Result<()> = async {
-        let mut authorizations = order.authorizations();
-        while let Some(authz_result) = authorizations.next().await {
-            let mut authz = authz_result.context("ACME authorizations fetch failed")?;
+    let flow_result: anyhow::Result<()> =
+        bounded("ACME challenge validation", VALIDATION_TIMEOUT, async {
+            let mut authorizations = order.authorizations();
+            while let Some(authz_result) = authorizations.next().await {
+                let mut authz = authz_result.context("ACME authorizations fetch failed")?;
 
-            if authz.status == AuthorizationStatus::Valid {
-                continue; // already validated from a previous attempt
+                if authz.status == AuthorizationStatus::Valid {
+                    continue; // already validated from a previous attempt
+                }
+
+                let mut challenge_handle =
+                    authz.challenge(ChallengeType::Http01).ok_or_else(|| {
+                        anyhow::anyhow!("no HTTP-01 challenge available for domain {domain}")
+                    })?;
+
+                let key_auth = challenge_handle.key_authorization();
+                let token = challenge_handle.token.clone();
+                our_tokens.push(token.clone());
+                challenges.insert(token, key_auth.as_str().to_owned());
+
+                challenge_handle
+                    .set_ready()
+                    .await
+                    .context("set_challenge_ready failed")?;
             }
 
-            let mut challenge_handle = authz.challenge(ChallengeType::Http01).ok_or_else(|| {
-                anyhow::anyhow!("no HTTP-01 challenge available for domain {domain}")
-            })?;
-
-            let key_auth = challenge_handle.key_authorization();
-            let token = challenge_handle.token.clone();
-            our_tokens.push(token.clone());
-            challenges.insert(token, key_auth.as_str().to_owned());
-
-            challenge_handle
-                .set_ready()
+            // Poll the order until all challenges are validated and the order is ready.
+            order
+                .poll_ready(&retry)
                 .await
-                .context("set_challenge_ready failed")?;
-        }
-
-        // Poll the order until all challenges are validated and the order is ready.
-        order
-            .poll_ready(&retry)
-            .await
-            .context("ACME order timed out waiting for challenge validation")?;
-        Ok(())
-    }
-    .await;
+                .context("ACME order timed out waiting for challenge validation")?;
+            Ok(())
+        })
+        .await;
 
     // Always shut down the temporary challenge server and clean up our
     // tokens, regardless of whether the flow above succeeded (#279).
@@ -400,155 +460,107 @@ async fn run_acme_order(
     // Finalize the order: instant-acme generates a fresh ECDSA key-pair and CSR
     // internally (via the `rcgen` feature), then sends the CSR to the CA.
     // Returns the private key as PEM.
-    let key_pem = order.finalize().await.context("ACME finalize failed")?;
+    let key_pem = bounded("ACME finalize", STEP_TIMEOUT, async {
+        order.finalize().await.map_err(anyhow::Error::new)
+    })
+    .await
+    .context("ACME finalize failed")?;
 
     // Retrieve the issued certificate chain (polls until the CA makes it available).
-    let cert_chain_pem = order
-        .poll_certificate(&retry)
-        .await
-        .context("ACME certificate fetch failed")?;
+    let cert_chain_pem = bounded("ACME certificate fetch", STEP_TIMEOUT, async {
+        order
+            .poll_certificate(&retry)
+            .await
+            .map_err(anyhow::Error::new)
+    })
+    .await
+    .context("ACME certificate fetch failed")?;
 
     Ok((cert_chain_pem, key_pem))
 }
 
-/// Create an [`instant_acme::AccountBuilder`] with the appropriate TLS root
-/// certificate configuration.
-///
-/// When the environment variable `CONDUIT_ACME_EXTRA_ROOT` is set to a path,
-/// the file at that path is loaded as an additional trusted root CA (PEM
-/// format).  This is intended for CI environments that use test ACME servers
-/// such as [Pebble](https://github.com/letsencrypt/pebble) with self-signed
-/// certificates that are not in the system trust store.
-fn account_builder() -> anyhow::Result<instant_acme::AccountBuilder> {
-    if let Ok(ca_path) = std::env::var("CONDUIT_ACME_EXTRA_ROOT") {
-        tracing::debug!(
-            ca_path,
-            "using custom ACME root CA from CONDUIT_ACME_EXTRA_ROOT"
-        );
-        Account::builder_with_root(&ca_path)
-            .with_context(|| format!("loading custom ACME root CA from {ca_path:?}"))
-    } else {
-        Account::builder().context("failed to create ACME HTTP client")
-    }
-}
-
-/// FNV-1a, 64 bit: a hash that never changes between Rust versions (`DefaultHasher` may), for a file name.
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
-/// Refuse a credentials file that records another CA's directory than the one asked for. instant-acme sends orders
-/// to the directory stored in the credentials, so a file reached through a name collision (or copied by hand) would
-/// silently send them to the wrong CA (issue #555).
-fn check_recorded_directory(json: &str, directory_url: &str, path: &Path) -> anyhow::Result<()> {
-    let recorded = serde_json::from_str::<serde_json::Value>(json)
-        .ok()
-        .and_then(|v| {
-            v.get("directory")
-                .and_then(|d| d.as_str())
-                .map(str::to_owned)
-        });
-    match recorded {
-        Some(dir) if dir != directory_url => anyhow::bail!(
-            "ACME account file {path:?} belongs to the directory {dir}, not {directory_url}; move the file away so \
-             that an account is created for this directory"
-        ),
-        _ => Ok(()),
-    }
-}
-
-/// Where the account for `directory_url` is kept (issue #555). `acme_account.json` is the account of the CA it was created
-/// for (the credentials record the directory URL); another directory, such as production after staging, gets its own
-/// file instead of being tried against the first CA's account. A file with no recorded directory (an older version's)
-/// is used as before.
-fn account_credentials_path(storage: &Path, directory_url: &str) -> PathBuf {
-    let default = storage.join("acme_account.json");
-    let recorded = std::fs::read_to_string(&default)
-        .ok()
-        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
-        .and_then(|v| {
-            v.get("directory")
-                .and_then(|d| d.as_str())
-                .map(str::to_owned)
-        });
-    match recorded {
-        Some(dir) if dir != directory_url => {
-            // The slug only makes the name readable; the hash of the whole URL keeps two directories that slug alike
-            // (`https://a.b/dir`, `https://a_b/dir`, or one long shared prefix) apart.
-            let slug: String = directory_url
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .take(48)
-                .collect();
-            storage.join(format!(
-                "acme_account.{slug}.{:016x}.json",
-                fnv1a_64(directory_url.as_bytes())
-            ))
-        }
-        _ => default,
-    }
-}
-
-/// `true` when an account for `directory_url` is already stored. A check that may end in "nothing to do" (the ARI
-/// question of [`renewal`]) must not register a new account with the CA as a side effect.
-fn stored_account_exists(acme_cfg: &AcmeConfig, directory_url: &str) -> bool {
-    let storage = acme_cfg.storage.as_deref().unwrap_or("./certs");
-    account_credentials_path(Path::new(storage), directory_url).exists()
-}
-
-/// Load a persisted ACME account from `storage_dir/acme_account.json` (or the file of this directory, see
-/// [`account_credentials_path`]), or create a new one with the ACME server and persist the credentials.
-async fn load_or_create_account(
-    acme_cfg: &AcmeConfig,
-    directory_url: &str,
-) -> anyhow::Result<Account> {
-    let storage = acme_cfg.storage.as_deref().unwrap_or("./certs");
-    let creds_path = account_credentials_path(Path::new(storage), directory_url);
-
-    if creds_path.exists() {
-        let json = tokio::fs::read_to_string(&creds_path)
-            .await
-            .with_context(|| format!("reading ACME credentials from {creds_path:?}"))?;
-        check_recorded_directory(&json, directory_url, &creds_path)?;
-        let creds: AccountCredentials = serde_json::from_str(&json)
-            .with_context(|| format!("parsing ACME credentials in {creds_path:?}"))?;
-        let account = account_builder()?
-            .from_credentials(creds)
-            .await
-            .context("restoring ACME account from credentials failed")?;
-        tracing::debug!("ACME account restored from {creds_path:?}");
-        return Ok(account);
-    }
-
-    let (account, credentials) = account_builder()?
-        .create(
-            &NewAccount {
-                contact: &[&format!("mailto:{}", acme_cfg.email)],
-                terms_of_service_agreed: true,
-                only_return_existing: false,
-            },
-            directory_url.to_owned(),
-            None,
-        )
-        .await
-        .context("ACME account creation failed")?;
-
-    tokio::fs::create_dir_all(storage).await?;
-    let json = serde_json::to_string_pretty(&credentials)?;
-    // Owner-only permissions: this file holds the ACME account's private
-    // key material (issue #278).
-    write_secret_atomic(&creds_path, json.as_bytes())
-        .with_context(|| format!("saving ACME credentials to {creds_path:?}"))?;
-    tracing::info!("new ACME account created and saved to {creds_path:?}");
-
-    Ok(account)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::account::{account_credentials_path, check_recorded_directory};
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn only_a_refusal_of_the_link_by_the_ca_is_retried_without_replaces() {
+        let problem = |kind: &str, detail: &str| {
+            anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {
+                r#type: Some(format!("urn:ietf:params:acme:error:{kind}")),
+                detail: Some(detail.to_owned()),
+                status: Some(409),
+                subproblems: Vec::new(),
+            }))
+        };
+        // `alreadyReplaced` is about the link whatever the detail says
+        assert!(may_retry_without_replaces(&problem(
+            "alreadyReplaced",
+            "gone"
+        )));
+        // `malformed` and `unauthorized` count only when the detail names the `replaces` field
+        for kind in ["malformed", "unauthorized"] {
+            for detail in [
+                "invalid `Replaces` value",
+                "not the account that requested the certificate being replaced",
+                "the replacement certificate does not match",
+            ] {
+                assert!(
+                    may_retry_without_replaces(&problem(kind, detail)),
+                    "{kind}: {detail}"
+                );
+            }
+            assert!(
+                !may_retry_without_replaces(&problem(kind, "account is deactivated")),
+                "{kind}"
+            );
+        }
+        // the refusal keeps counting through added context
+        assert!(may_retry_without_replaces(
+            &problem("alreadyReplaced", "gone").context("new-order")
+        ));
+        // a problem that says nothing about the link is not a reason to order again at once
+        for kind in [
+            "rateLimited",
+            "serverInternal",
+            "badNonce",
+            "rejectedIdentifier",
+        ] {
+            assert!(
+                !may_retry_without_replaces(&problem(kind, "replaces")),
+                "{kind}"
+            );
+        }
+        // a problem without a type, or with a type from another namespace, is not one of the refusals either
+        let untyped = anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {
+            r#type: None,
+            detail: None,
+            status: Some(409),
+            subproblems: Vec::new(),
+        }));
+        assert!(!may_retry_without_replaces(&untyped));
+        let foreign = anyhow::Error::new(instant_acme::Error::Api(instant_acme::Problem {
+            r#type: Some("urn:example:alreadyReplaced".to_owned()),
+            detail: None,
+            status: Some(409),
+            subproblems: Vec::new(),
+        }));
+        assert!(!may_retry_without_replaces(&foreign));
+
+        // a timeout, a transport failure or any other error does not say the CA refused anything
+        let timed_out = bounded::<()>("ACME new-order request", Duration::from_secs(60), async {
+            std::future::pending().await
+        })
+        .await
+        .expect_err("never finishes");
+        assert!(timed_out.to_string().contains("timed out"));
+        assert!(!may_retry_without_replaces(&timed_out));
+        assert!(!may_retry_without_replaces(&anyhow::Error::new(
+            instant_acme::Error::Str("connection reset")
+        )));
+        assert!(!may_retry_without_replaces(&anyhow::anyhow!("other")));
+    }
 
     #[test]
     fn directories_that_slug_alike_get_different_account_files() {

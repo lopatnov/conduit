@@ -3,7 +3,7 @@
 //! `newOrder` and which certificate identifiers were asked about, so a test can assert on the wire.
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// What the mock CA does with a renewal-information request.
@@ -32,6 +32,12 @@ pub(super) struct MockCa {
     pub seen: Arc<Mutex<Seen>>,
     /// While set, a request for the directory is accepted and never answered.
     pub hang_directory: Arc<AtomicBool>,
+    /// While set, a `newOrder` request is accepted and never answered.
+    pub hang_new_order: Arc<AtomicBool>,
+    /// How many `newOrder` requests were accepted and left unanswered because of `hang_new_order`.
+    pub hung_new_orders: Arc<AtomicUsize>,
+    /// The `Retry-After` (seconds) of every renewal-information answer; 6 hours until a test sets it.
+    pub retry_after_secs: Arc<AtomicU64>,
 }
 
 fn rfc3339(secs: i64) -> String {
@@ -146,6 +152,7 @@ fn answer(
     base: &str,
     ari: &Ari,
     seen: &Mutex<Seen>,
+    retry_after_secs: u64,
     method: &str,
     path: &str,
     body: &str,
@@ -182,7 +189,7 @@ fn answer(
             (
                 "400 Bad Request",
                 format!("Content-Type: application/problem+json\r\n{nonce}"),
-                r#"{"type":"urn:ietf:params:acme:error:malformed","detail":"the mock CA issues nothing"}"#
+                r#"{"type":"urn:ietf:params:acme:error:malformed","detail":"the mock CA issues nothing and does not know the replaces certificate"}"#
                     .to_owned(),
             )
         }
@@ -194,7 +201,7 @@ fn answer(
             match ari {
                 Ari::Window { start, end } => (
                     "200 OK",
-                    format!("{json}Retry-After: 21600\r\n"),
+                    format!("{json}Retry-After: {retry_after_secs}\r\n"),
                     serde_json::json!({
                         "suggestedWindow": {"start": rfc3339(*start), "end": rfc3339(*end)}
                     })
@@ -221,13 +228,18 @@ impl MockCa {
         let base = format!("https://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Seen::default()));
         let hang = Arc::new(AtomicBool::new(false));
-        let (b, s, h) = (base.clone(), seen.clone(), hang.clone());
+        let hang_order = Arc::new(AtomicBool::new(false));
+        let hung_orders = Arc::new(AtomicUsize::new(0));
+        let hu = hung_orders.clone();
+        let retry_after = Arc::new(AtomicU64::new(21_600));
+        let (b, s, h, ho) = (base.clone(), seen.clone(), hang.clone(), hang_order.clone());
+        let ra = retry_after.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
                 let (base, ari, seen, config) =
                     (b.clone(), ari.clone(), s.clone(), tls.config.clone());
-                let hang = h.clone();
+                let (hang, hang_order, ra, hu) = (h.clone(), ho.clone(), ra.clone(), hu.clone());
                 std::thread::spawn(move || {
                     let Ok(conn) = rustls::ServerConnection::new(config) else {
                         return;
@@ -236,11 +248,24 @@ impl MockCa {
                     let Some((method, path, body)) = read_request(&mut stream) else {
                         return;
                     };
-                    if path == "/directory" && hang.load(Ordering::SeqCst) {
+                    let hang_this = (path == "/directory" && hang.load(Ordering::SeqCst))
+                        || (path == "/new-order" && hang_order.load(Ordering::SeqCst));
+                    if hang_this {
+                        if path == "/new-order" {
+                            hu.fetch_add(1, Ordering::SeqCst);
+                        }
                         std::thread::sleep(std::time::Duration::from_secs(3600));
                         return;
                     }
-                    let response = answer(&base, &ari, &seen, &method, &path, &body);
+                    let response = answer(
+                        &base,
+                        &ari,
+                        &seen,
+                        ra.load(Ordering::SeqCst),
+                        &method,
+                        &path,
+                        &body,
+                    );
                     let _ = stream.write_all(response.as_bytes());
                     stream.conn.send_close_notify();
                     let _ = stream.flush();
@@ -251,6 +276,9 @@ impl MockCa {
             directory_url: format!("{base}/directory"),
             seen,
             hang_directory: hang,
+            hang_new_order: hang_order,
+            hung_new_orders: hung_orders,
+            retry_after_secs: retry_after,
         }
     }
 }

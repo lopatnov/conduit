@@ -23,6 +23,11 @@ const ASK_TIMEOUT: Duration = Duration::from_secs(15);
 /// connection and never answers would block the sequential renewal loop, and every other certificate with it.
 pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The CA's `Retry-After` is the earliest it wants to be asked again (RFC 9773 section 4.3.2). Clamped so that a
+/// careless value (seconds, years) can neither make the loop hammer the CA nor silence the check.
+const MIN_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(24 * 3600);
+
 /// What the CA said about one certificate.
 pub(super) struct Advice {
     /// The identifier of the certificate, to send as `replaces` with the order that renews it (RFC 9773 section 5),
@@ -30,6 +35,8 @@ pub(super) struct Advice {
     pub id: CertificateIdentifier<'static>,
     /// The suggested window asks for a renewal now (see [`window_says_renew`]).
     pub renew_now: bool,
+    /// When to ask again, from the CA's `Retry-After` and clamped to 5 minutes .. 24 hours.
+    pub ask_again_in: Duration,
 }
 
 /// base64url without padding (RFC 4648 section 5), the encoding of a certificate identifier.
@@ -77,7 +84,8 @@ pub(super) fn certificate_identifier(cert_pem: &str) -> Option<CertificateIdenti
 /// them, so the point is derived from `seed` (a hash of the certificate's serial): the same certificate gets the same
 /// point on every check and in every process, different certificates get different ones. A window that would close
 /// before the next check (`interval_secs` away) counts as open, so it is never missed by a check landing after it.
-/// An inverted window is no advice.
+/// An empty or inverted window (`end <= start`) is no advice: RFC 9773 section 4.2 requires the end to come after the
+/// start, and a CA that sends otherwise is not to be trusted with the timing.
 pub(super) fn window_says_renew(
     start: i64,
     end: i64,
@@ -85,7 +93,7 @@ pub(super) fn window_says_renew(
     now: i64,
     interval_secs: i64,
 ) -> bool {
-    if end < start {
+    if end <= start {
         return false;
     }
     let span = end.saturating_sub(start) as u64 + 1;
@@ -94,24 +102,29 @@ pub(super) fn window_says_renew(
 }
 
 /// Ask the CA what it thinks of `cert_pem`. `None` when there is no usable answer (the directory has no ARI, the
-/// request failed or timed out, the certificate has no identifier): the caller then relies on the lifetime rule.
-pub(super) async fn advice(
-    account: &Account,
-    cert_pem: &str,
-    now: i64,
-    interval_secs: i64,
-) -> Option<Advice> {
+/// request failed or timed out, the window is invalid, the certificate has no identifier): the caller then relies on
+/// the lifetime rule.
+pub(super) async fn advice(account: &Account, cert_pem: &str, now: i64) -> Option<Advice> {
     let id = certificate_identifier(cert_pem)?;
     let seed = super::fnv1a_64(id.serial.as_bytes());
     match tokio::time::timeout(ASK_TIMEOUT, account.renewal_info(&id)).await {
-        Ok(Ok((info, _retry_after))) => {
+        Ok(Ok((info, retry_after))) => {
             let window = info.suggested_window;
+            let (start, end) = (window.start.unix_timestamp(), window.end.unix_timestamp());
+            if end <= start {
+                tracing::warn!(
+                    "ACME renewal information has an empty or inverted window — ignored"
+                );
+                return None;
+            }
+            let ask_again_in = retry_after.clamp(MIN_RETRY_AFTER, MAX_RETRY_AFTER);
+            // a window that closes before the CA wants to be asked again counts as open
             let renew_now = window_says_renew(
-                window.start.unix_timestamp(),
-                window.end.unix_timestamp(),
+                start,
+                end,
                 seed,
                 now,
-                interval_secs,
+                i64::try_from(ask_again_in.as_secs()).unwrap_or(i64::MAX),
             );
             tracing::debug!(
                 window_start = %window.start,
@@ -120,7 +133,11 @@ pub(super) async fn advice(
                 explanation = info.explanation_url.as_deref().unwrap_or(""),
                 "ACME renewal information"
             );
-            Some(Advice { id, renew_now })
+            Some(Advice {
+                id,
+                renew_now,
+                ask_again_in,
+            })
         }
         Ok(Err(instant_acme::Error::Unsupported(_))) => {
             tracing::debug!("the ACME server does not offer renewal information (ARI)");
@@ -216,8 +233,10 @@ mod tests {
         let interval = 12 * 3600;
         assert!(window_says_renew(100, 200, 7, 10_000, interval));
         assert!(!window_says_renew(200, 100, 7, 10_000, interval));
-        // a one-second window
-        assert!(window_says_renew(500, 500, 9, 500, interval));
+        // an empty window (RFC 9773 section 4.2: the end comes after the start) is no advice either
+        assert!(!window_says_renew(500, 500, 9, 500, interval));
+        // the shortest valid window
+        assert!(window_says_renew(500, 501, 9, 501, interval));
     }
 
     fn pem_with_aki() -> (String, Vec<u8>) {

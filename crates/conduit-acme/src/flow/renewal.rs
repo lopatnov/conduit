@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::Context;
 use dashmap::DashMap;
 use tokio::sync::watch;
-use tokio::time::{Instant, MissedTickBehavior};
+use tokio::time::Instant;
 
 use super::{
     ari, cache_state, load_or_create_account, load_or_obtain_with, pair_paths,
@@ -24,10 +24,8 @@ use super::{
 };
 use crate::config::AcmeConfig;
 
-/// How often the certificates are checked.
+/// How often the certificates are checked at most; a CA's ARI `Retry-After` can bring the next check earlier.
 const CHECK_INTERVAL: Duration = Duration::from_secs(12 * 3600);
-/// [`CHECK_INTERVAL`] in seconds: a renewal window that closes before the next check is treated as open now.
-pub(super) const CHECK_INTERVAL_SECS: i64 = 12 * 3600;
 
 /// One certificate to keep fresh.
 #[derive(Debug, Clone)]
@@ -50,6 +48,17 @@ pub async fn renew_if_due(
     job: &RenewalJob,
     challenges: &Arc<DashMap<String, String>>,
 ) -> anyhow::Result<Option<AcmeCertPaths>> {
+    renew_scheduled(job, challenges, &mut None).await
+}
+
+/// [`renew_if_due`] that honours the CA's wish about when to be asked again: `ask_ca_at` is the earliest moment the
+/// CA wants another renewal-information request for this certificate (RFC 9773 section 4.3.2). Before it the CA is not
+/// asked; the lifetime rule is still checked, it costs nothing. A probe without usable advice leaves it `None`.
+async fn renew_scheduled(
+    job: &RenewalJob,
+    challenges: &Arc<DashMap<String, String>>,
+    ask_ca_at: &mut Option<Instant>,
+) -> anyhow::Result<Option<AcmeCertPaths>> {
     let (cert_path, key_path) = pair_paths(&job.storage_dir, &job.domain)
         .with_context(|| format!("invalid ACME domain for site host {:?}", job.domain))?;
     let cert = tokio::fs::read_to_string(&cert_path).await.ok();
@@ -57,7 +66,12 @@ pub async fn renew_if_due(
     let mut forced = false;
     if cache_state(cert.as_deref(), key.as_deref()) == CacheState::Reusable {
         // Not due by the lifetime rule: the CA may still want it renewed earlier (RFC 9773, issue #594).
-        if !ca_asks_for_renewal(job, cert.as_deref().unwrap_or_default()).await {
+        if ask_ca_at.is_some_and(|at| Instant::now() < at) {
+            return Ok(None);
+        }
+        let advice = ca_advice(job, cert.as_deref().unwrap_or_default()).await;
+        *ask_ca_at = advice.as_ref().map(|a| Instant::now() + a.ask_again_in);
+        if !advice.is_some_and(|a| a.renew_now) {
             return Ok(None);
         }
         forced = true;
@@ -72,13 +86,16 @@ pub async fn renew_if_due(
         job.source,
         forced,
     )
-    .await?;
-    Ok(Some(paths))
+    .await;
+    // A new certificate: what the CA said about the old one no longer applies. A failed order: ask again at the next
+    // check, as without ARI, not only when the CA's hint runs out (it can be a day away).
+    *ask_ca_at = None;
+    Ok(Some(paths?))
 }
 
-/// `true` when the CA's renewal information (ARI) says `cert_pem` should be renewed now. Any failure, including a
-/// directory without ARI and an account that cannot be restored, is `false`: the lifetime rule decides alone.
-async fn ca_asks_for_renewal(job: &RenewalJob, cert_pem: &str) -> bool {
+/// The CA's renewal information (ARI) for `cert_pem`. Any failure, including a directory without ARI and an account
+/// that cannot be restored, is `None`: the lifetime rule decides alone.
+async fn ca_advice(job: &RenewalJob, cert_pem: &str) -> Option<ari::Advice> {
     let directory_url = job
         .acme
         .directory
@@ -86,19 +103,17 @@ async fn ca_asks_for_renewal(job: &RenewalJob, cert_pem: &str) -> bool {
         .unwrap_or_else(|| instant_acme::LetsEncrypt::Production.url());
     if !stored_account_exists(&job.acme, directory_url) {
         // No account yet: the first order creates it. Asking about a certificate that is not due must not.
-        return false;
+        return None;
     }
     let probe = async {
         let account = match load_or_create_account(&job.acme, directory_url).await {
             Ok(account) => account,
             Err(e) => {
                 tracing::warn!(domain = job.domain, error = %e, "cannot ask the CA for renewal information");
-                return false;
+                return None;
             }
         };
-        ari::advice(&account, cert_pem, unix_now(), CHECK_INTERVAL_SECS)
-            .await
-            .is_some_and(|a| a.renew_now)
+        ari::advice(&account, cert_pem, unix_now()).await
     };
     tokio::time::timeout(ari::PROBE_TIMEOUT, probe)
         .await
@@ -107,11 +122,12 @@ async fn ca_asks_for_renewal(job: &RenewalJob, cert_pem: &str) -> bool {
                 domain = job.domain,
                 "the CA did not answer the renewal information probe in time"
             );
-            false
+            None
         })
 }
 
-/// Check every certificate every 12 hours until `shutdown` fires.
+/// Check every certificate every 12 hours until `shutdown` fires; sooner when a CA's renewal information
+/// (`Retry-After`) asks to be consulted again earlier, never more often than every 5 minutes.
 ///
 /// The first check is one interval after start: startup issuance has just run
 /// the same check, and an immediate second order for a site whose issuance
@@ -124,6 +140,67 @@ pub async fn run_renewal_loop(
     run_loop(jobs, challenges, shutdown, CHECK_INTERVAL).await;
 }
 
+/// What the loop knows about one job between checks.
+#[derive(Clone, Copy)]
+struct JobState {
+    /// Not checked before this moment: `period` after the last check, or earlier when the CA's hint asks for it.
+    next_check: Instant,
+    /// The earliest moment the CA wants to be asked about the certificate again.
+    ask_ca_at: Option<Instant>,
+}
+
+impl JobState {
+    fn new(now: Instant, period: Duration) -> Self {
+        Self {
+            next_check: now + period,
+            ask_ca_at: None,
+        }
+    }
+
+    /// Schedule the next check after one that ran at `now`: `period` away, or sooner when the CA wants to be asked
+    /// again before that. A job without a hint (no ARI, an error, a failed order) waits the full period, whatever
+    /// the other jobs do.
+    fn checked(&mut self, now: Instant, period: Duration) {
+        let wait = self
+            .ask_ca_at
+            .map_or(period, |at| at.saturating_duration_since(now).min(period));
+        self.next_check = now + wait;
+    }
+}
+
+/// Run the jobs that are due at `now`, and only those. `false` when `shutdown` fired meanwhile.
+async fn check_due(
+    jobs: &[RenewalJob],
+    challenges: &Arc<DashMap<String, String>>,
+    states: &mut [JobState],
+    period: Duration,
+    now: Instant,
+    shutdown: &mut watch::Receiver<bool>,
+) -> bool {
+    for (job, state) in jobs.iter().zip(states.iter_mut()) {
+        if state.next_check > now {
+            continue;
+        }
+        tokio::select! {
+            _ = shutdown.changed() => return false,
+            result = renew_scheduled(job, challenges, &mut state.ask_ca_at) => match result {
+                Ok(Some(_)) => tracing::info!(
+                    domain = job.domain,
+                    "ACME certificate renewed — it takes effect at the next restart"
+                ),
+                Ok(None) => {}
+                Err(e) => tracing::error!(
+                    domain = job.domain,
+                    error = %e,
+                    "ACME certificate renewal failed"
+                ),
+            },
+        }
+        state.checked(Instant::now(), period);
+    }
+    true
+}
+
 async fn run_loop(
     jobs: Vec<RenewalJob>,
     challenges: Arc<DashMap<String, String>>,
@@ -133,30 +210,29 @@ async fn run_loop(
     if jobs.is_empty() {
         return;
     }
-    let mut ticker = tokio::time::interval_at(Instant::now() + period, period);
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut states = vec![JobState::new(Instant::now(), period); jobs.len()];
 
     loop {
+        let wake_at = states
+            .iter()
+            .map(|s| s.next_check)
+            .min()
+            .unwrap_or_else(|| Instant::now() + period);
         tokio::select! {
             _ = shutdown.changed() => return,
-            _ = ticker.tick() => {}
+            _ = tokio::time::sleep_until(wake_at) => {}
         }
-        for job in &jobs {
-            tokio::select! {
-                _ = shutdown.changed() => return,
-                result = renew_if_due(job, &challenges) => match result {
-                    Ok(Some(_)) => tracing::info!(
-                        domain = job.domain,
-                        "ACME certificate renewed — it takes effect at the next restart"
-                    ),
-                    Ok(None) => {}
-                    Err(e) => tracing::error!(
-                        domain = job.domain,
-                        error = %e,
-                        "ACME certificate renewal failed"
-                    ),
-                },
-            }
+        if !check_due(
+            &jobs,
+            &challenges,
+            &mut states,
+            period,
+            Instant::now(),
+            &mut shutdown,
+        )
+        .await
+        {
+            return;
         }
     }
 }
@@ -536,6 +612,238 @@ mod tests {
         assert!(
             matches!(result, Ok(None)),
             "no advice means the lifetime rule decides: nothing to do"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ca_that_never_answers_an_order_is_an_error_not_a_stuck_loop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 75); // due by the lifetime rule
+        let ca = MockCa::start(Ari::Absent).await;
+        let job = job_for(dir.path(), &ca).await;
+        ca.hang_new_order
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let before = std::fs::read(dir.path().join("example.com.key.pem")).unwrap();
+
+        // Real time until the order has reached the silent `newOrder` (the account and directory requests before it
+        // go over real sockets, and a paused clock would jump past their timeouts while they are in flight); virtual
+        // time from there, so the 60 s limit costs nothing.
+        let task = tokio::spawn({
+            let job = job.clone();
+            async move { renew(&job).await }
+        });
+        for _ in 0..1000 {
+            if ca.hung_new_orders.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            ca.hung_new_orders.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the order reached newOrder"
+        );
+        tokio::time::pause();
+        let err = tokio::time::timeout(Duration::from_secs(600), task)
+            .await
+            .expect("the order must give up by itself, well before the outer limit")
+            .unwrap()
+            .expect_err("a silent CA is an error");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("new-order request") && message.contains("timed out"),
+            "the newOrder step is the one that timed out, got: {message}"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("example.com.key.pem")).unwrap(),
+            before,
+            "the cached pair is untouched"
+        );
+    }
+
+    #[test]
+    fn a_job_is_checked_again_after_the_period_or_after_the_hint_if_that_is_sooner() {
+        let now = Instant::now();
+        let period = Duration::from_secs(12 * 3600);
+        let after = |ask: Option<Instant>| {
+            let mut state = JobState::new(now, period);
+            state.ask_ca_at = ask;
+            state.checked(now, period);
+            state.next_check
+        };
+        assert_eq!(after(None), now + period);
+        // a hint beyond the period does not postpone the check
+        assert_eq!(
+            after(Some(now + Duration::from_secs(30 * 3600))),
+            now + period
+        );
+        assert_eq!(
+            after(Some(now + Duration::from_secs(3600))),
+            now + Duration::from_secs(3600)
+        );
+        // a hint already due: due again at once
+        assert_eq!(after(Some(now)), now);
+    }
+
+    #[tokio::test]
+    async fn one_cas_short_hint_does_not_bring_forward_the_check_of_the_other_jobs() {
+        // Job A's CA asks to be consulted again in 5 minutes; job B is due and its order keeps failing. B must be
+        // retried after the period, not at A's cadence (every retry is a full order against the CA's limits).
+        let (dir_a, dir_b) = (
+            tempfile::TempDir::new().unwrap(),
+            tempfile::TempDir::new().unwrap(),
+        );
+        issued_pair(dir_a.path(), 10);
+        issued_pair(dir_b.path(), 75); // due by the lifetime rule
+        let ca_a = MockCa::start(Ari::Window {
+            start: now() + 20 * 86_400,
+            end: now() + 21 * 86_400,
+        })
+        .await;
+        ca_a.retry_after_secs
+            .store(300, std::sync::atomic::Ordering::SeqCst);
+        let ca_b = MockCa::start(Ari::Absent).await;
+        let jobs = vec![
+            job_for(dir_a.path(), &ca_a).await,
+            job_for(dir_b.path(), &ca_b).await,
+        ];
+        let challenges = Arc::new(DashMap::new());
+        let period = Duration::from_secs(12 * 3600);
+        let start = Instant::now();
+        let mut states = vec![JobState::new(start, period); 2];
+        states.iter_mut().for_each(|s| s.next_check = start); // both due now
+        let (_tx, mut rx) = watch::channel(false);
+
+        assert!(check_due(&jobs, &challenges, &mut states, period, start, &mut rx).await);
+        assert_eq!(ca_b.seen.lock().unwrap().orders.len(), 1, "B was tried");
+        let a_next = states[0].next_check.saturating_duration_since(start);
+        assert!(
+            (290..=300).contains(&a_next.as_secs()),
+            "A is due again in about 5 minutes, got {a_next:?}"
+        );
+        assert!(states[1].next_check >= start + period - Duration::from_secs(5));
+
+        // A's hint ran out; B's did not exist, B is not due
+        let later = start + Duration::from_secs(301);
+        assert!(check_due(&jobs, &challenges, &mut states, period, later, &mut rx).await);
+        assert_eq!(
+            ca_b.seen.lock().unwrap().orders.len(),
+            1,
+            "B is not retried at A's cadence"
+        );
+
+        // after the period B is due again
+        let much_later = start + period + Duration::from_secs(10);
+        assert!(check_due(&jobs, &challenges, &mut states, period, much_later, &mut rx).await);
+        assert_eq!(ca_b.seen.lock().unwrap().orders.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_ca_is_not_asked_again_before_its_retry_after() {
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 10);
+        let ca = MockCa::start(Ari::Window {
+            start: now() + 20 * 86_400,
+            end: now() + 21 * 86_400,
+        })
+        .await;
+        ca.retry_after_secs
+            .store(3600, std::sync::atomic::Ordering::SeqCst);
+        let job = job_for(dir.path(), &ca).await;
+        let challenges = Arc::new(DashMap::new());
+        let mut ask_ca_at = None;
+
+        assert!(matches!(
+            renew_scheduled(&job, &challenges, &mut ask_ca_at).await,
+            Ok(None)
+        ));
+        let at = ask_ca_at.expect("the CA's Retry-After is remembered");
+        let in_secs = at.saturating_duration_since(Instant::now()).as_secs();
+        assert!((3500..=3600).contains(&in_secs), "got {in_secs}s");
+        assert_eq!(ca.seen.lock().unwrap().ari_ids.len(), 1);
+
+        // a check before the hint runs out does not ask again
+        assert!(matches!(
+            renew_scheduled(&job, &challenges, &mut ask_ca_at).await,
+            Ok(None)
+        ));
+        assert_eq!(ca.seen.lock().unwrap().ari_ids.len(), 1, "not asked again");
+
+        // the hint ran out: asked again
+        ask_ca_at = Some(Instant::now());
+        assert!(matches!(
+            renew_scheduled(&job, &challenges, &mut ask_ca_at).await,
+            Ok(None)
+        ));
+        assert_eq!(ca.seen.lock().unwrap().ari_ids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_retry_after_is_kept_within_five_minutes_and_a_day() {
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 10);
+        let ca = MockCa::start(Ari::Window {
+            start: now() + 20 * 86_400,
+            end: now() + 21 * 86_400,
+        })
+        .await;
+        let job = job_for(dir.path(), &ca).await;
+        let challenges = Arc::new(DashMap::new());
+        for (hint, low, high) in [(1, 295, 300), (10 * 86_400, 86_395, 86_400)] {
+            ca.retry_after_secs
+                .store(hint, std::sync::atomic::Ordering::SeqCst);
+            let mut ask_ca_at = None;
+            renew_scheduled(&job, &challenges, &mut ask_ca_at)
+                .await
+                .unwrap();
+            let secs = ask_ca_at
+                .expect("remembered")
+                .saturating_duration_since(Instant::now())
+                .as_secs();
+            assert!((low..=high).contains(&secs), "hint {hint}s gave {secs}s");
+        }
+    }
+
+    #[tokio::test]
+    async fn without_usable_advice_the_ca_is_asked_at_every_check() {
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 10);
+        let ca = MockCa::start(Ari::Broken).await;
+        let job = job_for(dir.path(), &ca).await;
+        let mut ask_ca_at = None;
+        for _ in 0..2 {
+            assert!(matches!(
+                renew_scheduled(&job, &Arc::new(DashMap::new()), &mut ask_ca_at).await,
+                Ok(None)
+            ));
+        }
+        assert!(ask_ca_at.is_none(), "an error is no hint to wait for");
+        assert_eq!(ca.seen.lock().unwrap().ari_ids.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_failed_renewal_is_retried_at_the_next_check_not_after_the_hint() {
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 10);
+        let ca = MockCa::start(Ari::Window {
+            start: now() - 7200,
+            end: now() - 3600,
+        })
+        .await;
+        ca.retry_after_secs
+            .store(86_400, std::sync::atomic::Ordering::SeqCst);
+        let job = job_for(dir.path(), &ca).await;
+        let mut ask_ca_at = None;
+
+        // the window is open, so an order is placed, and the mock CA refuses it
+        assert!(
+            renew_scheduled(&job, &Arc::new(DashMap::new()), &mut ask_ca_at)
+                .await
+                .is_err()
+        );
+        assert!(
+            ask_ca_at.is_none(),
+            "the next check asks again; the day-long hint must not delay the retry"
         );
     }
 }
