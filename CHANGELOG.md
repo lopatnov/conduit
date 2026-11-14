@@ -13,6 +13,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unset means "when the site has `tls`"; `maxAgeSecs` unset is a session cookie, `0` is rejected (#644).
 - `sticky.sameSite` (`lax`, the default, `strict` or `none`): the `SameSite` of that cookie. `none` always adds `Secure`
   (browsers refuse it otherwise) and `secure: false` together with it is a validation error (#644).
+- ACME renewal follows the CA's renewal information (ARI, RFC 9773): the 12-hour check asks the CA for the renewal window of
+  each certificate and renews inside it, earlier than the lifetime rule when the CA says so and never later; the renewal
+  order names the certificate it replaces (`replaces`, which Let's Encrypt exempts from its rate limits). No ARI, an
+  unreachable CA or an invalid window changes nothing. Tests run against a mock CA (#594).
 
 ### Changed
 

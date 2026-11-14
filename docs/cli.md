@@ -789,7 +789,11 @@ Enables `tls.acme` site config for automatic certificate provisioning via the
 ACME protocol (Let's Encrypt). Certificates are fetched at startup and cached
 to disk. A background task checks every 12 hours and renews the certificate
 when no more than a third of its lifetime is left, and never later than 30 days before expiry (30 days for a
-90-day certificate, 21 for a 64-day one, 15 for a 45-day one). The renewed files are written to the
+90-day certificate, 21 for a 64-day one, 15 for a 45-day one). If the CA supports ACME Renewal Information (ARI,
+RFC 9773, Let's Encrypt does) the same check also asks it for the renewal window of the certificate and renews inside
+it, which can be earlier than the rule above (for example after a mass revocation) and never later; the renewal order
+then names the certificate it replaces (`replaces`), which Let's Encrypt exempts from its rate limits. A CA without ARI,
+an unreachable CA or a failed ARI request changes nothing: the rule above decides. The renewed files are written to the
 storage directory, but the running process keeps serving the certificate it
 loaded at startup — **restart Conduit within that window** (any restart
 or deploy does it) so the new certificate is picked up before the old one

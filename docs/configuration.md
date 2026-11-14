@@ -430,7 +430,7 @@ no `/`, `\`, `..`, empty label or other character. A leading `*.` is accepted, b
 validating over HTTP-01, the only challenge Conduit implements, normally refuses wildcards.
 
 A background task renews the certificate on disk when no more than a third of its lifetime is left, and never
-later than 30 days before expiry (30 days for a 90-day certificate, 21 for a 64-day one, 15 for a 45-day one); the running process keeps serving the one it loaded, so restart Conduit
+later than 30 days before expiry (30 days for a 90-day certificate, 21 for a 64-day one, 15 for a 45-day one), or earlier when the CA's ACME Renewal Information (RFC 9773) asks for it; the running process keeps serving the one it loaded, so restart Conduit
 within that window (with `profile: shortlived`, a certificate of about 6 days, that window is 2 days: restart at least every day or two, or the process serves an expired certificate). Details: [`acme` in the CLI reference](cli.md#acme--auto-tls--lets-encrypt).
 
 The account with the CA is kept in `<storage>/acme_account.json`, which records the directory URL it was created for.

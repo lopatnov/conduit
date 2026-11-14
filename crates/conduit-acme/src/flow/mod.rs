@@ -19,7 +19,10 @@ use instant_acme::{
 
 use crate::config::AcmeConfig;
 
+mod ari;
 mod http01;
+#[cfg(test)]
+mod mock_ca;
 mod renewal;
 mod storage;
 
@@ -147,6 +150,7 @@ pub async fn load_or_obtain_certificate(
         challenges,
         storage_dir,
         ChallengeSource::Bind(http_challenge_port),
+        false,
     )
     .await;
 
@@ -189,13 +193,15 @@ fn cached_pair_is_valid_now(cert_pem: Option<&str>, key_pem: Option<&str>) -> bo
     }
 }
 
-/// [`load_or_obtain_certificate`] with an explicit [`ChallengeSource`].
+/// [`load_or_obtain_certificate`] with an explicit [`ChallengeSource`]. `force` orders a new certificate although the
+/// cached one is not due by the lifetime rule: the CA's renewal information (ARI, see [`ari`]) asked for it.
 async fn load_or_obtain_with(
     acme_cfg: &AcmeConfig,
     domain: &str,
     challenges: Arc<DashMap<String, String>>,
     storage_dir: &Path,
     challenge_source: ChallengeSource,
+    force: bool,
 ) -> anyhow::Result<AcmeCertPaths> {
     // Check the name before touching the disk: an invalid host must not even create the directory.
     let (cert_path, key_path) = pair_paths(storage_dir, domain)
@@ -210,19 +216,26 @@ async fn load_or_obtain_with(
     // renames of a previous write (or a hand-edited file) can leave a
     // mismatched pair, which Pingora's rustls setup would turn into a panic
     // at start; re-ordering heals it instead.
+    // The certificate this order replaces, when there is a usable one (sent as `replaces` if the CA offers ARI).
+    let mut previous_cert: Option<String> = None;
     if cert_path.exists() && key_path.exists() {
         let cert_pem = tokio::fs::read_to_string(&cert_path).await.ok();
         let key_pem = tokio::fs::read_to_string(&key_path).await.ok();
         match cache_state(cert_pem.as_deref(), key_pem.as_deref()) {
-            CacheState::Reusable => {
+            CacheState::Reusable if !force => {
                 tracing::info!(domain, "reusing cached ACME certificate");
                 return Ok(AcmeCertPaths {
                     cert: cert_path,
                     key: key_path,
                 });
             }
+            CacheState::Reusable => {
+                tracing::info!(domain, "the CA asks for an early renewal (ARI) — renewing");
+                previous_cert = cert_pem;
+            }
             CacheState::Expiring => {
                 tracing::info!(domain, "ACME certificate expires soon — renewing");
+                previous_cert = cert_pem;
             }
             CacheState::Unusable => match key_pem.as_deref().and_then(unsupported_key_format) {
                 Some(format) => tracing::warn!(
@@ -249,8 +262,14 @@ async fn load_or_obtain_with(
     let pending = PendingPair::create(storage_dir, domain)
         .with_context(|| format!("preparing to write ACME files in {storage_dir:?}"))?;
 
-    let (cert_pem, key_pem) =
-        run_acme_order(acme_cfg, domain, &challenges, challenge_source).await?;
+    let (cert_pem, key_pem) = run_acme_order(
+        acme_cfg,
+        domain,
+        &challenges,
+        challenge_source,
+        previous_cert.as_deref(),
+    )
+    .await?;
 
     // Synchronous and cancellation-safe: both files are written, `fsync`ed
     // and renamed into place without an `.await` in between. The key is
@@ -265,12 +284,14 @@ async fn load_or_obtain_with(
     })
 }
 
-/// Run the complete ACME HTTP-01 flow and return `(cert_chain_pem, key_pem)`.
+/// Run the complete ACME HTTP-01 flow and return `(cert_chain_pem, key_pem)`. `previous_cert` is the certificate
+/// being replaced: when the CA offers ARI its identifier goes into the order as `replaces` (RFC 9773 section 5).
 async fn run_acme_order(
     acme_cfg: &AcmeConfig,
     domain: &str,
     challenges: &Arc<DashMap<String, String>>,
     challenge_source: ChallengeSource,
+    previous_cert: Option<&str>,
 ) -> anyhow::Result<(String, String)> {
     let directory_url = acme_cfg
         .directory
@@ -281,14 +302,36 @@ async fn run_acme_order(
     let account = load_or_create_account(acme_cfg, &directory_url).await?;
 
     let identifiers = [Identifier::Dns(domain.to_string())];
-    let new_order = match acme_cfg.profile.as_deref() {
-        Some(profile) => NewOrder::new(&identifiers).profile(profile),
-        None => NewOrder::new(&identifiers),
+    let build_order = |replaces: Option<instant_acme::CertificateIdentifier<'static>>| {
+        let mut order = match acme_cfg.profile.as_deref() {
+            Some(profile) => NewOrder::new(&identifiers).profile(profile),
+            None => NewOrder::new(&identifiers),
+        };
+        if let Some(id) = replaces {
+            order = order.replaces(id);
+        }
+        order
     };
-    let mut order = account
-        .new_order(&new_order)
-        .await
-        .context("ACME new-order request failed")?;
+    // Ask for the certificate being replaced only when the CA answers ARI for it (a CA without ARI refuses an order
+    // that names `replaces`). A CA may also refuse the link itself (RFC 9773 section 5: the certificate was already
+    // replaced, or is not ours to replace): the order is then tried once more without it.
+    let replaces = match previous_cert {
+        Some(pem) => ari::advice(&account, pem, unix_now(), renewal::CHECK_INTERVAL_SECS)
+            .await
+            .map(|a| a.id),
+        None => None,
+    };
+    let mut order = match account.new_order(&build_order(replaces.clone())).await {
+        Ok(order) => order,
+        Err(e) if replaces.is_some() => {
+            tracing::warn!(error = %e, "the CA refused the order that replaces the old certificate — ordering without it");
+            account
+                .new_order(&build_order(None))
+                .await
+                .context("ACME new-order request failed")?
+        }
+        Err(e) => return Err(anyhow::Error::new(e).context("ACME new-order request failed")),
+    };
 
     // `Bind`: take the per-port lock and bind the challenge port before
     // anything else, so a failure is an ACME error. `Shared`: a running
@@ -446,6 +489,13 @@ fn account_credentials_path(storage: &Path, directory_url: &str) -> PathBuf {
         }
         _ => default,
     }
+}
+
+/// `true` when an account for `directory_url` is already stored. A check that may end in "nothing to do" (the ARI
+/// question of [`renewal`]) must not register a new account with the CA as a side effect.
+fn stored_account_exists(acme_cfg: &AcmeConfig, directory_url: &str) -> bool {
+    let storage = acme_cfg.storage.as_deref().unwrap_or("./certs");
+    account_credentials_path(Path::new(storage), directory_url).exists()
 }
 
 /// Load a persisted ACME account from `storage_dir/acme_account.json` (or the file of this directory, see
