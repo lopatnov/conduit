@@ -128,10 +128,14 @@ mod tests {
     /// nobody opens the other end); it opens at once, and is not a regular file, so the caller turns it away.
     #[test]
     fn a_fifo_opens_at_once_instead_of_waiting_for_a_writer() {
-        use rustix::fs::{mknodat, FileType, Mode, CWD};
         let root = tempfile::tempdir().unwrap();
         let fifo = root.path().join("pipe");
-        mknodat(CWD, &fifo, FileType::Fifo, Mode::RUSR | Mode::WUSR, 0).unwrap();
+        // `mkfifo(1)`: `rustix::fs::mknodat` does not exist on macOS.
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
         let (tx, rx) = std::sync::mpsc::channel();
         let dir = root.path().to_owned();
         // A thread, so that a regression fails the test (a blocked open) instead of hanging it.

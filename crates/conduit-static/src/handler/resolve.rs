@@ -458,10 +458,14 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn open_served_treats_a_fifo_as_a_miss_without_waiting() {
-        use rustix::fs::{mknodat, FileType, Mode, CWD};
         let dir = tempfile::tempdir().unwrap();
         let fifo = dir.path().join("pipe");
-        mknodat(CWD, &fifo, FileType::Fifo, Mode::RUSR | Mode::WUSR, 0).unwrap();
+        // `mkfifo(1)`: `rustix::fs::mknodat` does not exist on macOS.
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
         let served = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             open_served(dir.path(), &fifo),
