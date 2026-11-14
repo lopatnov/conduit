@@ -131,6 +131,8 @@ name = sys.argv[1]
 SEEN = []
 class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    server_version = "who"
+    sys_version = ""
     def do_GET(self):
         code = 200
         if self.path == "/seen":
@@ -154,6 +156,7 @@ class H(http.server.BaseHTTPRequestHandler):
             code = int(self.path.rsplit("/", 1)[1])
         body = (name + "\n").encode()
         self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if self.command != "HEAD":
