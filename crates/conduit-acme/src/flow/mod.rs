@@ -30,10 +30,7 @@ mod storage;
 pub use http01::ChallengeSource;
 pub use renewal::{renew_if_due, run_renewal_loop, RenewalJob};
 
-use account::{
-    account_credentials_path, check_recorded_directory, fnv1a_64, load_or_create_account,
-    stored_account_exists,
-};
+use account::{fnv1a_64, load_or_create_account, stored_account_exists};
 use http01::ChallengeServer;
 use storage::{cached_pair_matches, pair_paths, unsupported_key_format, PendingPair};
 
@@ -454,6 +451,7 @@ async fn run_acme_order(
 
 #[cfg(test)]
 mod tests {
+    use super::account::{account_credentials_path, check_recorded_directory};
     use super::*;
 
     #[test]
