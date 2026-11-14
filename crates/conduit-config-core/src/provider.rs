@@ -554,8 +554,17 @@ mod tests {
             .unwrap()
             .unwrap();
 
+        // Let the watcher settle: on macOS FSEvents delivers events of the file's creation late, and each of them
+        // reloads the (valid) file and sends it again, which the assertion below would take for the invalid
+        // change being accepted. Drain until a quiet half second has passed (at most 5 s).
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline
+            && tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+                .await
+                .is_ok()
+        {}
+
         // Write invalid JSON.
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         overwrite(&path, r#"THIS IS NOT JSON"#);
 
         // No new config should arrive (invalid file is ignored).
