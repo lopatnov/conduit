@@ -442,6 +442,24 @@ mod tests {
         assert!(find_file(&roots, "missing", &opts).await.is_none());
     }
 
+    /// Issue #591: a FIFO in place of a file (swapped in after `find_file` looked, or just there) is a miss, and the
+    /// open does not wait for a writer.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_served_treats_a_fifo_as_a_miss_without_waiting() {
+        use rustix::fs::{mknodat, FileType, Mode, CWD};
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        mknodat(CWD, &fifo, FileType::Fifo, Mode::RUSR | Mode::WUSR, 0).unwrap();
+        let served = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            open_served(dir.path(), &fifo),
+        )
+        .await
+        .expect("opening a FIFO must not block");
+        assert!(served.unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn resolve_pre_compressed_returns_size_when_sibling_exists() {
         let dir = tempfile::tempdir().unwrap();

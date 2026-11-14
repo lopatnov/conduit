@@ -54,7 +54,16 @@ pub fn open_beneath(root: &Path, rel: &Path) -> io::Result<std::fs::File> {
             Mode::empty(),
         )?;
     }
-    let fd = openat(&cur, *last, flags | OFlags::NOFOLLOW, Mode::empty())?;
+    // `O_NONBLOCK` on the last component only: opening a FIFO that someone swapped in for a regular file after
+    // `find_file` looked at it would otherwise wait for a writer and pin a blocking-pool thread (issue #591).
+    // It does nothing to a regular file; the caller refuses what is not one (`open_served` checks the opened
+    // handle, so a FIFO is a miss).
+    let fd = openat(
+        &cur,
+        *last,
+        flags | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )?;
     Ok(std::fs::File::from(fd))
 }
 
@@ -113,6 +122,27 @@ mod tests {
         for bad in ["../x", "/etc/passwd", "a/../b", ""] {
             assert!(open_beneath(root.path(), Path::new(bad)).is_err(), "{bad}");
         }
+    }
+
+    /// Issue #591: opening a FIFO must not wait for a writer (a blocking-pool thread would be pinned for as long as
+    /// nobody opens the other end); it opens at once, and is not a regular file, so the caller turns it away.
+    #[test]
+    fn a_fifo_opens_at_once_instead_of_waiting_for_a_writer() {
+        use rustix::fs::{mknodat, FileType, Mode, CWD};
+        let root = tempfile::tempdir().unwrap();
+        let fifo = root.path().join("pipe");
+        mknodat(CWD, &fifo, FileType::Fifo, Mode::RUSR | Mode::WUSR, 0).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let dir = root.path().to_owned();
+        // A thread, so that a regression fails the test (a blocked open) instead of hanging it.
+        std::thread::spawn(move || {
+            let opened = open_beneath(&dir, Path::new("pipe"));
+            let _ = tx.send(opened.map(|f| f.metadata().map(|m| m.is_file())));
+        });
+        let opened = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("opening a FIFO must not block");
+        assert!(!opened.unwrap().unwrap(), "a FIFO is not a regular file");
     }
 
     /// A directory swapped for a symlink while opens are running must never leak outside bytes.
