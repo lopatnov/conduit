@@ -564,6 +564,25 @@ mod tests {
         u.iter().map(|url| reg.conn_load(url)).collect()
     }
 
+    /// A peer whose estimate went up must not stay expensive for ever: its estimate decays while nobody samples it, so it is
+    /// compared as cheap again (the e2e scenario saw `p2c` leave one of three peers at zero requests). Reading the raw stored
+    /// estimate, as before, keeps `u[1]` at 5 s for ever.
+    #[test]
+    fn p2c_forgets_an_old_slow_estimate_while_the_peer_is_idle() {
+        let (u, w) = two(1, 1);
+        let reg = registry();
+        seed_latency(&reg, &u[0], 10_000.0);
+        seed_latency(&reg, &u[1], 5_000_000.0);
+        // u[0] has no sample time, so its 10 ms stands; u[1] was last sampled two minutes ago: 5 s * e^-12 is about 30 us.
+        reg.statuses.get_mut(&u[1]).unwrap().ewma_last_sample_secs =
+            crate::health::now_secs_f64() - 120.0;
+        assert_eq!(
+            p2c_wins(&u, &w, &reg, 1),
+            200,
+            "the long-idle peer is cheap again"
+        );
+    }
+
     // ── p2c counts requests in flight (#628) ──────────────────────────────────
 
     /// Idle, the faster peer wins every comparison; with three requests in flight on it, the slower idle peer wins.
