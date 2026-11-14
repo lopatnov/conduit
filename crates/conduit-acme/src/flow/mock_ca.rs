@@ -32,6 +32,8 @@ pub(super) struct MockCa {
     pub seen: Arc<Mutex<Seen>>,
     /// While set, a request for the directory is accepted and never answered.
     pub hang_directory: Arc<AtomicBool>,
+    /// While set, a `newOrder` request is accepted and never answered.
+    pub hang_new_order: Arc<AtomicBool>,
 }
 
 fn rfc3339(secs: i64) -> String {
@@ -221,13 +223,14 @@ impl MockCa {
         let base = format!("https://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Seen::default()));
         let hang = Arc::new(AtomicBool::new(false));
-        let (b, s, h) = (base.clone(), seen.clone(), hang.clone());
+        let hang_order = Arc::new(AtomicBool::new(false));
+        let (b, s, h, ho) = (base.clone(), seen.clone(), hang.clone(), hang_order.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
                 let (base, ari, seen, config) =
                     (b.clone(), ari.clone(), s.clone(), tls.config.clone());
-                let hang = h.clone();
+                let (hang, hang_order) = (h.clone(), ho.clone());
                 std::thread::spawn(move || {
                     let Ok(conn) = rustls::ServerConnection::new(config) else {
                         return;
@@ -236,7 +239,9 @@ impl MockCa {
                     let Some((method, path, body)) = read_request(&mut stream) else {
                         return;
                     };
-                    if path == "/directory" && hang.load(Ordering::SeqCst) {
+                    if (path == "/directory" && hang.load(Ordering::SeqCst))
+                        || (path == "/new-order" && hang_order.load(Ordering::SeqCst))
+                    {
                         std::thread::sleep(std::time::Duration::from_secs(3600));
                         return;
                     }
@@ -251,6 +256,7 @@ impl MockCa {
             directory_url: format!("{base}/directory"),
             seen,
             hang_directory: hang,
+            hang_new_order: hang_order,
         }
     }
 }

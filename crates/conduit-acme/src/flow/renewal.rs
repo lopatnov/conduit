@@ -538,4 +538,27 @@ mod tests {
             "no advice means the lifetime rule decides: nothing to do"
         );
     }
+
+    #[tokio::test]
+    async fn a_ca_that_never_answers_an_order_is_an_error_not_a_stuck_loop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        issued_pair(dir.path(), 75); // due by the lifetime rule
+        let ca = MockCa::start(Ari::Absent).await;
+        let job = job_for(dir.path(), &ca).await;
+        ca.hang_new_order
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let before = std::fs::read(dir.path().join("example.com.key.pem")).unwrap();
+
+        tokio::time::pause();
+        let err = tokio::time::timeout(Duration::from_secs(600), renew(&job))
+            .await
+            .expect("the order must give up by itself, well before the outer limit")
+            .expect_err("a silent CA is an error");
+        assert!(format!("{err:#}").contains("timed out"), "got: {err:#}");
+        assert_eq!(
+            std::fs::read(dir.path().join("example.com.key.pem")).unwrap(),
+            before,
+            "the cached pair is untouched"
+        );
+    }
 }

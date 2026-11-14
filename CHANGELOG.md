@@ -20,6 +20,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- An ACME order can no longer hold the renewal loop (or start-up) forever: every request of the order is limited to 60 s and
+  the challenge validation to 180 s. A CA that accepts a connection and never answers used to block renewal of every
+  certificate; it is now an error for that certificate and the cached pair is kept.
 - The response filter chain borrows the per-request header list, the response transform, the response-time setting and
   the middleware entries instead of cloning them for every response: 148 195 → 145 069 instructions per request on the
   bare site and 182 758 → 176 987 with `securityHeaders`, `cors` and `responseTime` (`scripts/bench/cachegrind.sh`,

@@ -9,6 +9,7 @@
 //! (owner-only secret writes), [`renewal`] (the background renewal task).
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use dashmap::DashMap;
@@ -33,6 +34,23 @@ use http01::ChallengeServer;
 use storage::{
     cached_pair_matches, pair_paths, unsupported_key_format, write_secret_atomic, PendingPair,
 };
+
+/// How long one request of an order may take. instant-acme's HTTP client has no timeout of its own, so a CA that
+/// accepts the connection and never answers would hold the sequential renewal loop (and startup) forever.
+const STEP_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the validation phase (authorizations, challenge, polling until the order is ready) may take in all.
+const VALIDATION_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Run `fut` for at most `limit`; a timeout is an error naming the step.
+async fn bounded<T>(
+    step: &str,
+    limit: Duration,
+    fut: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::time::timeout(limit, fut)
+        .await
+        .map_err(|_| anyhow::anyhow!("{step} timed out after {} s", limit.as_secs()))?
+}
 
 /// The most days before expiry at which renewal starts. A certificate with a shorter life renews earlier in proportion
 /// (see [`cert_renewal_due`]).
@@ -299,7 +317,12 @@ async fn run_acme_order(
         .unwrap_or_else(|| LetsEncrypt::Production.url())
         .to_owned();
 
-    let account = load_or_create_account(acme_cfg, &directory_url).await?;
+    let account = bounded(
+        "ACME account setup",
+        STEP_TIMEOUT,
+        load_or_create_account(acme_cfg, &directory_url),
+    )
+    .await?;
 
     let identifiers = [Identifier::Dns(domain.to_string())];
     let build_order = |replaces: Option<instant_acme::CertificateIdentifier<'static>>| {
@@ -321,16 +344,24 @@ async fn run_acme_order(
             .map(|a| a.id),
         None => None,
     };
-    let mut order = match account.new_order(&build_order(replaces.clone())).await {
+    let place_order = |replaces| async {
+        bounded("ACME new-order request", STEP_TIMEOUT, async {
+            account
+                .new_order(&build_order(replaces))
+                .await
+                .map_err(anyhow::Error::new)
+        })
+        .await
+    };
+    let mut order = match place_order(replaces.clone()).await {
         Ok(order) => order,
         Err(e) if replaces.is_some() => {
             tracing::warn!(error = %e, "the CA refused the order that replaces the old certificate — ordering without it");
-            account
-                .new_order(&build_order(None))
+            place_order(None)
                 .await
                 .context("ACME new-order request failed")?
         }
-        Err(e) => return Err(anyhow::Error::new(e).context("ACME new-order request failed")),
+        Err(e) => return Err(e.context("ACME new-order request failed")),
     };
 
     // `Bind`: take the per-port lock and bind the challenge port before
@@ -351,38 +382,40 @@ async fn run_acme_order(
     // then propagated via `?` only after cleanup completes.
     let mut our_tokens: Vec<String> = Vec::new();
     let retry = RetryPolicy::default();
-    let flow_result: anyhow::Result<()> = async {
-        let mut authorizations = order.authorizations();
-        while let Some(authz_result) = authorizations.next().await {
-            let mut authz = authz_result.context("ACME authorizations fetch failed")?;
+    let flow_result: anyhow::Result<()> =
+        bounded("ACME challenge validation", VALIDATION_TIMEOUT, async {
+            let mut authorizations = order.authorizations();
+            while let Some(authz_result) = authorizations.next().await {
+                let mut authz = authz_result.context("ACME authorizations fetch failed")?;
 
-            if authz.status == AuthorizationStatus::Valid {
-                continue; // already validated from a previous attempt
+                if authz.status == AuthorizationStatus::Valid {
+                    continue; // already validated from a previous attempt
+                }
+
+                let mut challenge_handle =
+                    authz.challenge(ChallengeType::Http01).ok_or_else(|| {
+                        anyhow::anyhow!("no HTTP-01 challenge available for domain {domain}")
+                    })?;
+
+                let key_auth = challenge_handle.key_authorization();
+                let token = challenge_handle.token.clone();
+                our_tokens.push(token.clone());
+                challenges.insert(token, key_auth.as_str().to_owned());
+
+                challenge_handle
+                    .set_ready()
+                    .await
+                    .context("set_challenge_ready failed")?;
             }
 
-            let mut challenge_handle = authz.challenge(ChallengeType::Http01).ok_or_else(|| {
-                anyhow::anyhow!("no HTTP-01 challenge available for domain {domain}")
-            })?;
-
-            let key_auth = challenge_handle.key_authorization();
-            let token = challenge_handle.token.clone();
-            our_tokens.push(token.clone());
-            challenges.insert(token, key_auth.as_str().to_owned());
-
-            challenge_handle
-                .set_ready()
+            // Poll the order until all challenges are validated and the order is ready.
+            order
+                .poll_ready(&retry)
                 .await
-                .context("set_challenge_ready failed")?;
-        }
-
-        // Poll the order until all challenges are validated and the order is ready.
-        order
-            .poll_ready(&retry)
-            .await
-            .context("ACME order timed out waiting for challenge validation")?;
-        Ok(())
-    }
-    .await;
+                .context("ACME order timed out waiting for challenge validation")?;
+            Ok(())
+        })
+        .await;
 
     // Always shut down the temporary challenge server and clean up our
     // tokens, regardless of whether the flow above succeeded (#279).
@@ -400,13 +433,21 @@ async fn run_acme_order(
     // Finalize the order: instant-acme generates a fresh ECDSA key-pair and CSR
     // internally (via the `rcgen` feature), then sends the CSR to the CA.
     // Returns the private key as PEM.
-    let key_pem = order.finalize().await.context("ACME finalize failed")?;
+    let key_pem = bounded("ACME finalize", STEP_TIMEOUT, async {
+        order.finalize().await.map_err(anyhow::Error::new)
+    })
+    .await
+    .context("ACME finalize failed")?;
 
     // Retrieve the issued certificate chain (polls until the CA makes it available).
-    let cert_chain_pem = order
-        .poll_certificate(&retry)
-        .await
-        .context("ACME certificate fetch failed")?;
+    let cert_chain_pem = bounded("ACME certificate fetch", STEP_TIMEOUT, async {
+        order
+            .poll_certificate(&retry)
+            .await
+            .map_err(anyhow::Error::new)
+    })
+    .await
+    .context("ACME certificate fetch failed")?;
 
     Ok((cert_chain_pem, key_pem))
 }
