@@ -18,6 +18,7 @@ use self::site::validate_site;
 use self::warnings::{
     check_extra_key_warnings, check_global_feature_warnings, check_jwt_secret_warnings,
     check_metrics_auth_warnings, check_per_site_feature_warnings,
+    check_unresolved_credential_warnings,
 };
 // The root crate's `src/config/validate/tests.rs` (which stays in the root — see this crate's own doc comment)
 // needs this to build its log-injection-protection test inputs; re-exported here rather than making the whole
@@ -64,6 +65,7 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     check_per_site_feature_warnings(config, &mut warnings);
     check_proxy_loop_warnings(config, &mut warnings);
     check_jwt_secret_warnings(config, &mut warnings);
+    check_unresolved_credential_warnings(config, &mut warnings);
     check_metrics_auth_warnings(config, &mut warnings);
     check_extra_key_warnings(config, &mut warnings);
 

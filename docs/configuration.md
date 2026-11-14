@@ -22,6 +22,13 @@ message that names the variable and never shows the value: put the reference in 
 (`"$MY_VAR"`). A variable that is not set leaves `$MY_VAR` as written. A reference in a YAML comment is
 not replaced.
 
+> **Warning, credentials:** a password, API key, JWT secret or Admin API token whose whole value is a reference to a
+> variable that is **not set** keeps the text of the reference, and that text is then the credential: anyone who has
+> seen the configuration, an example or this page can present `$MY_VAR`. `conduit validate`, the start-up log and
+> `POST /reload` warn about every such credential (the warning names the place and the variable, never a value). Treat the
+> warning as an error in a deployment: set the variable in the environment of the process (for the systemd unit:
+> `/etc/conduit/conduit.env`).
+
 ### Optional build features
 
 Conduit is compiled from Cargo **features**: a feature that is not compiled in is not in the

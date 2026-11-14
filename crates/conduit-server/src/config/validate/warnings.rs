@@ -272,6 +272,70 @@ fn check_consumer_jwt_secret_warnings(i: usize, site: &SiteConfig, warnings: &mu
     }
 }
 
+/// Warn when a credential is still the text of an environment variable reference (`$NAME`): the variable is not set,
+/// `interpolate` keeps the reference, and the reference itself becomes the password, key, secret or token. It is not a
+/// missing credential but a known one: anyone who has read the configuration, an example or the documentation can
+/// present it (and for a JWT secret, sign a token with it). This is the failure mode of issue #624 (the sshole class):
+/// a failed lookup that degrades into a value an attacker can predict.
+pub(super) fn check_unresolved_credential_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
+    let mut push = |place: String, value: &str| {
+        if let Some(name) = conduit_config_core::env::unresolved_reference(value) {
+            warnings.push(format!(
+                "{place} is the text `${name}`: the environment variable {name} is not set, so the text of the reference \
+                 itself is the credential and anyone who has seen this configuration can present it. Set {name} in the \
+                 environment of the process (for the systemd unit: `conduit.env`)."
+            ));
+        }
+    };
+    if let Some(token) = config
+        .global
+        .as_ref()
+        .and_then(|g| g.admin.as_ref())
+        .and_then(|a| a.token.as_deref())
+    {
+        push("global.admin.token".to_owned(), token);
+    }
+    for (i, site) in config.sites.iter().enumerate() {
+        if let Some(basic) = &site.basic_auth {
+            for (user, password) in &basic.users {
+                push(
+                    format!("sites[{i}].basicAuth.users[{}]", sanitize_for_log(user)),
+                    password,
+                );
+            }
+        }
+        if let Some(api) = &site.api_key {
+            for (j, key) in api.keys.iter().enumerate() {
+                push(format!("sites[{i}].apiKey.keys[{j}]"), key);
+            }
+        }
+        if let Some(secret) = site.jwt_auth.as_ref().and_then(|j| j.secret.as_deref()) {
+            push(format!("sites[{i}].jwtAuth.secret"), secret);
+        }
+        for (j, c) in site
+            .consumers
+            .iter()
+            .flat_map(|c| c.consumers.iter().enumerate())
+        {
+            if let Some(key) = c.api_key.as_deref() {
+                push(format!("sites[{i}].consumers.consumers[{j}].apiKey"), key);
+            }
+            if let Some(b) = &c.basic_auth {
+                push(
+                    format!("sites[{i}].consumers.consumers[{j}].basicAuth.password"),
+                    &b.password,
+                );
+            }
+            if let Some(secret) = c.jwt.as_ref().and_then(|j| j.secret.as_deref()) {
+                push(
+                    format!("sites[{i}].consumers.consumers[{j}].jwt.secret"),
+                    secret,
+                );
+            }
+        }
+    }
+}
+
 /// Warn when a metrics endpoint has no auth token configured.
 pub(super) fn check_metrics_auth_warnings(config: &AppConfig, warnings: &mut Vec<String>) {
     for (i, site) in config.sites.iter().enumerate() {
