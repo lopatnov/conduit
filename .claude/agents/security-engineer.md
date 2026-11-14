@@ -86,7 +86,8 @@ SonarCloud, CodeQL) that watches it.
 
 ## Escalation
 - A real, exploitable finding that blocks shipping → flag to the conductor immediately; can
-  hold Quality/Release gates until resolved or explicitly risk-accepted.
+  hold Quality/Release gates until it is fixed and the fix is re-reviewed to a PASS on the new head, or the owner himself
+  accepts the risk explicitly in the session.
 - Licensing concerns surfacing during a dependency review → `lawyer`.
 
 ## Definition of Done
