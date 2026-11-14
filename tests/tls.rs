@@ -178,3 +178,64 @@ fn tls_site_sends_hsts_and_its_plain_http_twin_does_not() {
         "X-Forwarded-Proto: http must not remove HSTS from a TLS response"
     );
 }
+
+/// Issue #644: on a site with `tls` the sticky cookie is `Secure` unless `sticky.secure` says otherwise (the
+/// default is "when the site has TLS"; the plain-HTTP site of `tests/proxy.rs` gets none).
+#[test]
+#[serial]
+#[cfg(feature = "proxy")]
+fn sticky_cookie_is_secure_on_a_tls_site_by_default() {
+    use std::io::Read;
+
+    let upstream = std::net::TcpListener::bind("127.0.0.1:0").expect("upstream bind");
+    let upstream_port = upstream.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in upstream.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        }
+    });
+    let (_dir, cert_path, key_path) = make_self_signed_cert();
+
+    let cookie_of = |sticky: serde_json::Value| -> String {
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let server = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "tls": { "cert": cert_path, "key": key_path },
+                    "proxy": { "/": {
+                        "targets": [format!("http://127.0.0.1:{upstream_port}")],
+                        "sticky": sticky
+                    } }
+                }]
+            }),
+        );
+        let url = format!("https://127.0.0.1:{}/", server.port);
+        let resp = insecure_client().get(&url).send().expect("HTTPS GET");
+        resp.headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find(|v| v.starts_with("sid="))
+            .expect("a sticky Set-Cookie")
+            .to_owned()
+    };
+
+    let secret = "test-sticky-secret";
+    let by_default = cookie_of(serde_json::json!({ "cookie": "sid", "secret": secret }));
+    assert!(
+        by_default.ends_with("; SameSite=Lax; Secure"),
+        "{by_default}"
+    );
+    let never =
+        cookie_of(serde_json::json!({ "cookie": "sid", "secret": secret, "secure": false }));
+    assert!(never.ends_with("; SameSite=Lax"), "{never}");
+}

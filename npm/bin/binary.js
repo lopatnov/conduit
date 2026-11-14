@@ -325,17 +325,17 @@ function download(url, dest, write) {
         });
         res.on("error", fail);
         file.on("error", fail);
-        // "finish" comes when the last byte is handed to the operating system, while the file is still open for
-        // writing: executing it then fails with ETXTBSY on Linux (#732, seen as a flake of the launcher test and
-        // what a user of `npx` could hit). So the download is done at "close", when the descriptor is released.
-        let finished = false;
+        // Resolve on "close", not on "finish": the descriptor is still open for writing at "finish", and running a file
+        // that is open for writing fails with ETXTBSY (it showed on Node 24 in CI, in the test that runs a file the
+        // launcher has just downloaded).
+        let written = false;
         file.on("finish", () => {
-          finished = true;
           progress.done();
-          if (total > 0 && received !== total) reject(new Error(`got ${received} of ${total} bytes`));
+          if (total > 0 && received !== total) return reject(new Error(`got ${received} of ${total} bytes`));
+          written = true;
         });
         file.on("close", () => {
-          if (finished) resolve();
+          if (written) resolve();
         });
         res.pipe(file);
       });

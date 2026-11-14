@@ -220,7 +220,7 @@ proxy: http://localhost:4000
 
 Bring your own certificate instead with `tls: { cert: ./fullchain.pem, key: ./privkey.pem }`.
 Conduit renews ACME certificates in the background and writes them to disk, but a running process
-keeps serving the certificate it loaded at start, so restart it within 30 days of expiry (any
+keeps serving the certificate it loaded at start, so restart it within the renewal window, 30 days before expiry for a 90-day certificate (any
 deploy does it).
 **→ Details:** [TLS / HTTPS](docs/configuration.md#tls--https) ·
 [mTLS](docs/configuration.md#mtls--client-certificate-authentication)
