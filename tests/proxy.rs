@@ -1008,4 +1008,21 @@ fn sticky_cookie_carries_the_configured_secure_and_max_age() {
         "cookie": "sid", "secret": secret, "secure": false, "maxAgeSecs": 60
     }));
     assert!(never.ends_with("; SameSite=Lax; Max-Age=60"), "{never}");
+
+    // `sameSite` (the rest of #644): `strict` replaces `Lax`; `none` always adds `Secure`, which a browser requires
+    // for that value, even on this plain-HTTP site.
+    let strict = cookie_header(serde_json::json!({
+        "cookie": "sid", "secret": secret, "sameSite": "strict"
+    }));
+    assert!(
+        strict.ends_with("; Path=/; HttpOnly; SameSite=Strict"),
+        "{strict}"
+    );
+    let cross_site = cookie_header(serde_json::json!({
+        "cookie": "sid", "secret": secret, "sameSite": "none"
+    }));
+    assert!(
+        cross_site.ends_with("; Path=/; HttpOnly; SameSite=None; Secure"),
+        "{cross_site}"
+    );
 }

@@ -871,6 +871,7 @@ mod tests {
                 strict: None,
                 secure: None,
                 max_age_secs: None,
+                same_site: None,
             }),
             ..Default::default()
         });

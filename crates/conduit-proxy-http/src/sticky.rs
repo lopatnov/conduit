@@ -140,6 +140,7 @@ pub(crate) fn make_sticky_cookie(
         value: signed,
         secure: cfg.secure,
         max_age_secs: cfg.max_age_secs,
+        same_site: cfg.same_site,
     })
 }
 

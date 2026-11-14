@@ -1479,7 +1479,13 @@ proxy:
 | `strict: false` (default) | If the pinned upstream is unhealthy, fall back to the next available backend |
 | `strict: true` | If the pinned upstream is unhealthy, return `503 Service Unavailable` immediately |
 
-The injected cookie attributes are `Path=/; HttpOnly; SameSite=Lax`, plus `Secure` and `Max-Age` as configured:
+The injected cookie attributes are `Path=/; HttpOnly; SameSite=Lax`, plus `Secure` and `Max-Age` as configured, and
+`SameSite` as `sameSite` says:
+
+- `sameSite` is `lax` (the default), `strict` or `none`. `none` lets the browser send the cookie on cross-site
+  requests (an application embedded in, or called from, another origin). Browsers refuse a `SameSite=None` cookie
+  that is not `Secure`, so `none` always adds `Secure`, even on a plain-HTTP site (where the browser then drops the
+  cookie: serve such a site over TLS), and `secure: false` together with `none` is a validation error.
 
 - `secure` unset means "when the matched site has `tls`". A plain-HTTP site gets no `Secure`, because a browser drops
   a `Secure` cookie it received over HTTP and the affinity would silently end. Behind a load balancer that

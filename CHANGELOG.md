@@ -11,6 +11,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `sticky.secure` and `sticky.maxAgeSecs`: the `Secure` and `Max-Age` of the cookie Conduit sets in `secret` mode. `secure`
   unset means "when the site has `tls`"; `maxAgeSecs` unset is a session cookie, `0` is rejected (#644).
+- `sticky.sameSite` (`lax`, the default, `strict` or `none`): the `SameSite` of that cookie. `none` always adds `Secure`
+  (browsers refuse it otherwise) and `secure: false` together with it is a validation error (#644).
 
 ### Fixed
 
