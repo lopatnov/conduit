@@ -31,7 +31,8 @@ use storage::{
     cached_pair_matches, pair_paths, unsupported_key_format, write_secret_atomic, PendingPair,
 };
 
-/// How many days before certificate expiry to trigger automatic renewal.
+/// The most days before expiry at which renewal starts. A certificate with a shorter life renews earlier in proportion
+/// (see [`cert_renewal_due`]).
 const RENEWAL_THRESHOLD_DAYS: i64 = 30;
 
 /// On-disk paths to a site's TLS certificate and private key obtained via ACME.
@@ -61,6 +62,38 @@ pub fn cert_expires_within_days(cert_pem: &str, days: i64) -> bool {
     not_after < now + days * 86_400
 }
 
+/// `true` when the first certificate in `cert_pem` is due for renewal at `now` (seconds since the Unix epoch): when
+/// no more than a third of its lifetime is left, and never later than [`RENEWAL_THRESHOLD_DAYS`] before expiry.
+///
+/// A fixed 30 days is right for a 90-day certificate (a third of it) and wrong for the shorter ones the CAs are moving to
+/// (issue #594): 64-day certificates renew with 21 days left, 45-day ones with 15, a 6-day one with 2 (a fixed
+/// threshold would make that one due on every check, a new order every 12 hours). A parse error, an empty or inverted
+/// validity period counts as due, so a certificate that cannot be read is replaced rather than kept.
+pub fn cert_renewal_due(cert_pem: &str, now: i64) -> bool {
+    use x509_parser::pem::parse_x509_pem;
+    let Ok((_, pem)) = parse_x509_pem(cert_pem.as_bytes()) else {
+        return true;
+    };
+    let Ok(x509) = pem.parse_x509() else {
+        return true;
+    };
+    let not_before = x509.validity().not_before.timestamp();
+    let not_after = x509.validity().not_after.timestamp();
+    let lifetime = not_after - not_before;
+    if lifetime <= 0 {
+        return true;
+    }
+    let threshold = (lifetime / 3).min(RENEWAL_THRESHOLD_DAYS * 86_400);
+    now >= not_after - threshold
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::UNIX_EPOCH
+        .elapsed()
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// What the files already on disk are good for.
 #[derive(Debug, PartialEq, Eq)]
 enum CacheState {
@@ -75,7 +108,7 @@ enum CacheState {
 fn cache_state(cert_pem: Option<&str>, key_pem: Option<&str>) -> CacheState {
     match (cert_pem, key_pem) {
         (Some(cert), Some(key)) if cached_pair_matches(cert, key) => {
-            if cert_expires_within_days(cert, RENEWAL_THRESHOLD_DAYS) {
+            if cert_renewal_due(cert, unix_now()) {
                 CacheState::Expiring
             } else {
                 CacheState::Reusable
@@ -89,7 +122,7 @@ fn cache_state(cert_pem: Option<&str>, key_pem: Option<&str>) -> CacheState {
 /// obtain a fresh one.
 ///
 /// If valid cert/key files already exist and the certificate is not expiring
-/// within [`RENEWAL_THRESHOLD_DAYS`] days, the cached paths are returned
+/// due for renewal ([`cert_renewal_due`]), the cached paths are returned
 /// without contacting the ACME server.
 ///
 /// `challenges` is the shared HTTP-01 challenge store; it is populated during
@@ -248,8 +281,12 @@ async fn run_acme_order(
     let account = load_or_create_account(acme_cfg, &directory_url).await?;
 
     let identifiers = [Identifier::Dns(domain.to_string())];
+    let new_order = match acme_cfg.profile.as_deref() {
+        Some(profile) => NewOrder::new(&identifiers).profile(profile),
+        None => NewOrder::new(&identifiers),
+    };
     let mut order = account
-        .new_order(&NewOrder::new(&identifiers))
+        .new_order(&new_order)
         .await
         .context("ACME new-order request failed")?;
 
@@ -430,6 +467,49 @@ async fn load_or_create_account(
 mod tests {
     use super::*;
 
+    /// A self-signed certificate that is valid for `lifetime_days` days, `days_left` of which remain at `now`.
+    fn cert_with_life(lifetime_days: i64, days_left: i64, now: i64) -> String {
+        let key = rcgen::KeyPair::generate().expect("keygen");
+        let mut params =
+            rcgen::CertificateParams::new(vec!["example.com".to_string()]).expect("params");
+        let not_after = now + days_left * 86_400;
+        params.not_after = time::OffsetDateTime::from_unix_timestamp(not_after).expect("not_after");
+        params.not_before =
+            time::OffsetDateTime::from_unix_timestamp(not_after - lifetime_days * 86_400)
+                .expect("not_before");
+        params.self_signed(&key).expect("self-signed").pem()
+    }
+
+    #[test]
+    fn renewal_starts_at_a_third_of_the_lifetime_and_never_later_than_30_days_before_expiry() {
+        let now = 1_900_000_000;
+        // (lifetime, days left, due?)
+        for (life, left, due) in [
+            (90, 31, false),
+            (90, 29, true), // today's behaviour for a 90-day certificate
+            (64, 22, false),
+            (64, 20, true), // a third of 64 days is 21
+            (45, 16, false),
+            (45, 14, true), // a third of 45 days is 15
+            (6, 3, false),
+            (6, 1, true), // a 6-day certificate is not due on its first day
+            (6, 6, false),
+            (398, 31, false),
+            (398, 29, true), // longer than 90 days: still the 30-day cap
+        ] {
+            let pem = cert_with_life(life, left, now);
+            assert_eq!(
+                cert_renewal_due(&pem, now),
+                due,
+                "{life}-day certificate, {left} days left"
+            );
+        }
+        assert!(
+            cert_renewal_due("not a certificate", now),
+            "an unreadable certificate is due"
+        );
+    }
+
     #[test]
     fn the_account_file_follows_the_directory_it_was_created_for() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -543,6 +623,7 @@ mod tests {
             directory: Some("http://127.0.0.1:1/directory".to_string()),
             storage: None,
             challenge: None,
+            profile: None,
         };
         let paths = load_or_obtain_certificate(
             &cfg,
@@ -620,6 +701,7 @@ mod tests {
             directory: Some("http://127.0.0.1:1/directory".to_string()),
             storage: None,
             challenge: None,
+            profile: None,
         }
     }
 

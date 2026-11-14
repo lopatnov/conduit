@@ -421,8 +421,8 @@ letters, digits and hyphens separated by dots (international names in punycode, 
 no `/`, `\`, `..`, empty label or other character. A leading `*.` is accepted, but a CA
 validating over HTTP-01, the only challenge Conduit implements, normally refuses wildcards.
 
-A background task renews the certificate on disk when it is within 30 days of
-expiry; the running process keeps serving the one it loaded, so restart Conduit
+A background task renews the certificate on disk when no more than a third of its lifetime is left, and never
+later than 30 days before expiry (30 days for a 90-day certificate, 21 for a 64-day one, 15 for a 45-day one); the running process keeps serving the one it loaded, so restart Conduit
 within that window. Details: [`acme` in the CLI reference](cli.md#acme--auto-tls--lets-encrypt).
 
 The account with the CA is kept in `<storage>/acme_account.json`, which records the directory URL it was created for.
@@ -453,6 +453,7 @@ a second file, `acme_account.<directory>.json`, holds the account for it. A priv
 > error (fails startup with an explanation) rather than a silent no-op, so a
 > misconfigured expectation of TLS restriction can't go unnoticed.
 | `acme.challenge`   | string   | —       | `"http-01"` (the only challenge implemented; other values are rejected)                                                                                                                     |
+| `acme.profile`     | string   | —       | Certificate profile to ask the CA for (Let's Encrypt: `classic`, `tlsserver`, `shortlived`); absent = the CA's default. An empty value is rejected; a profile the CA does not offer fails the order |
 | `acme.directory`   | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
 | `clientAuth`       | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication)                                                                     |
 

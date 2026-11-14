@@ -198,6 +198,14 @@ changed.
 
 ## [2.2.0] — 2026-11-07
 
+### Added
+
+- **`tls.acme.profile` and a renewal threshold that follows the certificate's lifetime** (issue #594). Renewal starts when no
+  more than a third of the lifetime is left, never later than 30 days before expiry: unchanged for 90-day certificates,
+  21 days for 64-day ones (Let's Encrypt from 2027-02-10), 15 for 45-day ones, and a 6-day certificate is no longer due on
+  every check. `profile` is sent with the order. Not done: ARI (RFC 9773) renewal windows, which `instant-acme` supports
+  and which stays open on #594.
+
 ### Fixed
 
 - **ACME follow-ups of #548** (issue #555): a reload that changes `tls.acme.email/directory/storage/challenge`, or adds or

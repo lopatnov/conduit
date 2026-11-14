@@ -247,7 +247,8 @@
             "email":     { "type": "string", "format": "email" },
             "directory": { "type": "string" },
             "storage":   { "type": "string" },
-            "challenge": { "type": "string", "enum": ["http-01"] }
+            "challenge": { "type": "string", "enum": ["http-01"] },
+            "profile":   { "type": "string", "minLength": 1, "description": "Certificate profile to ask the CA for (for example classic, tlsserver, shortlived at Let's Encrypt). Absent: the CA's default." }
           }
         }
       }

@@ -20,6 +20,10 @@ pub struct AcmeConfig {
     pub storage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub challenge: Option<String>,
+    /// The certificate profile to ask the CA for (RFC 9773-era `profile` field of a new order), for example `classic`,
+    /// `tlsserver` or `shortlived` at Let's Encrypt. Absent: the CA's default (issue #594).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 // serde_json is only pulled in via this crate's `acme` feature (no bare
@@ -46,6 +50,7 @@ mod tests {
             directory: Some("https://acme.example.com/directory".to_string()),
             storage: Some("./certs".to_string()),
             challenge: Some("http-01".to_string()),
+            profile: Some("tlsserver".to_string()),
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         let round_tripped: AcmeConfig =
@@ -66,10 +71,12 @@ mod tests {
             directory: None,
             storage: None,
             challenge: None,
+            profile: None,
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         assert!(!json.contains("directory"), "got: {json}");
         assert!(!json.contains("storage"), "got: {json}");
         assert!(!json.contains("challenge"), "got: {json}");
+        assert!(!json.contains("profile"), "got: {json}");
     }
 }
