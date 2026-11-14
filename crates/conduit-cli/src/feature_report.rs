@@ -19,6 +19,7 @@ const BUNDLES: &[(&str, &[&str])] = &[
             "consumers",
             "forward-auth",
             "cache",
+            "disk-cache",
             "acme",
             "compression",
         ],
@@ -30,6 +31,7 @@ const BUNDLES: &[(&str, &[&str])] = &[
             "consumers",
             "forward-auth",
             "cache",
+            "disk-cache",
             "acme",
             "proxy",
             "compression",
@@ -44,6 +46,7 @@ const BUNDLES: &[(&str, &[&str])] = &[
             "consumers",
             "forward-auth",
             "cache",
+            "disk-cache",
             "acme",
             "proxy",
             "compression",
@@ -248,7 +251,7 @@ mod tests {
     /// needs (a marker, a metrics gauge, a start-up flag) are the only ones `BUNDLES` leaves out.
     #[test]
     fn bundles_agree_with_the_root_cargo_toml() {
-        const NOT_REPORTED: &[&str] = &["disk-cache", "tokio-metrics", "kubernetes"];
+        const NOT_REPORTED: &[&str] = &["tokio-metrics", "kubernetes"];
         let table = root_features();
         for (name, members) in BUNDLES {
             let mut cargo: Vec<String> = expanded(&table, name)

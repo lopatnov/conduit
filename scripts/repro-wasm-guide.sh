@@ -39,6 +39,14 @@ http.server.ThreadingHTTPServer(("127.0.0.1", 4720), H).serve_forever()
 PY
 python3 "$WORK/upstream.py" &
 PIDS="$PIDS $!"
+# Wait until the upstream answers: Conduit's first proxied request must not race its start (a 502 on the first request
+# of the first plugin failed the CI job once).
+upstream_ready=0
+for _ in $(seq 1 40); do
+  if curl -s -o /dev/null -m 1 http://127.0.0.1:4720/; then upstream_ready=1; break; fi
+  sleep 0.25
+done
+[ "$upstream_ready" = 1 ] || { echo "the test upstream on 4720 did not start" >&2; exit 2; }
 
 FAILED=0
 expect() { # expect LABEL ACTUAL WANTED

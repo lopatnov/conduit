@@ -12,6 +12,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `sticky.secure` and `sticky.maxAgeSecs`: the `Secure` and `Max-Age` of the cookie Conduit sets in `secret` mode. `secure`
   unset means "when the site has `tls`"; `maxAgeSecs` unset is a session cookie, `0` is rejected (#644).
 
+### Fixed
+
+- The feature warnings and `conduit features` now see a `cache` block on a `routes[]` entry (they looked at the `proxy` route
+  map only), and a `redis://` cache store counts as needing `redis` (only rate-limit stores did); a build without `redis`
+  warns that such a route will not be cached (#737).
+
 ### Changed
 
 - The sticky cookie of a site that has `tls` is now `Secure` unless `sticky.secure: false` says otherwise (a client that also
@@ -20,6 +26,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (it was written into the `Set-Cookie` line unchanged).
 - A `sticky.strict` refusal answers `503` with the reason `sticky_upstream_unavailable` instead of `upstream_overloaded`
   (the upstream is down, not overloaded; the status is the same) (#644).
+- `disk-cache` gates the disk store now (#645): it was a flag that gated nothing. A `cache` build without it is a memory
+  (and, with `redis`, Redis) cache, and a route whose `cache.store` is `disk:<path>` is not cached there, with a start-up
+  warning and `conduit features` listing `disk-cache`. `standard`, `gateway` and `full` include it, so the published builds
+  keep the disk store; a custom `--features cache` build that used `disk:` stores needs `--features disk-cache`.
 - **The systemd unit (and the `.deb`) is hardened further** (issue #670). `PrivateDevices`, `ProtectKernelTunables`,
   `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`,
   `RestrictSUIDSGID`, `RestrictRealtime`, `RestrictNamespaces`, `LockPersonality`, `RestrictAddressFamilies`,

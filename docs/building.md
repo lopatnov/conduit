@@ -73,9 +73,9 @@ proxy. Add features with `--features`:
 | `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
 | `tokio-metrics` | `conduit_eventloop_lag_ms` Prometheus gauge (no config key)                |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
-| `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
+| `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `disk-cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
 | `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
-| `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` — the `standard` set without static files and hot-reload |
+| `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `disk-cache` + `acme` + `compression` — the `standard` set without static files and hot-reload |
 | `full`          | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |
 
 `proxy`, `compression`, `static` and `hotreload` are on by default and are not
