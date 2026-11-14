@@ -312,6 +312,17 @@ pub(super) fn check_unresolved_credential_warnings(config: &AppConfig, warnings:
         if let Some(secret) = site.jwt_auth.as_ref().and_then(|j| j.secret.as_deref()) {
             push(format!("sites[{i}].jwtAuth.secret"), secret);
         }
+        if let Some(secret) = site
+            .consumers
+            .as_ref()
+            .and_then(|c| c.shared_jwt.as_ref())
+            .and_then(|s| s.secret.as_deref())
+        {
+            push(format!("sites[{i}].consumers.sharedJwt.secret"), secret);
+        }
+        if let Some(token) = site.metrics.as_ref().and_then(|m| m.token.as_deref()) {
+            push(format!("sites[{i}].metrics.token"), token);
+        }
         for (j, c) in site
             .consumers
             .iter()

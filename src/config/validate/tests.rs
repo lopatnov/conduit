@@ -2597,7 +2597,8 @@ const UNRESOLVED_CONFIG: &str = r#"{
             "basicAuth": { "users": { "alice": "$CONDUIT_TEST_UNSET_PW" } },
             "apiKey": { "keys": ["$CONDUIT_TEST_UNSET_KEY", "a-real-key-with-a-$-inside"] },
             "jwtAuth": { "secret": "$CONDUIT_TEST_UNSET_JWT" },
-            "consumers": { "consumers": [
+            "metrics": { "token": "$CONDUIT_TEST_UNSET_METRICS" },
+            "consumers": { "sharedJwt": { "secret": "$CONDUIT_TEST_UNSET_SHARED" }, "consumers": [
                 { "username": "c1", "apiKey": "$CONDUIT_TEST_UNSET_C1" },
                 { "username": "c2", "basicAuth": { "password": "$CONDUIT_TEST_UNSET_C2" } },
                 { "username": "c3", "jwt": { "secret": "$CONDUIT_TEST_UNSET_C3" } }
@@ -2616,6 +2617,8 @@ fn an_unset_variable_in_a_credential_is_warned_about_for_every_credential_kind()
         "sites[0].consumers.consumers[0].apiKey",
         "sites[0].consumers.consumers[1].basicAuth.password",
         "sites[0].consumers.consumers[2].jwt.secret",
+        "sites[0].consumers.sharedJwt.secret",
+        "sites[0].metrics.token",
     ] {
         assert!(
             warnings

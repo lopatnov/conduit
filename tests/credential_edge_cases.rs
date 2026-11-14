@@ -87,15 +87,31 @@ fn basic_auth_refuses_every_wrong_password_length_and_accepts_only_the_exact_one
                 "{len}: the exact password was refused: {ok:?}"
             );
         }
-        for (what, pass) in [
-            ("one byte short", secret[..len - 1].to_owned()),
-            ("one byte long", format!("{secret}x")),
-            ("last byte differs", format!("{}t", &secret[..len - 1])),
-            ("first byte differs", format!("t{}", &secret[1..])),
-            ("empty", String::new()),
-            ("same length, other bytes", "z".repeat(len)),
-        ] {
-            let code = status(&client, &srv, "authorization", hv(&basic("alice", &pass)));
+        // The labels are kept apart from the candidate credentials: a label stored next to a secret-derived value
+        // looks like a secret to the cleartext-logging scan (CodeQL), and a label is all a failure message carries.
+        const BASIC_LABELS: [&str; 6] = [
+            "one byte short",
+            "one byte long",
+            "last byte differs",
+            "first byte differs",
+            "empty",
+            "same length, other bytes",
+        ];
+        let candidates = [
+            secret[..len - 1].to_owned(),
+            format!("{secret}x"),
+            format!("{}t", &secret[..len - 1]),
+            format!("t{}", &secret[1..]),
+            String::new(),
+            "z".repeat(len),
+        ];
+        for (k, what) in BASIC_LABELS.iter().enumerate() {
+            let code = status(
+                &client,
+                &srv,
+                "authorization",
+                hv(&basic("alice", &candidates[k])),
+            );
             assert_refused(
                 &format!("basic auth, configured length {len}, {what}"),
                 code,
@@ -177,19 +193,24 @@ fn api_key_refuses_every_wrong_key_length_and_non_utf8_value() {
                 "{len}: the exact key was refused: {ok:?}"
             );
         }
-        for (what, value) in [
-            ("one byte short", hv(&key[..len - 1])),
-            ("one byte long", hv(&format!("{key}x"))),
-            ("last byte differs", hv(&format!("{}j", &key[..len - 1]))),
-            ("empty", HeaderValue::from_static("")),
-            (
-                "non-UTF-8",
-                HeaderValue::from_bytes(&vec![0xff; len]).expect("bytes"),
-            ),
-        ] {
+        const KEY_LABELS: [&str; 5] = [
+            "one byte short",
+            "one byte long",
+            "last byte differs",
+            "empty",
+            "non-UTF-8",
+        ];
+        let candidates = [
+            hv(&key[..len - 1]),
+            hv(&format!("{key}x")),
+            hv(&format!("{}j", &key[..len - 1])),
+            HeaderValue::from_static(""),
+            HeaderValue::from_bytes(&vec![0xff; len]).expect("bytes"),
+        ];
+        for (k, what) in KEY_LABELS.iter().enumerate() {
             assert_refused(
                 &format!("api key, configured length {len}, {what}"),
-                status(&client, &srv, "x-api-key", value),
+                status(&client, &srv, "x-api-key", candidates[k].clone()),
             );
         }
     }
