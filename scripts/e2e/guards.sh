@@ -79,8 +79,11 @@ restart "$WORK/guards.yaml" $U/__health__
 out=$(client curl -sSI --max-time 10 $U/)
 echo "$out" | grep -qi '^x-content-type-options: nosniff' || fail "securityHeaders: no nosniff: $out"
 echo "$out" | grep -qi '^x-frame-options:' || fail "securityHeaders: no X-Frame-Options"
-# HSTS over plain HTTP is sent today although RFC 6797 section 7.2 forbids it: issue #723 decides, then assert it here
-ok "securityHeaders: nosniff and X-Frame-Options are set (HSTS over plain HTTP: #723)"
+# RFC 6797 section 7.2 (#723): no HSTS over plain HTTP, but yes behind a balancer that says it terminated TLS
+echo "$out" | grep -qi '^strict-transport-security' && fail "securityHeaders: HSTS was sent over plain HTTP: $out"
+out=$(client curl -sSI --max-time 10 -H 'X-Forwarded-Proto: https' $U/)
+echo "$out" | grep -qi '^strict-transport-security: max-age=63072000' || fail "securityHeaders: no HSTS behind X-Forwarded-Proto: https: $out"
+ok "securityHeaders: nosniff and X-Frame-Options are set; HSTS only when the request was secure (#723)"
 
 out=$(client curl -sSI --max-time 10 -X OPTIONS -H 'Origin: https://good.test' -H 'Access-Control-Request-Method: POST' $U/)
 echo "$out" | grep -qi '^access-control-allow-origin: https://good.test' || fail "CORS: a preflight from an allowed origin got no allow-origin: $out"
@@ -97,10 +100,11 @@ echo "$out" | grep -qi '^location: https://good.test/' || fail "redirect: the qu
 ok "redirects: the destination host is the configured one (the query is carried over, it does not choose the host)"
 
 [ "$(code -X POST -H 'Content-Type: text/plain' --data "$(head -c 4096 /dev/zero | tr '\0' a)" $U/)" = 413 ] || fail "limits: a 4 KiB body over a 1 KiB limit was not 413"
-# a chunked body over the limit is truncated and forwarded today, not refused: issue #724 (assert 413 here when fixed)
+# the same body sent chunked (no Content-Length) is refused too, not forwarded cut off (#724)
+[ "$(code -X POST -H 'Transfer-Encoding: chunked' -H 'Content-Type: text/plain' --data-binary "$(head -c 4096 /dev/zero | tr '\0' a)" $U/)" = 413 ] || fail "limits: a chunked 4 KiB body over a 1 KiB limit was not 413"
 hdrs=(); for i in $(seq 1 60); do hdrs+=(-H "X-H$i: v"); done
 [ "$(code "${hdrs[@]}" $U/)" = 431 ] || fail "limits: 60 headers over a limit of 30 was $(code "${hdrs[@]}" $U/), expected 431"
-ok "limits: 413 for a body over the limit (Content-Length; chunked is #724), 431 for too many headers"
+ok "limits: 413 for a body over the limit (Content-Length and chunked), 431 for too many headers"
 
 out=$(client curl -sS --max-time 10 $U/api/status/500)
 echo "$out" | grep -q 'who1' && fail "maskErrors: the upstream's body reached the client: $out"

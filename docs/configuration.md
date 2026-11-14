@@ -2295,7 +2295,7 @@ limits:
 
 | Field                   | Type   | Default | Description                                                                                                                   |
 | ----------------------- | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `maxBodyBytes`          | number | —       | Max request body size — returns `413` if exceeded                                                                             |
+| `maxBodyBytes`          | number | —       | Max request body size — returns `413` if exceeded (declared `Content-Length`, or the bytes actually received for a chunked body)                                                                             |
 | `maxHeaderBytes`        | number | —       | Max request header size                                                                                                       |
 | `timeoutSecs`           | number | —       | Global request timeout                                                                                                        |
 | `maxInflightRequests`   | number | —       | Max concurrent requests — returns `503` if exceeded (must be ≥ 1)                                                             |
