@@ -11,7 +11,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The ACME time limits are configurable under `tls.acme`, with today's values as the defaults: `orderTimeoutSecs` (60),
   `validationTimeoutSecs` (180), `ariTimeoutSecs` (30), `retryAfterMinSecs` (300), `retryAfterMaxSecs` (86400) and
-  `checkIntervalSecs` (43200). Each must be 1 to 86400 seconds and the minimum must not exceed the maximum, otherwise
+  `checkIntervalSecs` (43200). Each must be 1 to 86400 seconds (60 to 86400 for `retryAfterMinSecs` and `checkIntervalSecs`, so that a CA that limits failed orders is not polled every few seconds) and the minimum must not exceed the maximum, otherwise
   validation fails. The renewal loop is shared by all sites, so the shortest `checkIntervalSecs` counts. They are read at
   start-up like the rest of `tls.acme`. An inverted clamp no longer risks a panic in the renewal loop (#746).
 - `sticky.secure` and `sticky.maxAgeSecs`: the `Secure` and `Max-Age` of the cookie Conduit sets in `secret` mode. `secure`

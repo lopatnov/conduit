@@ -802,7 +802,7 @@ or deploy does it) so the new certificate is picked up before the old one
 expires. Swapping the renewed certificate into the running listeners is not
 implemented yet.
 
-Every time limit is configurable under `tls.acme` (seconds, 1 to 86400; a typo cannot turn a limit into no limit), with
+Every time limit is configurable under `tls.acme` (seconds, 1 to 86400, and 60 to 86400 for `retryAfterMinSecs` and `checkIntervalSecs`, so that a CA that limits failed orders is not polled every few seconds; a typo cannot turn a limit into no limit), with
 the values below as the defaults: `orderTimeoutSecs` (60, one request of an order), `validationTimeoutSecs` (180, the
 whole challenge validation), `ariTimeoutSecs` (30, the whole renewal-information probe), `retryAfterMinSecs` (300) and
 `retryAfterMaxSecs` (86400, the bounds for the CA's `Retry-After`; the minimum must not exceed the maximum) and

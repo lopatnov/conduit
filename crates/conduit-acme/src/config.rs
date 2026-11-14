@@ -67,6 +67,10 @@ pub const DEFAULT_RETRY_AFTER_MIN_SECS: u64 = 5 * 60;
 pub const DEFAULT_RETRY_AFTER_MAX_SECS: u64 = 24 * 3600;
 /// How often the certificates are checked at most.
 pub const DEFAULT_CHECK_INTERVAL_SECS: u64 = 12 * 3600;
+/// The least `checkIntervalSecs` and `retryAfterMinSecs` allowed (one minute): with a CA that limits failed orders
+/// (Let's Encrypt allows about 5 failed validations an hour), a shorter period would re-order every few seconds while a
+/// certificate is due and failing, and lock issuance out.
+pub const MIN_POLL_SECS: u64 = 60;
 /// No configured duration may exceed this (one day), so that a typo (an extra zero, milliseconds for seconds) cannot
 /// turn a limit into no limit.
 pub const MAX_CONFIGURED_SECS: u64 = 24 * 3600;
@@ -117,25 +121,32 @@ impl AcmeConfig {
         }
     }
 
-    /// What is wrong with the configured durations, as `(field, message)` pairs: a value that is zero or above
-    /// [`MAX_CONFIGURED_SECS`], and `retryAfterMinSecs` above `retryAfterMaxSecs` (with the defaults filled in, so
+    /// What is wrong with the configured durations, as `(field, message)` pairs: a value below its least (1 second,
+    /// [`MIN_POLL_SECS`] for the check interval and the Retry-After minimum) or above [`MAX_CONFIGURED_SECS`], and `retryAfterMinSecs` above `retryAfterMaxSecs` (with the defaults filled in, so
     /// that raising only the minimum past the default maximum is caught too).
     #[must_use]
     pub fn problems(&self) -> Vec<(&'static str, String)> {
+        // (field, value, the least it may be)
         let fields = [
-            ("orderTimeoutSecs", self.order_timeout_secs),
-            ("validationTimeoutSecs", self.validation_timeout_secs),
-            ("ariTimeoutSecs", self.ari_timeout_secs),
-            ("retryAfterMinSecs", self.retry_after_min_secs),
-            ("retryAfterMaxSecs", self.retry_after_max_secs),
-            ("checkIntervalSecs", self.check_interval_secs),
+            ("orderTimeoutSecs", self.order_timeout_secs, 1),
+            ("validationTimeoutSecs", self.validation_timeout_secs, 1),
+            ("ariTimeoutSecs", self.ari_timeout_secs, 1),
+            (
+                "retryAfterMinSecs",
+                self.retry_after_min_secs,
+                MIN_POLL_SECS,
+            ),
+            ("retryAfterMaxSecs", self.retry_after_max_secs, 1),
+            ("checkIntervalSecs", self.check_interval_secs, MIN_POLL_SECS),
         ];
         let mut out = Vec::new();
-        for (name, value) in fields {
+        for (name, value, least) in fields {
             match value {
-                Some(0) => out.push((
+                Some(v) if v < least => out.push((
                     name,
-                    format!("tls.acme.{name} must be at least 1 second: leave it out to use the default"),
+                    format!(
+                        "tls.acme.{name} is {v} s, below the limit of {least} s: leave it out to use the default"
+                    ),
                 )),
                 Some(v) if v > MAX_CONFIGURED_SECS => out.push((
                     name,
@@ -196,8 +207,8 @@ mod tests {
     fn configured_durations_are_read_from_camel_case_keys() {
         let cfg: AcmeConfig = serde_json::from_str(
             r#"{ "email": "ops@example.com", "orderTimeoutSecs": 5, "validationTimeoutSecs": 6,
-                 "ariTimeoutSecs": 8, "retryAfterMinSecs": 9, "retryAfterMaxSecs": 10,
-                 "checkIntervalSecs": 11 }"#,
+                 "ariTimeoutSecs": 8, "retryAfterMinSecs": 90, "retryAfterMaxSecs": 100,
+                 "checkIntervalSecs": 110 }"#,
         )
         .unwrap();
         let t = cfg.timings();
@@ -212,7 +223,7 @@ mod tests {
                 t.check_interval
             ]
             .map(|d| d.as_secs()),
-            [5, 6, 8, 4, 9, 10, 11]
+            [5, 6, 8, 4, 90, 100, 110]
         );
         assert!(cfg.problems().is_empty());
     }

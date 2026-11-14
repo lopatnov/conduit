@@ -124,8 +124,8 @@ async fn ca_advice(job: &RenewalJob, cert_pem: &str) -> Option<ari::Advice> {
 }
 
 /// Check every certificate every `tls.acme.checkIntervalSecs` (12 hours by default) until `shutdown` fires; sooner when a
-/// CA's renewal information (`Retry-After`) asks to be consulted again earlier, never more often than
-/// `retryAfterMinSecs` (5 minutes by default).
+/// CA's renewal information (`Retry-After`) asks to be consulted again earlier (a hint never brings a check closer
+/// than `retryAfterMinSecs`, 5 minutes by default).
 ///
 /// The first check is one interval after start: startup issuance has just run
 /// the same check, and an immediate second order for a site whose issuance
