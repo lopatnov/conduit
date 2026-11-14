@@ -467,7 +467,7 @@ a second file, `acme_account.<readable part of the URL>.<hash of the whole URL>.
 | `acme.ariTimeoutSecs` | integer | `30` | Seconds the whole renewal-information (ARI) probe may take; one request of it gets half. 1 to 86400 |
 | `acme.retryAfterMinSecs` | integer | `300` | The CA's `Retry-After` is never taken as shorter than this. Must not exceed `retryAfterMaxSecs`. 60 to 86400 |
 | `acme.retryAfterMaxSecs` | integer | `86400` | The CA's `Retry-After` is never taken as longer than this. 1 to 86400 |
-| `acme.checkIntervalSecs` | integer | `43200` | Seconds between two renewal checks of a certificate. With several ACME sites the shortest value counts. 60 to 86400 |
+| `acme.checkIntervalSecs` | integer | `43200` | Seconds between two renewal checks of a certificate. With several ACME sites the shortest value counts. 300 to 86400 |
 | `acme.directory`   | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
 | `clientAuth`       | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication)                                                                     |
 

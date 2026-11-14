@@ -254,7 +254,7 @@
             "ariTimeoutSecs":        { "type": "integer", "minimum": 1, "maximum": 86400, "default": 30, "description": "Seconds the whole ACME Renewal Information probe may take; one request of it gets half." },
             "retryAfterMinSecs":     { "type": "integer", "minimum": 60, "maximum": 86400, "default": 300, "description": "The least seconds to wait before asking the CA about a certificate again, whatever its Retry-After says. Must not exceed retryAfterMaxSecs." },
             "retryAfterMaxSecs":     { "type": "integer", "minimum": 1, "maximum": 86400, "default": 86400, "description": "The most seconds to wait before asking the CA again, whatever its Retry-After says." },
-            "checkIntervalSecs":     { "type": "integer", "minimum": 60, "maximum": 86400, "default": 43200, "description": "Seconds between two renewal checks of a certificate. One loop serves all sites; the shortest value counts." }
+            "checkIntervalSecs":     { "type": "integer", "minimum": 300, "maximum": 86400, "default": 43200, "description": "Seconds between two renewal checks of a certificate. One loop serves all sites; the shortest value counts." }
           }
         }
       }

@@ -67,10 +67,14 @@ pub const DEFAULT_RETRY_AFTER_MIN_SECS: u64 = 5 * 60;
 pub const DEFAULT_RETRY_AFTER_MAX_SECS: u64 = 24 * 3600;
 /// How often the certificates are checked at most.
 pub const DEFAULT_CHECK_INTERVAL_SECS: u64 = 12 * 3600;
-/// The least `checkIntervalSecs` and `retryAfterMinSecs` allowed (one minute): with a CA that limits failed orders
-/// (Let's Encrypt allows about 5 failed validations an hour), a shorter period would re-order every few seconds while a
-/// certificate is due and failing, and lock issuance out.
-pub const MIN_POLL_SECS: u64 = 60;
+/// The least `checkIntervalSecs` allowed (5 minutes, which is what the check could never be faster than before the
+/// interval became configurable): a check that finds a due certificate and fails is repeated after one interval, and a CA
+/// limits failed orders (Let's Encrypt: about 5 failed validations an hour), so a shorter period would re-order every few
+/// seconds and lock issuance out.
+pub const MIN_CHECK_INTERVAL_SECS: u64 = 5 * 60;
+/// The least `retryAfterMinSecs` allowed (one minute): the CA's `Retry-After` is never taken as shorter than this when it is
+/// asked about a certificate again.
+pub const MIN_RETRY_AFTER_SECS: u64 = 60;
 /// No configured duration may exceed this (one day), so that a typo (an extra zero, milliseconds for seconds) cannot
 /// turn a limit into no limit.
 pub const MAX_CONFIGURED_SECS: u64 = 24 * 3600;
@@ -122,7 +126,7 @@ impl AcmeConfig {
     }
 
     /// What is wrong with the configured durations, as `(field, message)` pairs: a value below its least (1 second,
-    /// [`MIN_POLL_SECS`] for the check interval and the Retry-After minimum) or above [`MAX_CONFIGURED_SECS`], and `retryAfterMinSecs` above `retryAfterMaxSecs` (with the defaults filled in, so
+    /// [`MIN_CHECK_INTERVAL_SECS`] for the check interval, [`MIN_RETRY_AFTER_SECS`] for the Retry-After minimum) or above [`MAX_CONFIGURED_SECS`], and `retryAfterMinSecs` above `retryAfterMaxSecs` (with the defaults filled in, so
     /// that raising only the minimum past the default maximum is caught too).
     #[must_use]
     pub fn problems(&self) -> Vec<(&'static str, String)> {
@@ -134,10 +138,14 @@ impl AcmeConfig {
             (
                 "retryAfterMinSecs",
                 self.retry_after_min_secs,
-                MIN_POLL_SECS,
+                MIN_RETRY_AFTER_SECS,
             ),
             ("retryAfterMaxSecs", self.retry_after_max_secs, 1),
-            ("checkIntervalSecs", self.check_interval_secs, MIN_POLL_SECS),
+            (
+                "checkIntervalSecs",
+                self.check_interval_secs,
+                MIN_CHECK_INTERVAL_SECS,
+            ),
         ];
         let mut out = Vec::new();
         for (name, value, least) in fields {
@@ -208,7 +216,7 @@ mod tests {
         let cfg: AcmeConfig = serde_json::from_str(
             r#"{ "email": "ops@example.com", "orderTimeoutSecs": 5, "validationTimeoutSecs": 6,
                  "ariTimeoutSecs": 8, "retryAfterMinSecs": 90, "retryAfterMaxSecs": 100,
-                 "checkIntervalSecs": 110 }"#,
+                 "checkIntervalSecs": 310 }"#,
         )
         .unwrap();
         let t = cfg.timings();
@@ -223,7 +231,7 @@ mod tests {
                 t.check_interval
             ]
             .map(|d| d.as_secs()),
-            [5, 6, 8, 4, 90, 100, 110]
+            [5, 6, 8, 4, 90, 100, 310]
         );
         assert!(cfg.problems().is_empty());
     }
@@ -253,6 +261,24 @@ mod tests {
         );
         // the limit itself is allowed
         assert!(one(|c| c.check_interval_secs = Some(86_400)).is_empty());
+        // a CA must not be polled every few seconds: 5 minutes is the least for the check interval, one minute for the
+        // Retry-After minimum
+        assert_eq!(
+            one(|c| c.check_interval_secs = Some(299)),
+            ["checkIntervalSecs"]
+        );
+        assert_eq!(
+            one(|c| c.check_interval_secs = Some(1)),
+            ["checkIntervalSecs"]
+        );
+        assert!(one(|c| c.check_interval_secs = Some(300)).is_empty());
+        assert_eq!(
+            one(|c| c.retry_after_min_secs = Some(59)),
+            ["retryAfterMinSecs"]
+        );
+        assert!(one(|c| c.retry_after_min_secs = Some(60)).is_empty());
+        // the other limits may be short
+        assert!(one(|c| c.order_timeout_secs = Some(1)).is_empty());
         // inverted, with both set and with only the minimum raised past the default maximum
         assert_eq!(
             one(|c| {

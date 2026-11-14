@@ -228,7 +228,7 @@ fn tls_acme_durations_are_validated() {
         ),
         (r#", "ariTimeoutSecs": 0"#, "ariTimeoutSecs"),
         (r#", "checkIntervalSecs": 0"#, "checkIntervalSecs"),
-        (r#", "checkIntervalSecs": 59"#, "checkIntervalSecs"),
+        (r#", "checkIntervalSecs": 299"#, "checkIntervalSecs"),
         (r#", "retryAfterMinSecs": 59"#, "retryAfterMinSecs"),
         (
             r#", "retryAfterMinSecs": 600, "retryAfterMaxSecs": 60"#,
