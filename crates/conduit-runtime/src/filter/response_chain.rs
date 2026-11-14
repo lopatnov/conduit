@@ -53,21 +53,21 @@ impl ResponseCtx for RequestCtx {
 /// Run by [`ResponseFilterChain::run`]; terminates early on the first
 /// non-Continue outcome.
 #[derive(Default)]
-pub struct ResponseFilterChain {
-    filters: Vec<Box<dyn ResponseFilter>>,
+pub struct ResponseFilterChain<'a> {
+    filters: Vec<Box<dyn ResponseFilter + 'a>>,
     /// Whether a filter in the chain can block the thread (a script or a WASM plugin) — see
     /// [`ResponseFilterChain::run_offloading`].
     may_block: bool,
 }
 
-impl ResponseFilterChain {
+impl<'a> ResponseFilterChain<'a> {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Append a filter. The chain can block as soon as one of its filters can ([`ResponseFilter::may_block`], `true`
     /// unless the filter says otherwise).
-    pub fn push(mut self, f: impl ResponseFilter + 'static) -> Self {
+    pub fn push(mut self, f: impl ResponseFilter + 'a) -> Self {
         self.may_block |= f.may_block();
         self.filters.push(Box::new(f));
         self
@@ -118,11 +118,18 @@ impl ResponseFilterChain {
 
     /// Build the default response filter chain from request context and config.
     ///
-    /// Called once per request inside `upstream_response_filter`.
-    pub fn build(req_ctx: &RequestCtx, config: &AppConfig) -> Self {
+    /// Called once per request inside `upstream_response_filter`. The chain borrows what its filters need from
+    /// `req_ctx` and `config` instead of cloning it (the extra headers, the `responseTransform`, the
+    /// `responseTime` options and every middleware entry used to be copied for each response, issue #486), so it
+    /// lives no longer than they do.
+    pub fn build(req_ctx: &'a RequestCtx, config: &'a AppConfig) -> Self {
         let site = config.sites.get(req_ctx.site_idx);
 
-        let mut chain = Self::new();
+        // Eight slots hold the seven phases without regrowing the vector (it was two reallocations per response).
+        let mut chain = Self {
+            filters: Vec::with_capacity(8),
+            may_block: false,
+        };
 
         // Phase 1 — Security: strip header-injection characters; deduplicate chunked.
         let allow_duplicate_chunked = site
@@ -134,16 +141,16 @@ impl ResponseFilterChain {
 
         // Phase 2 — CORS + security + custom site headers.
         chain = chain.push(InjectExtraHeadersFilter {
-            headers: req_ctx.extra_headers.clone(),
+            headers: &req_ctx.extra_headers,
         });
 
         // Phase 3 — Static response-header transform (set/remove).
-        if let Some(transform) = req_ctx.response_transform.clone() {
+        if let Some(transform) = req_ctx.response_transform.as_ref() {
             chain = chain.push(ResponseTransformFilter { transform });
         }
 
         // Phase 4 — X-Response-Time header.
-        let rt_cfg = site.and_then(|s| s.response_time.clone());
+        let rt_cfg = site.and_then(|s| s.response_time.as_ref());
         let start_time = req_ctx.start_time;
         chain = chain.push(ResponseTimeFilter { rt_cfg, start_time });
 
@@ -181,8 +188,7 @@ impl ResponseFilterChain {
 
         // Phase 7 — Rhai / WASM on_response middleware.
         let middleware = site
-            .and_then(|s| s.middleware.as_ref())
-            .cloned()
+            .and_then(|s| s.middleware.as_deref())
             .unwrap_or_default();
         if !middleware.is_empty() {
             chain = chain.push(MiddlewareResponseFilter { middleware });
@@ -312,11 +318,11 @@ fn dedup_chunked_transfer_encoding(resp: &mut ResponseHeader) {
 ///
 /// Headers were computed once in `do_request_filter` and stored in
 /// `RequestCtx.extra_headers` to avoid re-computing on every response.
-pub struct InjectExtraHeadersFilter {
-    pub headers: Vec<(String, String)>,
+pub struct InjectExtraHeadersFilter<'a> {
+    pub headers: &'a [(String, String)],
 }
 
-impl ResponseFilter for InjectExtraHeadersFilter {
+impl ResponseFilter for InjectExtraHeadersFilter<'_> {
     // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
     fn may_block(&self) -> bool {
         false
@@ -352,7 +358,7 @@ impl ResponseFilter for InjectExtraHeadersFilter {
             resp.insert_header("age", age_secs.to_string())?;
         }
 
-        for (name, value) in &self.headers {
+        for (name, value) in self.headers {
             resp.insert_header(name.clone(), value.clone())?;
         }
         Ok(ResponseFilterOutcome::Continue)
@@ -360,11 +366,11 @@ impl ResponseFilter for InjectExtraHeadersFilter {
 }
 
 /// Phase 3 — Apply static `responseTransform` (set / remove headers).
-pub struct ResponseTransformFilter {
-    pub transform: HeaderTransformConfig,
+pub struct ResponseTransformFilter<'a> {
+    pub transform: &'a HeaderTransformConfig,
 }
 
-impl ResponseFilter for ResponseTransformFilter {
+impl ResponseFilter for ResponseTransformFilter<'_> {
     // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
     fn may_block(&self) -> bool {
         false
@@ -390,12 +396,12 @@ impl ResponseFilter for ResponseTransformFilter {
 }
 
 /// Phase 4 — Inject `X-Response-Time` header when enabled.
-pub struct ResponseTimeFilter {
-    pub rt_cfg: Option<ResponseTimeConfig>,
+pub struct ResponseTimeFilter<'a> {
+    pub rt_cfg: Option<&'a ResponseTimeConfig>,
     pub start_time: std::time::Instant,
 }
 
-impl ResponseFilter for ResponseTimeFilter {
+impl ResponseFilter for ResponseTimeFilter<'_> {
     // Edits the header map in memory only, so the chain need not be told to Tokio as blocking.
     fn may_block(&self) -> bool {
         false
@@ -406,8 +412,8 @@ impl ResponseFilter for ResponseTimeFilter {
         resp: &mut ResponseHeader,
         _req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
-        if response_time::is_enabled(self.rt_cfg.as_ref()) {
-            let digits = response_time::decimal_digits(self.rt_cfg.as_ref());
+        if response_time::is_enabled(self.rt_cfg) {
+            let digits = response_time::decimal_digits(self.rt_cfg);
             let elapsed = self.start_time.elapsed();
             let value = response_time::format_elapsed(elapsed, digits);
             resp.insert_header("x-response-time", value)?;
@@ -661,7 +667,7 @@ mod tests {
         let mut resp = make_resp(200);
         let ctx = dummy_ctx();
         InjectExtraHeadersFilter {
-            headers: vec![
+            headers: &[
                 ("x-served-by".to_owned(), "conduit".to_owned()),
                 ("x-version".to_owned(), "1".to_owned()),
             ],
@@ -677,7 +683,7 @@ mod tests {
         let mut resp = make_resp(200);
         resp.insert_header("server", "Pingora").unwrap();
         let ctx = dummy_ctx();
-        InjectExtraHeadersFilter { headers: vec![] }
+        InjectExtraHeadersFilter { headers: &[] }
             .apply(&mut resp, &ctx)
             .unwrap();
         assert!(
@@ -691,7 +697,7 @@ mod tests {
         let mut resp = make_resp(200);
         resp.insert_header("server", "nginx/1.24").unwrap();
         let ctx = dummy_ctx();
-        InjectExtraHeadersFilter { headers: vec![] }
+        InjectExtraHeadersFilter { headers: &[] }
             .apply(&mut resp, &ctx)
             .unwrap();
         assert!(resp.headers.get("server").is_some(), "upstream server kept");
@@ -705,7 +711,7 @@ mod tests {
         resp.insert_header("x-remove-me", "old").unwrap();
         let ctx = dummy_ctx();
         ResponseTransformFilter {
-            transform: conduit_config::schema::HeaderTransformConfig {
+            transform: &conduit_config::schema::HeaderTransformConfig {
                 set_headers: Some(
                     [("x-added".to_owned(), "yes".to_owned())]
                         .iter()
@@ -869,7 +875,7 @@ mod tests {
             .push(CrlfProtectionFilter {
                 allow_duplicate_chunked: false,
             })
-            .push(InjectExtraHeadersFilter { headers: vec![] });
+            .push(InjectExtraHeadersFilter { headers: &[] });
         let mut resp = make_resp(200);
         let ctx = dummy_ctx();
         assert!(matches!(
@@ -884,7 +890,7 @@ mod tests {
     fn response_time_filter_adds_header_when_enabled() {
         use std::time::Instant;
         let filter = ResponseTimeFilter {
-            rt_cfg: Some(conduit_config::schema::ResponseTimeConfig::Enabled(true)),
+            rt_cfg: Some(&conduit_config::schema::ResponseTimeConfig::Enabled(true)),
             start_time: Instant::now(),
         };
         let mut resp = make_resp(200);
@@ -907,7 +913,7 @@ mod tests {
     fn response_time_filter_skips_header_when_disabled() {
         use std::time::Instant;
         let filter = ResponseTimeFilter {
-            rt_cfg: Some(conduit_config::schema::ResponseTimeConfig::Enabled(false)),
+            rt_cfg: Some(&conduit_config::schema::ResponseTimeConfig::Enabled(false)),
             start_time: Instant::now(),
         };
         let mut resp = make_resp(200);
@@ -940,7 +946,7 @@ mod tests {
         use conduit_config::schema::{ResponseTimeConfig, ResponseTimeOptions};
         use std::time::Instant;
         let filter = ResponseTimeFilter {
-            rt_cfg: Some(ResponseTimeConfig::Options(ResponseTimeOptions {
+            rt_cfg: Some(&ResponseTimeConfig::Options(ResponseTimeOptions {
                 digits: Some(2),
             })),
             start_time: Instant::now(),
@@ -1109,7 +1115,7 @@ mod tests {
     fn inject_filter_injects_age_header_when_cache_age_set() {
         // When RequestCtx.cache_age_secs() is Some, the filter must inject
         // an `Age` header with the computed value.
-        let filter = InjectExtraHeadersFilter { headers: vec![] };
+        let filter = InjectExtraHeadersFilter { headers: &[] };
         let mut resp = make_resp(200);
         let mut ctx = dummy_ctx();
         ctx.cache = Some(conduit_cache::CacheReqState {
@@ -1127,7 +1133,7 @@ mod tests {
     #[test]
     fn inject_filter_no_age_header_when_not_cache_hit() {
         // cache_age_secs = None (non-cached response) → no Age header added.
-        let filter = InjectExtraHeadersFilter { headers: vec![] };
+        let filter = InjectExtraHeadersFilter { headers: &[] };
         let mut resp = make_resp(200);
         let ctx = dummy_ctx(); // cache_age_secs defaults to None
         filter.apply(&mut resp, &ctx).unwrap();
@@ -1143,7 +1149,7 @@ mod tests {
         // When the cached response already carries an Age header from a prior
         // hop, it must be replaced with the freshly computed value to prevent
         // double-counting.
-        let filter = InjectExtraHeadersFilter { headers: vec![] };
+        let filter = InjectExtraHeadersFilter { headers: &[] };
         let mut resp = make_resp(200);
         resp.insert_header("age", "10").unwrap(); // stale Age from stored response
         let mut ctx = dummy_ctx();
@@ -1165,7 +1171,7 @@ mod tests {
 
     #[test]
     fn inject_filter_empty_headers_is_noop() {
-        let filter = InjectExtraHeadersFilter { headers: vec![] };
+        let filter = InjectExtraHeadersFilter { headers: &[] };
         let mut resp = make_resp(200);
         let ctx = dummy_ctx();
         filter.apply(&mut resp, &ctx).unwrap();
@@ -1176,7 +1182,7 @@ mod tests {
     #[test]
     fn inject_filter_multiple_headers_all_added() {
         let filter = InjectExtraHeadersFilter {
-            headers: vec![
+            headers: &[
                 ("x-a".to_owned(), "1".to_owned()),
                 ("x-b".to_owned(), "2".to_owned()),
                 ("x-c".to_owned(), "3".to_owned()),
@@ -1340,7 +1346,7 @@ mod tests {
     fn transform_filter_no_op_when_empty_config() {
         use conduit_config::schema::HeaderTransformConfig;
         let filter = ResponseTransformFilter {
-            transform: HeaderTransformConfig {
+            transform: &HeaderTransformConfig {
                 set_headers: None,
                 remove_headers: None,
             },
@@ -1357,7 +1363,7 @@ mod tests {
     fn transform_filter_only_remove() {
         use conduit_config::schema::HeaderTransformConfig;
         let filter = ResponseTransformFilter {
-            transform: HeaderTransformConfig {
+            transform: &HeaderTransformConfig {
                 set_headers: None,
                 remove_headers: Some(vec!["x-remove".to_owned()]),
             },
