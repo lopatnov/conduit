@@ -117,19 +117,37 @@ e2e_prove_isolation() {
 
 # e2e_who_upstreams NAME...: one tiny upstream per name (who1.test is the first, 192.0.2.11, and so on); a GET to any path
 # answers with the name, so a client can tell which of them the balancer chose. They run the client image (python3).
-# HTTP on port 8080; the same server also answers `/slow` after two seconds (for least-conn) and `/status/N` with N.
+# HTTP on port 8080; the same server also answers `/slow` after two seconds (for least-conn), `/status/N` with N,
+# `/headers` with the request headers as JSON (a header map: names as received) and `/seen` with every request line it
+# has served so far, one per line (the oracle for smuggling and traversal checks: what did the upstream really get).
 e2e_who_upstreams() {
   local i=0 name
   for name in "$@"; do
     i=$((i + 1))
     docker run -d --name "conduit-e2e-who-$name-$E2E_ID" --network "$NET" --ip "192.0.2.$((10 + i))" \
       --network-alias "$name.test" conduit-e2e-client python3 -c '
-import http.server, sys, time
+import http.server, json, sys, time
 name = sys.argv[1]
+SEEN = []
 class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_GET(self):
         code = 200
+        if self.path == "/seen":
+            body = ("\n".join(SEEN) + "\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        SEEN.append(self.command + " " + self.path)
+        if self.path.startswith("/headers"):
+            body = json.dumps({k: v for k, v in self.headers.items()}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/slow"):
             time.sleep(2)
         elif self.path.startswith("/status/"):
