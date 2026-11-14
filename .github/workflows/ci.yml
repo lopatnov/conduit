@@ -1336,6 +1336,34 @@ jobs:
       - name: test (standard features, 32-bit x86)
         run: cross test --locked --target i686-unknown-linux-gnu -p lopatnov-conduit -p lopatnov-conduit-runtime -p lopatnov-conduit-admin -p lopatnov-conduit-server -p lopatnov-conduit-cli --features standard
 
+  # ── The credential checks on musl, running on musl (issue #624) ─────────────
+  # The "sshole" bug (an OpenSSH password bypass) existed only where the C library was musl, and the static musl
+  # binary is what Conduit ships for `FROM scratch` images and in the .deb. `cross-compile` only builds it. This job
+  # builds the proxy inside Alpine (musl is the system libc there, no cross toolchain) and runs the tests that try
+  # every credential kind at the lengths and shapes of that class (tests/credential_edge_cases.rs: 255..65 536
+  # characters, empty, NUL, non-UTF-8, a one-byte difference) against that binary, so a check that behaves
+  # differently on musl fails here. `docker run` rather than `container:`: the runner's Node cannot start in an
+  # Alpine job container, and `actions/checkout` has already run on the host by then.
+  test-musl:
+    name: Credential checks on musl (Alpine)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and run the credential tests in rust:alpine
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e CARGO_TERM_COLOR -e RUST_BACKTRACE \
+            -e CARGO_TARGET_DIR=/src/target/musl-alpine \
+            rust:1-alpine sh -euxc '
+              apk add --no-cache build-base cmake perl pkgconf git
+              ldd --version 2>&1 | head -1   # musl libc, not glibc
+              cargo test --locked --features standard --test credential_edge_cases
+            '
+
   # ── The finished i686 binary, run in a 32-bit Debian container (issue #696) ──
   # `test-i686` runs the tests in the build image (Ubuntu 16.04's glibc). The release ships the finished `full` binary,
   # so this job runs that one in i386/debian:12, a different 32-bit distribution, and checks the things a user does with
