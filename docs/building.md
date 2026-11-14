@@ -10,7 +10,7 @@
   (and so `full`) needs **1.97** — `crates/conduit-plugin-wasm` overrides its
   own `rust-version` for wasmtime 50's floor. CI's main jobs build on current
   `stable`, which is ahead of all three; the `msrv` CI job checks the default
-  and `standard` builds on the 1.89 floor. Running the test suite needs a newer toolchain than
+  and `standard` builds on the 1.89 floor, and `msrv-k8s` the `kubernetes` build on 1.95. Running the test suite needs a newer toolchain than
   1.89 (a dev-dependency, `serial_test 4`, requires 1.93.1). The MSRV numbers
   only matter if you pin an older toolchain yourself.
 

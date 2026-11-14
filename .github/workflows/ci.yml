@@ -91,6 +91,27 @@ jobs:
       - name: check (standard features)
         run: cargo check --locked -p lopatnov-conduit --features standard
 
+  # ── The `kubernetes` feature builds on its own floor (1.95, kube 5.1) ───────
+  # `crates/conduit-k8s` declares `rust-version = "1.95"`; this job keeps that claim honest.
+  msrv-k8s:
+    name: MSRV (1.95, kubernetes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: "1.95"
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: check (kubernetes)
+        run: cargo check --locked -p lopatnov-conduit --features kubernetes
+
   # ── Build + test with all optional features enabled ─────────────────────────
   ci-features:
     name: All features (Linux)
