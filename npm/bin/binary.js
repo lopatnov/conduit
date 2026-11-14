@@ -325,10 +325,17 @@ function download(url, dest, write) {
         });
         res.on("error", fail);
         file.on("error", fail);
+        // Resolve on "close", not on "finish": the descriptor is still open for writing at "finish", and running a file
+        // that is open for writing fails with ETXTBSY (it showed on Node 24 in CI, in the test that runs a file the
+        // launcher has just downloaded).
+        let written = false;
         file.on("finish", () => {
           progress.done();
           if (total > 0 && received !== total) return reject(new Error(`got ${received} of ${total} bytes`));
-          resolve();
+          written = true;
+        });
+        file.on("close", () => {
+          if (written) resolve();
         });
         res.pipe(file);
       });

@@ -65,6 +65,8 @@ pub(crate) enum HandlerKind {
     /// All upstream connections are at the configured max limit — circuit open.
     /// Returns 503 Service Unavailable without contacting any upstream.
     Overloaded,
+    /// `sticky.strict` refusal: 503 with the reason `sticky_upstream_unavailable`.
+    StickyUnavailable,
 }
 
 /// All per-request guard data bundled into one value to keep `run_guard_filters`
@@ -127,6 +129,7 @@ pub(crate) fn handler_kind_of(upstream: &UpstreamTarget) -> HandlerKind {
         UpstreamTarget::Local(LocalHandler::HotReloadSse) => HandlerKind::HotReloadSse,
         UpstreamTarget::Local(LocalHandler::HotReloadJs) => HandlerKind::HotReloadJs,
         UpstreamTarget::Local(LocalHandler::Overloaded) => HandlerKind::Overloaded,
+        UpstreamTarget::Local(LocalHandler::StickyUnavailable) => HandlerKind::StickyUnavailable,
         UpstreamTarget::Local(LocalHandler::Fallback) => HandlerKind::Fallback,
         // Deliberately exhaustive — no `_ =>` catch-all (issue #144). A catch-all here
         // silently routed any *new* `LocalHandler`/`UpstreamTarget` variant to Pingora's
@@ -148,6 +151,15 @@ mod tests {
     fn handler_kind_health() {
         let upstream = UpstreamTarget::Local(LocalHandler::Health);
         assert!(matches!(handler_kind_of(&upstream), HandlerKind::Health));
+    }
+
+    #[test]
+    fn handler_kind_sticky_unavailable() {
+        let upstream = UpstreamTarget::Local(LocalHandler::StickyUnavailable);
+        assert!(matches!(
+            handler_kind_of(&upstream),
+            HandlerKind::StickyUnavailable
+        ));
     }
 
     #[test]

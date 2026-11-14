@@ -136,6 +136,26 @@ pub fn validate_route_config(
             "timeoutMs must be at least 1 (milliseconds)",
         ));
     }
+    if let Some(sticky) = &cfg.sticky {
+        // The name is written into a `Set-Cookie` line as it is: a `;`, a space or a control character in it would
+        // add attributes to the cookie or make the browser drop it (the security review of #731).
+        if !is_cookie_name(&sticky.cookie) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.sticky.cookie"),
+                "the cookie name must be a non-empty HTTP token (letters, digits and !#$%&'*+-.^_`|~)",
+            ));
+        }
+    }
+    if cfg
+        .sticky
+        .as_ref()
+        .is_some_and(|s| s.max_age_secs == Some(0))
+    {
+        errors.push(ValidationError::new(
+            format!("{prefix}.sticky.maxAgeSecs"),
+            "maxAgeSecs must be at least 1 (seconds): Max-Age=0 would delete the cookie",
+        ));
+    }
     warn_slow_start_ignored(cfg, prefix);
     warn_sticky_has_no_effect(cfg, prefix);
     warn_group_strategy_cannot_see_load(cfg, prefix);
@@ -159,6 +179,14 @@ pub fn validate_route_config(
     }
 }
 
+/// `true` for a non-empty RFC 9110 `token`: the grammar of a cookie name (RFC 6265 section 4.1.1).
+fn is_cookie_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+}
+
 /// `sticky` that does nothing (issue #644): on a route with `groups` it is never read (`resolve_grouped`
 /// passes no sticky state, so no cookie is set and none is honoured), and `strict` only refuses a client whose
 /// cookie verifies against an unhealthy upstream, which exists only in `secret` mode. A user who sets either
@@ -173,11 +201,21 @@ fn warn_sticky_has_no_effect(cfg: &ProxyRouteConfig, prefix: &str) {
              groupStrategy and the target by each group's strategy, and set no sticky cookie \
              (see docs/configuration.md, 'Sticky sessions')"
         );
-    } else if sticky.strict == Some(true) && sticky.secret.is_none() {
-        tracing::warn!(
-            "{prefix}.sticky.strict has no effect without sticky.secret: only a signed cookie names \
-             an upstream to refuse (see docs/configuration.md, 'Sticky sessions')"
-        );
+    } else if sticky.secret.is_none() {
+        // Without `secret` Conduit sets no cookie and honours none as a pin: these only describe a cookie it
+        // would set, or a refusal of a pin it would verify.
+        if sticky.strict == Some(true) {
+            tracing::warn!(
+                "{prefix}.sticky.strict has no effect without sticky.secret: only a signed cookie names \
+                 an upstream to refuse (see docs/configuration.md, 'Sticky sessions')"
+            );
+        }
+        if sticky.secure.is_some() || sticky.max_age_secs.is_some() {
+            tracing::warn!(
+                "{prefix}.sticky.secure and sticky.maxAgeSecs have no effect without sticky.secret: Conduit \
+                 sets no cookie then, the application does (see docs/configuration.md, 'Sticky sessions')"
+            );
+        }
     }
 }
 
@@ -588,6 +626,8 @@ mod tests {
             cookie: "sid".to_owned(),
             secret: None,
             strict: None,
+            secure: None,
+            max_age_secs: None,
         });
         let warnings = warnings_for(&cfg);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -622,6 +662,8 @@ mod tests {
             cookie: "sid".to_owned(),
             secret: None,
             strict: None,
+            secure: None,
+            max_age_secs: None,
         });
         cfg.groups = Some(vec![group("plain", Some(LoadBalanceStrategy::RoundRobin))]);
         // The only warning is the one that says the leftover `sticky` does nothing (issue #644): the slow-start
@@ -645,6 +687,83 @@ mod tests {
         );
     }
 
+    /// The security review of #731: the cookie name goes into a `Set-Cookie` line unchanged, so it must be a token.
+    #[test]
+    fn sticky_cookie_name_must_be_a_token() {
+        for good in [
+            "sid",
+            "srv_id",
+            "SERVERID",
+            "session.id",
+            "a-b",
+            "x!#$%&'*+^`|~",
+        ] {
+            assert!(is_cookie_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "a b",
+            "a;b",
+            "a=b",
+            "a\r\nb",
+            "a,b",
+            "a\"b",
+            "caf\u{e9}",
+        ] {
+            assert!(!is_cookie_name(bad), "{bad:?}");
+        }
+        let mut cfg = route(Some(LoadBalanceStrategy::RoundRobin), None);
+        cfg.sticky = Some(StickyConfig {
+            cookie: "bad; Domain=evil".to_owned(),
+            secret: None,
+            strict: None,
+            secure: None,
+            max_age_secs: None,
+        });
+        let mut errors = Vec::new();
+        validate_route_config(&cfg, "p", &mut errors);
+        assert!(
+            errors.iter().any(|e| e.path.ends_with("sticky.cookie")),
+            "{errors:?}"
+        );
+    }
+
+    /// Issue #644: `maxAgeSecs: 0` would delete the cookie (an error); `secure` and `maxAgeSecs` without `secret`
+    /// describe a cookie Conduit does not set (a warning).
+    #[test]
+    fn sticky_cookie_attributes_are_validated() {
+        let sticky =
+            |secret: Option<&str>, secure: Option<bool>, max_age: Option<u64>| StickyConfig {
+                cookie: "sid".to_owned(),
+                secret: secret.map(str::to_owned),
+                strict: None,
+                secure,
+                max_age_secs: max_age,
+            };
+        let signed = "s3cret-s3cret-s3cret-s3cret-s3cret";
+        let mut cfg = route(Some(LoadBalanceStrategy::RoundRobin), None);
+        cfg.sticky = Some(sticky(Some(signed), Some(true), Some(3600)));
+        let mut errors = Vec::new();
+        validate_route_config(&cfg, "p", &mut errors);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(warnings_for(&cfg).is_empty());
+
+        cfg.sticky = Some(sticky(Some(signed), None, Some(0)));
+        let mut errors = Vec::new();
+        validate_route_config(&cfg, "p", &mut errors);
+        assert!(
+            errors.iter().any(|e| e.path.contains("maxAgeSecs")),
+            "{errors:?}"
+        );
+
+        cfg.sticky = Some(sticky(None, Some(true), None));
+        let warnings = warnings_for(&cfg);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("have no effect without sticky.secret"));
+        cfg.sticky = Some(sticky(None, None, Some(60)));
+        assert_eq!(warnings_for(&cfg).len(), 1);
+    }
+
     /// Issue #644: `sticky` on a route with `groups` is never read, and `strict` without `secret` has nothing
     /// to refuse; each is said once. A working `sticky` says nothing.
     #[test]
@@ -653,6 +772,8 @@ mod tests {
             cookie: "sid".to_owned(),
             secret: secret.map(str::to_owned),
             strict,
+            secure: None,
+            max_age_secs: None,
         };
         let mut cfg = route(Some(LoadBalanceStrategy::RoundRobin), None);
         // works: signed, strict or not; unsigned and not strict

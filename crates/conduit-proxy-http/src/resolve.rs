@@ -226,7 +226,7 @@ fn finalize_sticky_cookie(
     fail_open: bool,
     healthy_urls: &[String],
     chosen_url: &str,
-) -> Option<(String, String)> {
+) -> Option<crate::state::StickyCookie> {
     let sticky_relocated =
         pinned.is_some_and(|p| !honored_pin && !fail_open && healthy_urls.iter().any(|h| h == p));
     if sticky_relocated {

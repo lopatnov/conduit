@@ -940,6 +940,12 @@ fn sticky_hmac_strict_mode_rejects_stale_pin_with_503() {
         503,
         "strict mode must reject a pin to an unhealthy upstream with 503"
     );
+    // The reason names what happened: the upstream is down, not overloaded (issue #644).
+    let reason = rejected.text().unwrap();
+    assert!(
+        reason.contains("sticky_upstream_unavailable") && !reason.contains("upstream_overloaded"),
+        "unexpected 503 body: {reason}"
+    );
 
     // A fresh request with no cookie at all must still be served normally —
     // strict mode only rejects an actual stale pin, it doesn't take the
@@ -951,4 +957,55 @@ fn sticky_hmac_strict_mode_rejects_stale_pin_with_503() {
         "backend-a",
         "a cookie-less request must route to the healthy backend"
     );
+}
+
+/// Issue #644: the signed cookie carries `Max-Age` and `Secure` as the route says. With `secure` unset a plain-HTTP
+/// site sets no `Secure` (the browser would drop it and the affinity would silently end); `secure: true` always sets
+/// it; without `maxAgeSecs` the cookie is a session cookie.
+#[test]
+fn sticky_cookie_carries_the_configured_secure_and_max_age() {
+    let upstream = MockUpstream::start("backend");
+    let cookie_header = |sticky: serde_json::Value| -> String {
+        let port = common::free_port();
+        let admin_port = common::free_port();
+        let srv = common::TestServer::start_with_config(
+            port,
+            admin_port,
+            serde_json::json!({
+                "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+                "sites": [{
+                    "port": port,
+                    "proxy": { "/": { "targets": [ upstream.url() ], "sticky": sticky } }
+                }]
+            }),
+        );
+        let resp = common::get(srv.url("/")).expect("GET /");
+        resp.headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find(|v| v.starts_with("sid="))
+            .expect("a sticky Set-Cookie")
+            .to_owned()
+    };
+    let secret = "test-sticky-secret";
+
+    let plain = cookie_header(serde_json::json!({ "cookie": "sid", "secret": secret }));
+    assert!(
+        plain.ends_with("; Path=/; HttpOnly; SameSite=Lax"),
+        "{plain}"
+    );
+
+    let configured = cookie_header(serde_json::json!({
+        "cookie": "sid", "secret": secret, "secure": true, "maxAgeSecs": 3600
+    }));
+    assert!(
+        configured.ends_with("; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=3600"),
+        "{configured}"
+    );
+
+    let never = cookie_header(serde_json::json!({
+        "cookie": "sid", "secret": secret, "secure": false, "maxAgeSecs": 60
+    }));
+    assert!(never.ends_with("; SameSite=Lax; Max-Age=60"), "{never}");
 }

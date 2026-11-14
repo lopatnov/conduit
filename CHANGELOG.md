@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `sticky.secure` and `sticky.maxAgeSecs`: the `Secure` and `Max-Age` of the cookie Conduit sets in `secret` mode. `secure`
+  unset means "when the site has `tls`"; `maxAgeSecs` unset is a session cookie, `0` is rejected (#644).
+
 ### Security
 
 - **A credential that is an unset environment variable is now warned about** (issue #624, the "sshole" class: a failed
@@ -19,6 +24,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The sticky cookie of a site that has `tls` is now `Secure` unless `sticky.secure: false` says otherwise (a client that also
+  talks plain HTTP to that site will not send the cookie back there); a plain-HTTP site is unchanged (#644).
+- `sticky.cookie` must be a non-empty HTTP token: a name with `;`, a space or a control character is a validation error
+  (it was written into the `Set-Cookie` line unchanged).
+- A `sticky.strict` refusal answers `503` with the reason `sticky_upstream_unavailable` instead of `upstream_overloaded`
+  (the upstream is down, not overloaded; the status is the same) (#644).
 - **The systemd unit (and the `.deb`) is hardened further** (issue #670). `PrivateDevices`, `ProtectKernelTunables`,
   `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`,
   `RestrictSUIDSGID`, `RestrictRealtime`, `RestrictNamespaces`, `LockPersonality`, `RestrictAddressFamilies`,
@@ -217,6 +228,22 @@ changed.
 ---
 
 ## [2.2.0] — 2026-11-07
+
+### Added
+
+- **`tls.acme.profile` and a renewal threshold that follows the certificate's lifetime** (issue #594). Renewal starts when no
+  more than a third of the lifetime is left, never later than 30 days before expiry: unchanged for 90-day certificates,
+  21 days for 64-day ones (Let's Encrypt from 2027-02-10), 15 for 45-day ones, and a 6-day certificate is no longer due on
+  every check. `profile` is sent with the order. Not done: ARI (RFC 9773) renewal windows, which `instant-acme` supports
+  and which stays open on #594.
+
+### Fixed
+
+- **ACME follow-ups of #548** (issue #555): a reload that changes `tls.acme.email/directory/storage/challenge`, or adds or
+  removes `tls.acme` on a site, is now refused as a cold change (it silently kept the old values). Pointing `directory`
+  at another CA no longer tries the first CA's account there: the account file records its directory and a second file
+  is used for another one. A PKCS#1, SEC1 or encrypted private key in the storage directory is named in the log before it
+  is replaced (only PKCS#8 is read). Still open: swapping a renewed certificate into the running listener (#451).
 
 ### Security
 

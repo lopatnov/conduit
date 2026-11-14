@@ -337,7 +337,10 @@ pub(super) fn check_unresolved_credential_warnings(config: &AppConfig, warnings:
         }
         for (j, route) in site.routes.iter().flatten().enumerate() {
             if let Some(secret) = route.proxy.as_ref().and_then(sticky_secret) {
-                push(format!("sites[{i}].routes[{j}].proxy.sticky.secret"), secret);
+                push(
+                    format!("sites[{i}].routes[{j}].proxy.sticky.secret"),
+                    secret,
+                );
             }
         }
         for (j, c) in site
