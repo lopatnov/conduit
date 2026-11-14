@@ -8,6 +8,9 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 
 | Issue | What | Found in | Status (2026-11-09) |
 |---|---|---|---|
+| #737 | feature warnings and `conduit features` miss a `cache` block on `routes[].proxy` and a `redis://` cache store | the `disk-cache` gate (#645) | open: filed with the PR, a separate fix (one walk over every proxy route of a site) |
+| #725 | tcp proxy: a connect failure drops the client's connection instead of trying the next target | filed by the owner, 2026-11-14 | open (not mine; listed so the ledger and the fast-follow issues agree) |
+| #645 | disk-cache is a marker feature | balancer work (#631) | done in the disk-cache PR (2026-11-14): the disk store is behind `disk-cache`, which is in `standard`, `gateway` and `full` |
 | #714 | kube 5.0.0 (#694): needs `k8s-openapi` 0.29, a Kubernetes minimum-version decision (`v1_32` is gone) and a fix of `conduit-k8s` | the Dependabot triage of 2026-11-13 | done in the deps PR (2026-11-14, owner away: decided by me): `v1_33` (the oldest set 0.29 offers), kube 5.1, `conduit-k8s` needed no code change; kube 5.1 needs Rust 1.95, so the crate carries its own `rust-version` and the `msrv` job no longer checks `kubernetes` |
 | #712 | npm: the package of 2.3.0 was refused by the registry (413, 208.7 MB): the binaries leave the package, the launcher downloads them | the release of 2.3.0 (owner) | done in this PR (2.3.1): the package is ~12 kB, the binary is fetched at install and at the first run, with source and destination shown |
 | #711 | CI: the tests of the npm package (`npm/test`) are not run by any job | the same investigation | done in this PR: the job `npm-package` (Node 18 and 24) runs them |
@@ -36,7 +39,6 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 | #619 | Windows #600 follow-ups: placeholders, ReFS, symlink-converted dirs (needs those environments) | #600 | open, waits for the environments |
 | #643 | groups: a dead group is not failed over; backup, retry and mirror not applied to a grouped route | balancer work (#631) | open (predates the ledger) |
 | #644 | sticky: ignored on routes with groups without a warning; cookie has no Secure/Max-Age | balancer work (#631) | sticky warnings done in the fast-follow PR (groups, strict without secret); open: `Secure`/`Max-Age` of the cookie, a distinct reason for the strict refusal (wire-visible change) |
-| #645 | disk-cache is a marker feature: it gates no code | balancer work (#631) | open (predates the ledger) |
 | #647 | perf: four upstreams give 10-20% less throughput than one, for every strategy | balancer work (#631) | open (predates the ledger) |
 | #651 | half-open: the probe offer should be claimed by the pick that selects the upstream | balancer work (#631) | open (predates the ledger) |
 | #653 | health checking fully configurable (`timeoutMs` done in #683; method, pass criteria, request-driven probing, per-upstream off, half-open timings remain) | balancer work (#631) | open (partly done) |
