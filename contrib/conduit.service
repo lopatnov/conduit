@@ -22,6 +22,25 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+# AF_NETLINK: glibc's getaddrinfo asks the kernel which address families are configured (AI_ADDRCONFIG).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+# The only capability the service can ever hold is the one that lets it bind ports 80 and 443; it gets it only through
+# `AmbientCapabilities=CAP_NET_BIND_SERVICE` in a drop-in (docs/deployment.md). MemoryDenyWriteExecute is not set: the
+# WASM runtime (wasmtime) maps memory that is writable and then executable.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+UMask=0027
 # systemd creates these two directories (owned by the service user) at every start and makes them writable under
 # ProtectSystem=strict; with ReadWritePaths= a missing directory stops the service from starting (status 226).
 LogsDirectory=conduit
