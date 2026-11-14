@@ -869,16 +869,18 @@ mod tests {
                 cookie: "srv".to_owned(),
                 secret: Some("s3cret".to_owned()),
                 strict: None,
+                secure: None,
+                max_age_secs: None,
             }),
             ..Default::default()
         });
         let counters: DashMap<String, AtomicUsize> = DashMap::new();
         let resolution = resolve_route_target(&target, "/api", &counters, &UpstreamRegistry::new());
-        let (name, _value) = resolution
+        let cookie = resolution
             .state
             .sticky_set_cookie
             .expect("a sticky route must hand out its cookie");
-        assert_eq!(name, "srv");
+        assert_eq!(cookie.name, "srv");
     }
 
     #[test]

@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `sticky.secure` and `sticky.maxAgeSecs`: the `Secure` and `Max-Age` of the cookie Conduit sets in `secret` mode. `secure`
+  unset means "when the site has `tls`"; `maxAgeSecs` unset is a session cookie, `0` is rejected (#644).
+
+### Changed
+
+- A `sticky.strict` refusal answers `503` with the reason `sticky_upstream_unavailable` instead of `upstream_overloaded`
+  (the upstream is down, not overloaded; the status is the same) (#644).
+
 ---
 
 ## [2.3.1] — 2026-11-14
