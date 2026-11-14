@@ -432,7 +432,13 @@ pub fn free_port() -> u16 {
     loop {
         // Wrap monotonically within 10000–19999.
         let p = (next.fetch_add(1, Ordering::Relaxed) % 10000 + 10000) as u16;
-        if TcpListener::bind(format!("127.0.0.1:{p}")).is_ok() {
+        // The servers under test bind `0.0.0.0`, so that is the address to probe: a port another process holds on the
+        // wildcard address (or exclusively, or inside a reserved range on Windows) still lets a bind on 127.0.0.1
+        // succeed, and the server then dies with `bind() failed ... os error 10013` (issue #677). Loopback is probed
+        // too, for a listener that holds only that address.
+        if TcpListener::bind(format!("0.0.0.0:{p}")).is_ok()
+            && TcpListener::bind(format!("127.0.0.1:{p}")).is_ok()
+        {
             return p;
         }
         // Port in use — skip it and try the next one.

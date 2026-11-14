@@ -19,6 +19,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (and, with `redis`, Redis) cache, and a route whose `cache.store` is `disk:<path>` is not cached there, with a start-up
   warning and `conduit features` listing `disk-cache`. `standard`, `gateway` and `full` include it, so the published builds
   keep the disk store; a custom `--features cache` build that used `disk:` stores needs `--features disk-cache`.
+- **The systemd unit (and the `.deb`) is hardened further** (issue #670). `PrivateDevices`, `ProtectKernelTunables`,
+  `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`,
+  `RestrictSUIDSGID`, `RestrictRealtime`, `RestrictNamespaces`, `LockPersonality`, `RestrictAddressFamilies`,
+  `SystemCallArchitectures=native`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` and `UMask=0027`;
+  `systemd-analyze security` goes from 8.3 EXPOSED to 3.2 OK. The proxy, a static site, name resolution, the Admin API,
+  `systemctl reload` and port 80 through the `AmbientCapabilities` drop-in were run under a real systemd; the WASM
+  runtime, ACME, Redis and the Kubernetes provider were not.
 
 ---
 

@@ -12,7 +12,7 @@
 # a real upstream rather than the in-process fixtures of tests/ (HTTP/2 with another implementation, upstream protocol
 # behaviour, TLS with a verifying client, ...). Add a scenario as a new file here; run.sh picks it up.
 #
-# Needs Docker and openssl. Environment: CONDUIT_IMAGE, the image the binary runs in (default ubuntu:24.04 by digest: the
+# Needs Docker and openssl on the host. Environment: CONDUIT_IMAGE, the image the binary runs in (default ubuntu:24.04 by digest: the
 # binary of the CI job is built on its glibc).
 
 E2E_UBUNTU=ubuntu@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5
@@ -37,7 +37,7 @@ e2e_cleanup() {
     echo "--- conduit log"
     docker logs "$APP" 2>&1 | tail -30 || true
   fi
-  docker rm -f "$APP" "$UP" >/dev/null 2>&1 || true
+  docker rm -f "$APP" "$UP" ${E2E_WHO:-} >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -53,10 +53,17 @@ ok() {
 
 # e2e_build_client: the client image. It needs the Internet, so it is built before the network exists.
 e2e_build_client() {
+  # E2E_SKIP_CLIENT_BUILD=1: the image `conduit-e2e-client` was built by hand (a sandbox whose build containers cannot
+  # reach the Debian mirror); it needs curl, nghttp, jq, openssl and nc.
+  if [ -n "${E2E_SKIP_CLIENT_BUILD:-}" ]; then
+    docker image inspect conduit-e2e-client >/dev/null || fail "E2E_SKIP_CLIENT_BUILD is set but there is no conduit-e2e-client image"
+    docker pull -q "$E2E_HTTPBIN" >/dev/null
+    return
+  fi
   docker build -q -t conduit-e2e-client - >/dev/null <<EOF
 FROM $E2E_DEBIAN
 RUN apt-get update -qq \\
- && apt-get install -y -qq --no-install-recommends curl ca-certificates nghttp2-client jq >/dev/null \\
+ && apt-get install -y -qq --no-install-recommends curl ca-certificates nghttp2-client jq openssl netcat-openbsd python3 >/dev/null \\
  && rm -rf /var/lib/apt/lists/*
 EOF
   docker pull -q "$E2E_HTTPBIN" >/dev/null
@@ -79,7 +86,8 @@ e2e_network() {
 }
 
 # e2e_start_conduit CONFIG: copy CONFIG to $WORK/conduit.yaml and start the binary on it; /conf in the container is $WORK
-# (the certificate is /conf/cert.pem and /conf/key.pem). Returns when conduit answers on URL (the second argument).
+# (the certificate is /conf/cert.pem and /conf/key.pem). Returns when conduit answers on URL (the second argument); more
+# arguments are given to the curl that waits (a client certificate, for instance).
 e2e_start_conduit() {
   cp "$1" "$WORK/conduit.yaml"
   docker run -d --name "$APP" --network "$NET" --ip 192.0.2.20 --network-alias app.test \
@@ -87,7 +95,7 @@ e2e_start_conduit() {
     conduit -c /conf/conduit.yaml >/dev/null
   local up=""
   for _ in $(seq 1 50); do
-    if client curl -sS --max-time 10 --cacert /conf/cert.pem -o /dev/null "$2" 2>/dev/null; then up=1; break; fi
+    if client curl -sS --max-time 10 --cacert /conf/cert.pem "${@:3}" -o /dev/null "$2" 2>/dev/null; then up=1; break; fi
     sleep 0.5
   done
   [ -n "$up" ] || fail "conduit does not answer on $2"
@@ -105,4 +113,67 @@ e2e_prove_isolation() {
     fail "the test network has a route to the Internet"
   fi
   ok "isolated network"
+}
+
+# e2e_who_upstreams NAME...: one tiny upstream per name (who1.test is the first, 192.0.2.11, and so on); a GET to any path
+# answers with the name, so a client can tell which of them the balancer chose. They run the client image (python3).
+# HTTP on port 8080; the same server also answers `/slow` after two seconds (for least-conn), `/status/N` with N,
+# `/headers` with the request headers as JSON (a header map: names as received) and `/seen` with every request line it
+# has served so far, one per line (the oracle for smuggling and traversal checks: what did the upstream really get).
+e2e_who_upstreams() {
+  local i=0 name
+  for name in "$@"; do
+    i=$((i + 1))
+    docker run -d --name "conduit-e2e-who-$name-$E2E_ID" --network "$NET" --ip "192.0.2.$((10 + i))" \
+      --network-alias "$name.test" conduit-e2e-client python3 -c '
+import http.server, json, sys, time
+name = sys.argv[1]
+SEEN = []
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    server_version = "who"
+    sys_version = ""
+    def parse_request(self):
+        # every request line that parses, whatever the method: a smuggled `GPOST /` never reaches do_GET (Python
+        # answers 501 for it), and the oracle must still see it
+        ok = super().parse_request()
+        if ok and self.path != "/seen":
+            SEEN.append(self.command + " " + self.path)
+        return ok
+    def do_GET(self):
+        code = 200
+        if self.path == "/seen":
+            body = ("\n".join(SEEN) + "\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/headers"):
+            body = json.dumps({k: v for k, v in self.headers.items()}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path.startswith("/slow"):
+            time.sleep(2)
+        elif self.path.startswith("/status/"):
+            code = int(self.path.rsplit("/", 1)[1])
+        body = (name + "\n").encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+    do_POST = do_GET
+    do_HEAD = do_GET
+    def log_message(self, *a):
+        pass
+http.server.ThreadingHTTPServer(("0.0.0.0", 8080), H).serve_forever()
+' "$name" >/dev/null
+    E2E_WHO="${E2E_WHO:-} conduit-e2e-who-$name-$E2E_ID"
+  done
+  sleep 1
 }

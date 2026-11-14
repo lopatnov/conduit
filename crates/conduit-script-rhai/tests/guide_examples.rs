@@ -11,45 +11,15 @@
 //! the test says so and passes.
 
 mod common;
-
-/// One ```rhai block: its text, the 1-based line of its opening fence and whether it is marked as a fragment.
-struct Block {
-    text: String,
-    line: usize,
-    skipped: bool,
-}
-
-fn blocks(markdown: &str) -> Vec<Block> {
-    let mut found = Vec::new();
-    let mut lines = markdown.lines().enumerate().peekable();
-    let mut previous = "";
-    while let Some((index, line)) = lines.next() {
-        if line.trim_start().starts_with("```rhai") {
-            let mut text = String::new();
-            for (_, body) in lines.by_ref() {
-                if body.trim_start().starts_with("```") {
-                    break;
-                }
-                text.push_str(body);
-                text.push('\n');
-            }
-            found.push(Block {
-                text,
-                line: index + 1,
-                skipped: previous.contains("docs-check: skip"),
-            });
-        }
-        previous = line;
-    }
-    found
-}
+#[path = "common/fences.rs"]
+mod fences;
 
 #[test]
 fn every_rhai_block_of_the_guide_compiles() {
     let Some(markdown) = common::guide("rhai.md") else {
         return;
     };
-    let found = blocks(&markdown);
+    let found = fences::blocks(&markdown, "rhai");
     assert!(
         found.len() >= 10,
         "the guide is expected to hold many rhai blocks, found {}",
@@ -69,16 +39,6 @@ fn every_rhai_block_of_the_guide_compiles() {
         "rhai blocks that do not compile:\n{}",
         failures.join("\n")
     );
-}
-
-#[test]
-fn the_block_extractor_finds_blocks_and_honours_the_skip_marker() {
-    let md = "text\n```rhai\nlet a = 1;\n```\n<!-- docs-check: skip (a fragment) -->\n```rhai\nlet b =\n```\n```yaml\nx: 1\n```\n";
-    let found = blocks(md);
-    assert_eq!(found.len(), 2);
-    assert_eq!((found[0].line, found[0].skipped), (2, false));
-    assert_eq!(found[0].text, "let a = 1;\n");
-    assert_eq!((found[1].line, found[1].skipped), (6, true));
 }
 
 #[test]

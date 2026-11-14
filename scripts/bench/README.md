@@ -41,3 +41,10 @@ between runs (a `SIGTERM` starts Pingora's graceful shutdown and waits out its g
 
 `workers: 1 → 8`: 11k → 31k req/s. The access log makes no measurable difference. The cause of the extra threads and the ~30 µs
 was `tokio::task::block_in_place` around the response filter chain on every response.
+
+## `cachegrind.sh` — instructions per request (#486)
+
+Deterministic cost model, no quiet machine needed: runs conduit under `valgrind --tool=cachegrind`, drives N1 then N2
+keep-alive requests through one connection and prints the slope `(Ir(N2)-Ir(N1))/(N2-N1)`. Repeat runs of one binary
+differ by ~0.2 %, so only differences above that mean anything. Build with `CARGO_PROFILE_RELEASE_DEBUG=1` and
+`KEEP=/some/dir` to copy the output files there for `cg_annotate` (swap `--tool=callgrind` for inclusive call trees).
