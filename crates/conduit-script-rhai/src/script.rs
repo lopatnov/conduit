@@ -455,9 +455,58 @@ fn get_or_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
     }
 }
 
+/// The largest script file that is read (1 MiB, the language's own limit for a string): a file that size is not a
+/// guard script, and an unbounded read of a path that is a device or a huge file would exhaust memory in
+/// validation, on a reload or on a first request (issue #661).
+const MAX_SCRIPT_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Why a script file could not be read.
+enum ReadError {
+    Io(std::io::Error),
+    NotAFile,
+    TooLarge,
+    NotUtf8,
+}
+
+impl ReadError {
+    /// The text for `conduit validate`: the kind of I/O error, not the operating system's own wording.
+    fn describe(&self) -> String {
+        match self {
+            Self::Io(e) => format!("cannot be read ({})", e.kind()),
+            Self::NotAFile => "is not a regular file".to_owned(),
+            Self::TooLarge => "is larger than 1 MiB".to_owned(),
+            Self::NotUtf8 => format!("cannot be read ({})", std::io::ErrorKind::InvalidData),
+        }
+    }
+}
+
+/// Read a script file: a regular file of at most [`MAX_SCRIPT_FILE_BYTES`], valid UTF-8. The type is checked before
+/// the file is opened, because opening a FIFO waits for a writer. (A file swapped for a FIFO between the check and
+/// the open is not caught: the path comes from the operator's configuration.)
+fn read_script_file(path: &str) -> Result<String, ReadError> {
+    use std::io::Read as _;
+    let meta = std::fs::metadata(path).map_err(ReadError::Io)?;
+    if !meta.is_file() {
+        return Err(ReadError::NotAFile);
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(MAX_SCRIPT_FILE_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(ReadError::Io)?;
+    if bytes.len() as u64 > MAX_SCRIPT_FILE_BYTES {
+        return Err(ReadError::TooLarge);
+    }
+    String::from_utf8(bytes).map_err(|_| ReadError::NotUtf8)
+}
+
 fn read_and_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| Box::new(rhai::EvalAltResult::ErrorSystem("I/O".into(), Box::new(e))))?;
+    let source = read_script_file(path).map_err(|e| {
+        let io = match e {
+            ReadError::Io(io) => io,
+            other => std::io::Error::new(std::io::ErrorKind::InvalidInput, other.describe()),
+        };
+        Box::new(rhai::EvalAltResult::ErrorSystem("I/O".into(), Box::new(io)))
+    })?;
     Ok(engine().compile(&source)?)
 }
 
@@ -472,8 +521,7 @@ fn read_and_compile(path: &str) -> Result<AST, Box<rhai::EvalAltResult>> {
 /// wording, which differs between platforms and would make the messages untestable), or the compile error
 /// with its position.
 pub fn check_script(path: &str) -> Result<(), String> {
-    let source =
-        std::fs::read_to_string(path).map_err(|e| format!("cannot be read ({})", e.kind()))?;
+    let source = read_script_file(path).map_err(|e| e.describe())?;
     engine()
         .compile(&source)
         .map(|_| ())
@@ -495,6 +543,39 @@ pub fn clear_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #661: only a regular file of at most 1 MiB is read, and the reasons are told apart.
+    #[test]
+    fn a_script_file_must_be_a_regular_file_of_bounded_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
+        std::fs::write(path("ok.rhai"), "let a = 1;\n").unwrap();
+        assert_eq!(check_script(&path("ok.rhai")), Ok(()));
+        // a directory is not a file (a device or a FIFO would be the same refusal, without opening it)
+        assert_eq!(
+            check_script(dir.path().to_str().unwrap()),
+            Err("is not a regular file".to_owned())
+        );
+        // exactly the ceiling is read, one byte more is refused
+        let at_limit = "x".repeat(MAX_SCRIPT_FILE_BYTES as usize - 1) + "\n";
+        std::fs::write(path("limit.rhai"), &at_limit).unwrap();
+        assert!(read_script_file(&path("limit.rhai")).is_ok());
+        std::fs::write(path("big.rhai"), at_limit + "\n").unwrap();
+        assert_eq!(
+            check_script(&path("big.rhai")),
+            Err("is larger than 1 MiB".to_owned())
+        );
+        // not UTF-8 and missing keep the old wording
+        std::fs::write(path("bin.rhai"), [0xff, 0xfe, 0x00]).unwrap();
+        assert_eq!(
+            check_script(&path("bin.rhai")),
+            Err("cannot be read (invalid data)".to_owned())
+        );
+        assert_eq!(
+            check_script(&path("missing.rhai")),
+            Err("cannot be read (entity not found)".to_owned())
+        );
+    }
 
     /// The cache tests empty the process-wide cache (`clear_cache`) and rely on what is cached between two
     /// calls, so they take turns; the other tests use paths of their own and are not affected.
