@@ -579,7 +579,7 @@ pub(super) fn acquire_conn_slot(
 /// having deteriorated mid-request should not turn into a hard failure on a
 /// request that has already spent attempts. `retry.tracks_conn_slot`
 /// mirrors `RouteResolution.upstream_conn_slot`'s own formula
-/// (`is_least_conn || circuit_tracking`) computed at routing time.
+/// (`holds_slot || circuit_tracking`) computed at routing time.
 #[cfg(feature = "proxy")]
 pub(super) fn select_retry_target(req_ctx: &mut RequestCtx, health: &UpstreamRegistry) -> String {
     // Compute this attempt's target using only a borrow of req_ctx.proxy.retry,

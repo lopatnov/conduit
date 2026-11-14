@@ -37,7 +37,7 @@ pub trait LoadBalancingStrategy: Send + Sync {
     /// - `health`    — upstream registry; used by [`LeastConn`]
     ///
     /// # Returns
-    /// `Some((url, is_least_conn))` where `is_least_conn = true` means the
+    /// `Some((url, holds_slot))` where `holds_slot = true` means the
     /// strategy already incremented the inflight counter on `health` and the
     /// caller is responsible for decrementing it after the response completes.
     fn pick(
@@ -400,11 +400,11 @@ mod tests {
     }
 
     #[test]
-    fn least_conn_returns_is_least_conn_true() {
+    fn least_conn_returns_holds_slot_true() {
         let u = urls(2);
         let reg = registry();
         let (_, is_lc) = LEAST_CONN.pick(&u, &[], "r", 0, &counters(), &reg).unwrap();
-        assert!(is_lc, "LeastConn must signal is_least_conn = true");
+        assert!(is_lc, "LeastConn must signal holds_slot = true");
     }
 
     #[test]

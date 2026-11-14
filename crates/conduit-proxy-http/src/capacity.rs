@@ -168,7 +168,7 @@ pub(crate) fn ramp_filter_retry_candidates<'c>(
     }
 }
 
-/// Capacity-aware strategy dispatch. Returns `(url, is_least_conn)` — the
+/// Capacity-aware strategy dispatch. Returns `(url, holds_slot)` — the
 /// same shape as [`conduit_upstream::strategy::LoadBalancingStrategy::pick`].
 ///
 /// `None` means either circuit-open ([`Capacity::Exhausted`]) or no
@@ -423,9 +423,9 @@ mod tests {
                 health: &reg,
                 ramp: &ramp,
             };
-            let (url, is_least_conn) = pick_bounded(&input).expect("one admissible peer");
+            let (url, holds_slot) = pick_bounded(&input).expect("one admissible peer");
             assert_eq!(url, healthy[1], "must never pick the saturated peer");
-            assert!(!is_least_conn);
+            assert!(!holds_slot);
         }
     }
 
@@ -449,9 +449,9 @@ mod tests {
             health: &reg,
             ramp: &ramp,
         };
-        let (url, is_least_conn) = pick_bounded(&input).expect("candidates present");
+        let (url, holds_slot) = pick_bounded(&input).expect("candidates present");
         assert!(healthy.contains(&url));
-        assert!(is_least_conn, "LeastConn must report the acquired slot");
+        assert!(holds_slot, "LeastConn must report the acquired slot");
         reg.conn_dec(&url); // balance the slot LeastConn acquired
     }
 
@@ -529,12 +529,12 @@ mod tests {
                 health: &reg,
                 ramp: &ramp,
             };
-            let (url, is_least_conn) = pick_bounded(&input).expect("candidates present");
+            let (url, holds_slot) = pick_bounded(&input).expect("candidates present");
             assert_eq!(
                 url, healthy[1],
                 "must not pick the just-recovered peer despite its lower conn load"
             );
-            assert!(is_least_conn);
+            assert!(holds_slot);
             reg.conn_dec(&url); // balance the slot LeastConn acquired, keep load fixed
         }
     }
