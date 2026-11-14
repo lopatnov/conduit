@@ -436,7 +436,9 @@ pub fn free_port() -> u16 {
         // wildcard address (or exclusively, or inside a reserved range on Windows) still lets a bind on 127.0.0.1
         // succeed, and the server then dies with `bind() failed ... os error 10013` (issue #677). Loopback is probed
         // too, for a listener that holds only that address.
-        if TcpListener::bind(format!("0.0.0.0:{p}")).is_ok() && TcpListener::bind(format!("127.0.0.1:{p}")).is_ok() {
+        if TcpListener::bind(format!("0.0.0.0:{p}")).is_ok()
+            && TcpListener::bind(format!("127.0.0.1:{p}")).is_ok()
+        {
             return p;
         }
         // Port in use — skip it and try the next one.
