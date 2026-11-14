@@ -423,11 +423,11 @@ validating over HTTP-01, the only challenge Conduit implements, normally refuses
 
 A background task renews the certificate on disk when no more than a third of its lifetime is left, and never
 later than 30 days before expiry (30 days for a 90-day certificate, 21 for a 64-day one, 15 for a 45-day one); the running process keeps serving the one it loaded, so restart Conduit
-within that window. Details: [`acme` in the CLI reference](cli.md#acme--auto-tls--lets-encrypt).
+within that window (with `profile: shortlived`, a certificate of about 6 days, that window is 2 days: restart at least every day or two, or the process serves an expired certificate). Details: [`acme` in the CLI reference](cli.md#acme--auto-tls--lets-encrypt).
 
 The account with the CA is kept in `<storage>/acme_account.json`, which records the directory URL it was created for.
 When you point `directory` at another CA (staging to production, say), the old account is not tried against the new CA:
-a second file, `acme_account.<directory>.json`, holds the account for it. A private key that you placed at
+a second file, `acme_account.<readable part of the URL>.<hash of the whole URL>.json`, holds the account for it, and a file that records another directory than the one asked for is refused. A private key that you placed at
 `<storage>/<host>.key.pem` is read only as PKCS#8 (`-----BEGIN PRIVATE KEY-----`); a PKCS#1 (`RSA PRIVATE KEY`), SEC1
 (`EC PRIVATE KEY`) or encrypted key is named in the log and then **replaced** by a newly ordered key, so convert it first
 (`openssl pkcs8 -topk8 -nocrypt -in old.key -out <host>.key.pem`).
