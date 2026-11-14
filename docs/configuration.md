@@ -27,7 +27,8 @@ not replaced.
 > seen the configuration, an example or this page can present `$MY_VAR`. `conduit validate`, the start-up log and
 > `POST /reload` warn about every such credential (the warning names the place and the variable, never a value). Treat the
 > warning as an error in a deployment: set the variable in the environment of the process (for the systemd unit:
-> `/etc/conduit/conduit.env`).
+> `/etc/conduit/conduit.env`). A real credential must not be written as a bare `$Word` (for example `$Hunter2`): it cannot be told
+> from a reference to an unset variable, so the warning would print it as a variable name.
 
 ### Optional build features
 

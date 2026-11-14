@@ -293,24 +293,24 @@ fn the_admin_token_refuses_every_wrong_bearer_length() {
             Some(200),
             "{len}: the exact token was refused"
         );
-        for (what, value) in [
-            (
-                "one byte short",
-                hv(&format!("Bearer {}", &token[..len - 1])),
-            ),
-            ("one byte long", hv(&format!("Bearer {token}x"))),
-            (
-                "last byte differs",
-                hv(&format!("Bearer {}u", &token[..len - 1])),
-            ),
-            ("empty", HeaderValue::from_static("Bearer ")),
-            ("no scheme", hv(&token)),
-            (
-                "non-UTF-8",
-                HeaderValue::from_bytes(b"Bearer \xff").expect("bytes"),
-            ),
-        ] {
-            let code = get(value);
+        const TOKEN_LABELS: [&str; 6] = [
+            "one byte short",
+            "one byte long",
+            "last byte differs",
+            "empty",
+            "no scheme",
+            "non-UTF-8",
+        ];
+        let candidates = [
+            hv(&format!("Bearer {}", &token[..len - 1])),
+            hv(&format!("Bearer {token}x")),
+            hv(&format!("Bearer {}u", &token[..len - 1])),
+            HeaderValue::from_static("Bearer "),
+            hv(&token),
+            HeaderValue::from_bytes(b"Bearer \xff").expect("bytes"),
+        ];
+        for (k, what) in TOKEN_LABELS.iter().enumerate() {
+            let code = get(candidates[k].clone());
             assert!(
                 matches!(code, None | Some(400 | 401)),
                 "admin token, length {len}, {what}: {code:?}"
