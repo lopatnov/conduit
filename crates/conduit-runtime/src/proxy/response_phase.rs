@@ -164,6 +164,8 @@ pub(super) async fn upstream_response_filter(
     // `responseTransform` or plugin may drop `Content-Length` later and must not defeat the check (#561).
     let upstream_has_body = body_can_be_replaced(upstream_response);
     let run_result = chain.run_offloading(upstream_response, req_ctx);
+    // The chain borrows `req_ctx` and `config`; end that borrow here so the match below can take `ctx` mutably.
+    drop(chain);
 
     match run_result? {
         ResponseFilterOutcome::Continue => {}

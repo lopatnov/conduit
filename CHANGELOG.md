@@ -14,6 +14,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `sticky.sameSite` (`lax`, the default, `strict` or `none`): the `SameSite` of that cookie. `none` always adds `Secure`
   (browsers refuse it otherwise) and `secure: false` together with it is a validation error (#644).
 
+### Changed
+
+- The response filter chain borrows the per-request header list, the response transform, the response-time setting and
+  the middleware entries instead of cloning them for every response: 148 195 → 145 069 instructions per request on the
+  bare site and 182 758 → 176 987 with `securityHeaders`, `cors` and `responseTime` (`scripts/bench/cachegrind.sh`,
+  `EXTRA_SITE` adds site fields) (#486).
+
 ### Security
 
 - **A credential that is an unset environment variable is now warned about** (issue #624, the "sshole" class: a failed

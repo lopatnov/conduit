@@ -17,11 +17,13 @@ use crate::config::MiddlewareEntry;
 ///   `upstream.status`, `upstream.header("Name")`, `response.set_header()`, etc.
 ///
 /// All header mutations collected by the plugins are applied to `resp`.
-pub struct MiddlewareResponseFilter {
-    pub middleware: Vec<MiddlewareEntry>,
+pub struct MiddlewareResponseFilter<'a> {
+    /// Borrowed from the site configuration for the duration of one response: building the filter copies nothing
+    /// (it used to clone every entry, script text included, once per response).
+    pub middleware: &'a [MiddlewareEntry],
 }
 
-impl ResponseFilter for MiddlewareResponseFilter {
+impl ResponseFilter for MiddlewareResponseFilter<'_> {
     /// Runs a Rhai script or a WASM plugin, which can block (a module read from disk on first load, a slow script), so
     /// the chain holding this filter runs through `block_in_place`. The one thing `apply` provably skips is a
     /// request-phase script; anything else — a response-phase script, a WASM plugin, a type this filter does not know —
@@ -54,7 +56,7 @@ impl ResponseFilter for MiddlewareResponseFilter {
 
         #[cfg(feature = "wasm")]
         let mut replacement = None;
-        for entry in &self.middleware {
+        for entry in self.middleware {
             match entry.r#type.as_str() {
                 // ── Rhai response scripts ─────────────────────────────────────
                 #[cfg(feature = "rhai")]
@@ -161,7 +163,7 @@ mod tests {
 
     #[test]
     fn middleware_response_filter_empty_middleware_is_noop() {
-        let filter = MiddlewareResponseFilter { middleware: vec![] };
+        let filter = MiddlewareResponseFilter { middleware: &[] };
         let mut resp = make_resp(200);
         let ctx = dummy_ctx();
         let outcome = filter.apply(&mut resp, &ctx).unwrap();
@@ -173,7 +175,7 @@ mod tests {
     fn middleware_response_filter_request_phase_script_is_skipped() {
         // A script with phase="request" must be skipped in response phase.
         let filter = MiddlewareResponseFilter {
-            middleware: vec![MiddlewareEntry {
+            middleware: &[MiddlewareEntry {
                 r#type: "script".to_owned(),
                 path: Some("nonexistent.rhai".to_owned()),
                 phase: Some("request".to_owned()), // request phase → skip in response
@@ -213,7 +215,7 @@ mod tests {
         file.flush().expect("flush");
 
         let filter = MiddlewareResponseFilter {
-            middleware: vec![MiddlewareEntry {
+            middleware: &[MiddlewareEntry {
                 r#type: "wasm".to_owned(),
                 path: Some(file.path().to_string_lossy().into_owned()),
                 phase: None,
@@ -247,7 +249,7 @@ mod tests {
 
     fn may_block_for(entries: Vec<MiddlewareEntry>) -> bool {
         MiddlewareResponseFilter {
-            middleware: entries,
+            middleware: &entries,
         }
         .may_block()
     }

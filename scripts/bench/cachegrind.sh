@@ -3,6 +3,8 @@
 # quiet machine. Runs conduit under `valgrind --tool=cachegrind`, drives N1 and then N2 keep-alive requests
 # through it to a local upstream, and reports the SLOPE (Ir(N2) - Ir(N1)) / (N2 - N1): start-up cost cancels.
 #   cachegrind.sh CONDUIT_BIN [N1] [N2]
+# EXTRA_SITE='"securityHeaders": true, "responseTime": true' adds site fields (a response chain with
+# extra headers / transforms costs more than the bare default site, which hides per-response clones).
 # Needs: valgrind, python3. Linux only. A build with debug info (`CARGO_PROFILE_RELEASE_DEBUG=1`) lets
 # `cg_annotate` name the functions; the slope does not need it.
 set -uo pipefail
@@ -13,6 +15,7 @@ KEEP=${KEEP:-}   # set to a directory: the cachegrind.out files (cg.N1, cg.N2) a
 WORK=$(mktemp -d)
 trap 'kill -9 $(jobs -p) 2>/dev/null; if [ -n "$KEEP" ]; then mkdir -p "$KEEP" && cp "$WORK"/cg.* "$KEEP"/ && echo "cachegrind output kept in $KEEP" >&2; fi; rm -rf "$WORK"' EXIT
 
+EXTRA_SITE=${EXTRA_SITE:-}
 PORT=${PORT:-18080}; ADMIN=${ADMIN:-12019}; UP=${UP:-14000}
 
 cat > "$WORK/driver.py" <<'PY'
@@ -64,8 +67,8 @@ PY
 
 run_one() {  # n -> prints total instructions
   local n=$1 out="$WORK/cg.$1"
-  printf '{ "global": { "workers": 1, "shutdownTimeoutSecs": 1, "admin": { "bind": "127.0.0.1:%s" } }, "sites": [ { "port": %s, "proxy": "http://127.0.0.1:%s", "logging": false } ] }' \
-    "$ADMIN" "$PORT" "$UP" > "$WORK/conduit.json"
+  printf '{ "global": { "workers": 1, "shutdownTimeoutSecs": 1, "admin": { "bind": "127.0.0.1:%s" } }, "sites": [ { "port": %s, "proxy": "http://127.0.0.1:%s", "logging": false%s } ] }' \
+    "$ADMIN" "$PORT" "$UP" "${EXTRA_SITE:+, $EXTRA_SITE}" > "$WORK/conduit.json"
   valgrind --tool=cachegrind --cache-sim=no --cachegrind-out-file="$out" "$BIN" -c "$WORK/conduit.json" \
     > "$WORK/valgrind.$n.log" 2>&1 &
   local vg=$!
