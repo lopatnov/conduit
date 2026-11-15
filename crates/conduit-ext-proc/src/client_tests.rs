@@ -363,7 +363,8 @@ async fn a_tls_processor_uses_the_public_roots_or_the_given_ca_file_and_fails_un
     ));
     refused(&ask(&public).await, 503);
     // with a caFile that is readable (its content is only used when a connection is made)
-    let ca = std::env::temp_dir().join(format!("conduit-ext-proc-ca-{}.pem", std::process::id()));
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ca.pem");
     std::fs::write(
         &ca,
         "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
@@ -372,7 +373,6 @@ async fn a_tls_processor_uses_the_public_roots_or_the_given_ca_file_and_fails_un
     let file = serde_json::json!({ "caFile": ca.to_str().unwrap(), "timeoutMs": 500 });
     let with_file = ExtProcClient::new(&config("grpcs://127.0.0.1:9", file));
     refused(&ask(&with_file).await, 503);
-    let _ = std::fs::remove_file(&ca);
 }
 
 #[test]
