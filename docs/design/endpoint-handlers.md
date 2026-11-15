@@ -271,7 +271,8 @@ async fn main(req: Request<Body>) -> Result<Response<Body>, wstd::http::Error> {
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
-        .body(Body::from(format!(r#"{{"id":"{id}"}}"#)))?)
+        // serialise, never interpolate: a decoded `id` may contain `"` or `\`
+        .body(Body::from(serde_json::json!({ "id": id }).to_string()))?)
 }
 ```
 
@@ -309,8 +310,10 @@ fn handle(req) {
   caller answers `504` at the deadline with an outer `tokio::time::timeout`. A blocking task cannot be cancelled:
   after a `504` it keeps its pool slot (and its `maxConcurrent` permit) until the I/O returns, which is why every I/O
   call needs its own bound.
-- `import` of other `.rhai` files from the handler's own directory only (a `FileModuleResolver` rooted there), so a
-  handler can be split into modules.
+- `import` of other `.rhai` files, so a handler can be split into modules. The stock `FileModuleResolver` does not
+  confine imports (`..` segments and absolute paths resolve outside its base path), so handlers use a custom resolver
+  that rejects absolute paths and `..` components, canonicalises the resolved path (following symlinks) and requires
+  the result to stay under the handler's directory.
 
 ### JavaScript
 
@@ -435,8 +438,11 @@ Notes:
   `./data/sessions.redb`. A handler cannot open another store by guessing its name; `wasi:keyvalue`'s `open(id)`
   fails with `access-denied` for an ungranted label.
 - **Outbound HTTP:** an allowlist of origins (`scheme://host[:port]`), matched after normalisation; redirects are not
-  followed unless the target is also allowed; after DNS resolution, loopback, link-local, private (RFC 1918, RFC 4193)
-  and the Admin API address are refused unless the grant names them explicitly (SSRF and DNS rebinding); the
+  followed unless the target passes the same allowlist and address checks; after DNS resolution, loopback,
+  link-local, private (RFC 1918, RFC 4193) and the Admin API address are refused unless the grant names them
+  explicitly (SSRF). The connection goes to the address that passed the check, with no second resolution at connect
+  time (a custom resolver/connector that pins the validated address), and the same holds for every redirect hop:
+  otherwise a DNS rebinding answer between check and connect reaches a private address. The
   `forbidden_header_filter` hook drops hop-by-hop headers and `Host` rewriting tricks. Per-invocation caps on count,
   time and response size.
 - **Files:** read-only preopens of directories the operator lists; paths opened beneath the root (no `..`, no symlink
@@ -444,6 +450,10 @@ Notes:
 - **Secrets:** only names listed in `secrets` are readable, each mapped to an environment variable or a file; the
   process environment is never exposed wholesale, and secret values are not logged.
 - **Reserved headers:** incoming `conduit-*` headers are removed before the host sets its own.
+- **SQL is parameterised at the host boundary.** `sql::query` / `sql::execute` and `conduit:sqlite` take the
+  statement and its parameters separately and bind them; there is no API that takes a pre-built string with values
+  in it, and a statement with more than one command is rejected. A handler bug can still build a bad query string
+  from its own text, but request data reaches SQLite only as bound values when the handler uses the API as offered.
 - **Failure is closed.** A handler that cannot load, traps, exceeds a limit or returns an invalid response gets
   `500` (or `503` when the cause is the concurrency limit, `504` on the deadline) with a generic body; details go to
   the log, never to the client. The last module or script that loaded stays in use after a reload whose new file is
@@ -582,7 +592,9 @@ Rules for validation:
   label is an error, not a warning (a missing grant is not a typo to ignore).
 - A site-level resource that no route of that site grants is a warning (dead config), as is a global one that no
   route of any site grants.
-- `{name}` captures must be unique in a pattern, and `{*name}` only last.
+- `{name}` captures must be unique in a pattern **case-insensitively** (HTTP header names are case-insensitive, so
+  `{id}` and `{ID}` would both become `conduit-param-id`), names are limited to `[A-Za-z0-9_-]`, and `{*name}` only
+  last.
 - `handler.wasm` must be a component when option B is chosen; a core module is reported with a message that points to
   `type: wasm` middleware instead.
 - Without the feature compiled in, a `handler` route is a **startup error**, not a warning: unlike middleware, there
