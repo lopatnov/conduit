@@ -190,7 +190,9 @@ What `webdav.sh` shows, against an upstream that echoes every request:
   `Destination` and in the resource tags of `If` (`<URL>` outside the parentheses, RFC 4918 section 10.4), so that a
   `COPY` or `MOVE` through a stripping route names a resource the upstream knows. Only the path of a URL changes: the scheme,
   the authority, the query, the state tokens and entity tags inside the parentheses of `If` stay as they were, a URL of another
-  authority than the request's `Host`, or a path outside the route's prefix, is left alone, and a request without the headers
+  authority than the request's `Host`, a path outside the route's prefix (the prefix must end at a segment boundary: `/mvx` is
+  not under `/mv`) and a result that would not be a plain absolute path (`/mv//evil.com/x` would become the network-path
+  reference `//evil.com/x`) are left as the client wrote them, and a request without the headers
   is untouched. Do not turn it on for an upstream that expects the public path (Radicale with `X-Script-Name`). The response
   side is not rewritten: a `Location` or `<href>` that the upstream writes in its own namespace stays as written.
   `webdav.sh` checks it on a `stripPrefix` route and on a `rewrite` route, next to the default routes that leave both

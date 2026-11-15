@@ -60,7 +60,15 @@ pub(super) fn rewrite_webdav_headers(
 /// request line itself can never carry one, `Destination` can).
 fn map_path(path: &str, strip_prefix: Option<&str>, rewrite: Option<&[RewriteRule]>) -> String {
     let stripped = match strip_prefix {
-        Some(prefix) if path.starts_with(prefix) => apply_path_strip(path, Some(prefix)),
+        // The router's rule: the prefix must end at a segment boundary (`/mv` matches `/mv` and `/mv/..`, not `/mvx`).
+        Some(prefix)
+            if path == prefix
+                || path
+                    .strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('/')) =>
+        {
+            apply_path_strip(path, Some(prefix))
+        }
         Some(_) => return path.to_owned(),
         None => path.to_owned(),
     };
@@ -90,7 +98,14 @@ fn rewrite_url(url: &str, host: &str, map: &dyn Fn(&str) -> String) -> String {
     if !path.starts_with('/') {
         return url.to_owned();
     }
-    format!("{prefix}{}{tail}", map(path))
+    let mapped = map(path);
+    // A rewrite rule (or a path like `/dav//evil.com/x`) can produce something that is not a plain absolute path: pasted
+    // behind an authority it would change the authority (`http://h` + `x/a` is `http://hx/a`), and on its own `//evil.com/x`
+    // is a network-path reference. Such a URL is left as the client wrote it.
+    if !mapped.starts_with('/') || mapped.starts_with("//") {
+        return url.to_owned();
+    }
+    format!("{prefix}{mapped}{tail}")
 }
 
 /// Rewrite the resource tags of an `If` header: `<URL>` outside the parentheses. What is inside the parentheses (state
@@ -187,6 +202,74 @@ mod tests {
     #[test]
     fn destination_outside_the_prefix_is_left_alone() {
         assert_eq!(rewrite_url("/elsewhere/a", "h", &strip_api), "/elsewhere/a");
+    }
+
+    #[test]
+    fn a_sibling_that_only_shares_the_prefix_text_is_left_alone() {
+        // `/api` is not a prefix of `/apix/a.txt` at a segment boundary: the authority must not change.
+        assert_eq!(
+            rewrite_url("http://h/apix/a.txt", "h", &strip_api),
+            "http://h/apix/a.txt"
+        );
+        assert_eq!(rewrite_url("/apix/a", "h", &strip_api), "/apix/a");
+        assert_eq!(rewrite_url("/api", "h", &strip_api), "/");
+        assert_eq!(rewrite_url("http://h/api", "h", &strip_api), "http://h/");
+    }
+
+    #[test]
+    fn a_stripped_path_cannot_turn_into_another_authority() {
+        let strip_dav = |p: &str| map_path(p, Some("/dav"), None);
+        // `/dav.attacker.net/x` is not under `/dav`; `http://example.com` + `.attacker.net/x` must never be built.
+        assert_eq!(
+            rewrite_url(
+                "http://example.com/dav.attacker.net/x",
+                "example.com",
+                &strip_dav
+            ),
+            "http://example.com/dav.attacker.net/x"
+        );
+        assert_eq!(
+            rewrite_url("/dav.attacker.net/x", "example.com", &strip_dav),
+            "/dav.attacker.net/x"
+        );
+        // `/dav//evil.com/x` strips to `//evil.com/x`, a network-path reference: left as written.
+        assert_eq!(
+            rewrite_url("/dav//evil.com/x", "example.com", &strip_dav),
+            "/dav//evil.com/x"
+        );
+        assert_eq!(
+            rewrite_url(
+                "http://example.com/dav//evil.com/x",
+                "example.com",
+                &strip_dav
+            ),
+            "http://example.com/dav//evil.com/x"
+        );
+        // The same in an If resource tag.
+        assert_eq!(
+            rewrite_if(
+                "</dav//evil.com/x> (<urn:uuid:1>) </dav.attacker.net/x>",
+                "example.com",
+                &strip_dav
+            ),
+            "</dav//evil.com/x> (<urn:uuid:1>) </dav.attacker.net/x>"
+        );
+    }
+
+    #[test]
+    fn a_rewrite_that_is_not_an_absolute_path_leaves_the_url_alone() {
+        let rules = vec![RewriteRule {
+            from: "^/rw/".to_owned(),
+            to: "x/".to_owned(),
+        }];
+        let map = |p: &str| map_path(p, None, Some(&rules));
+        assert_eq!(rewrite_url("http://h/rw/a", "h", &map), "http://h/rw/a");
+        let rules = vec![RewriteRule {
+            from: "^/rw/".to_owned(),
+            to: "//evil.com/".to_owned(),
+        }];
+        let map = |p: &str| map_path(p, None, Some(&rules));
+        assert_eq!(rewrite_url("/rw/a", "h", &map), "/rw/a");
     }
 
     #[test]

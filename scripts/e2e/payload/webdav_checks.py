@@ -123,6 +123,11 @@ def main():
         ("/mv/new%20dir/b.txt", "/new%20dir/b.txt"),
         ("https://elsewhere.example/mv/b.txt", "https://elsewhere.example/mv/b.txt"),
         (f"http://{authority}/outside/b.txt", f"http://{authority}/outside/b.txt"),
+        # The prefix must end at a segment boundary, and a result that is not a plain absolute path is not used: neither
+        # may change the authority or make a network-path reference.
+        (f"http://{authority}/mvx/b.txt", f"http://{authority}/mvx/b.txt"),
+        (f"http://{authority}/mv.attacker.net/b", f"http://{authority}/mv.attacker.net/b"),
+        ("/mv//evil.com/b", "/mv//evil.com/b"),
     ):
         for method in ("COPY", "MOVE"):
             _, _, seen = echo(proxied, method, "/mv/a.txt", {"Destination": destination, "If": sent_if}, expect=201)
