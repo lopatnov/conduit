@@ -7,9 +7,11 @@
 | [cli.md](cli.md)                     | All CLI commands, flags, exit codes and build features                     |
 | [admin.md](admin.md)                 | Admin API — all endpoints, request/response examples, auth, CLI shortcuts  |
 | [building.md](building.md)           | Build from source, cross-compilation, release profile, RISC-V              |
+| [protocols.md](protocols.md)         | How to proxy SSE, WebSocket, gRPC, HLS, RTMP, MQTT, PostgreSQL, Redis, SMTP, FTP, SSH: mode, config, limits |
 | [middleware.md](middleware.md)       | The `middleware` list: order, fail-open, and Rhai vs WASM vs built-in       |
 | [rhai.md](rhai.md)                   | Rhai scripting middleware — API reference, examples, execution model       |
 | [wasm.md](wasm.md)                   | WASM plugin middleware — ABI, host functions, Rust/C/Go examples           |
+| [ext-proc.md](ext-proc.md)           | External processing — a gRPC processor (Envoy `ext_proc`) that sees and changes requests |
 | [node-python-workers.md](node-python-workers.md) | Recipe — Node.js/Python worker pool behind Conduit via the dynamic-upstream Admin API |
 | [deployment.md](deployment.md)       | Running in production — Docker, systemd, Kubernetes, production checklist  |
 | [benchmarks.md](benchmarks.md)       | How the CI measures performance and how to reproduce it on your machine    |

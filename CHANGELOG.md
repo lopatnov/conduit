@@ -9,6 +9,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A protocol guide, `docs/protocols.md`: for SSE, WebSocket, gRPC, GraphQL, HLS/DASH, WebRTC, RTMP, MQTT, PostgreSQL,
+  Redis, SMTP, FTP and SFTP/SSH it says whether the protocol is an HTTP route or a TCP site, gives a working config, the
+  limits (idle timeout, no TLS termination or PROXY protocol on TCP sites, FTP passive ports, no UDP) and which e2e
+  scenario tests it. The TCP section of `docs/configuration.md` points to it.
+- `http2: "h2c"` on a proxy route: HTTP/2 with prior knowledge (RFC 9113 section 3.3) to a plaintext upstream, so gRPC
+  servers without TLS can be proxied. `http2: true` still means ALPN only, and over TLS `"h2c"` behaves like `true`.
+- Three e2e scenarios in `scripts/e2e/`: `streaming.sh` (SSE and WebSocket over plain HTTP and TLS: events not held back,
+  `Last-Event-ID`, the idle timeout `timeout.readMs`, upgrade, ping/pong, fragments, a 1 MiB binary message, close codes, 502
+  without `websocket: true`), `grpc.sh` (unary, streaming, error status, deadline over h2c, TLS and a TLS upstream) and
+  `protocols.sh` (Redis, MQTT, PostgreSQL, SMTP, SSH, RTMP, FTP with a passive data port and TLS passthrough through TCP
+  sites). The e2e client image gains `python3-grpcio`.
+
 - Third-party licence notices (#640). `THIRD-PARTY-LICENSES.txt` lists every crate that can end up in a binary with its
   licence and the licence and notice texts it ships (including the CDLA-Permissive-2.0 text of the bundled root
   certificates); it is inside every release archive (with `LICENSE`), the Debian package, the Docker image (`/licenses/`)
@@ -66,6 +78,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Static files and fallback `file:` responses use the media types of adaptive streaming: `.m3u8` is
+  `application/vnd.apple.mpegurl` (was `audio/x-mpegurl`), `.m3u` `audio/mpegurl`, `.ts` `video/mp2t` (was
+  `video/vnd.dlna.mpeg-tts`), `.m4s` `video/iso.segment` and `.mpd` `application/dash+xml` (RFC 8216 section 4, IANA).
+- `docs/configuration.md` said compression applies to proxied responses. It applies to static files, fallback responses
+  and the metrics page; proxied responses are sent as the upstream sent them.
 - **`p2c` no longer favours an upstream that fails fast** (issue #734). A response of 500 or more (and a connect failure or
   timeout) now counts as at least one second in the latency estimate, so an upstream that answers every request with an
   error right away stops looking like the cheapest one; `ewma_latency_ms` of `GET /upstreams` shows it.

@@ -33,8 +33,8 @@ def ws_url(base, path):
 
 def sse_checks(base, label):
     # 1. Events reach the client as the upstream sends them, not when the stream ends. The server sends three events
-    #    0.5 s apart; the compression of the site is on and the client offers gzip, and a stream is not compressed
-    #    (a compressor would hold events back until its buffer fills).
+    #    0.5 s apart; the compression of the site is on and the client offers gzip. Conduit does not compress proxied
+    #    responses, and a compressor that did would hold events back until its buffer fills, so this must stay true.
     out = streaming.sse_client(base + "/sse/events?n=3&gap=0.5", 20, ["Accept-Encoding: gzip, br"])
     check(out["status"] == 200, f"{label}: SSE status {out}")
     check(out["content_type"].startswith("text/event-stream"), f"{label}: content type {out['content_type']}")

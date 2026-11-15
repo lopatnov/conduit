@@ -69,7 +69,7 @@ conduit validate -c conduit.yaml   # prints a warning for every ignored section
 | Feature | What it gives you | Config | If it is compiled out |
 | --- | --- | --- | --- |
 | `proxy` | Reverse proxying: upstream targets, [load balancing](#load-balancing), upstream groups, health checks, retry, circuit breaker, traffic mirroring. | `proxy`, `routes[].proxy`, `groups` | Those sections are ignored; a request that would have gone to an upstream gets the site's fallback response. See [Building without `proxy`](building.md#building-without-proxy). |
-| `compression` | Response compression (brotli, gzip, deflate, zstd), negotiated with `Accept-Encoding`, for proxied responses, static files and the metrics page. | [`compression`](#compression) | Responses are sent uncompressed. |
+| `compression` | Response compression (brotli, gzip, deflate, zstd), negotiated with `Accept-Encoding`, for static files, fallback responses and the metrics page. Proxied responses are not compressed by Conduit (the upstream can do it). | [`compression`](#compression) | Responses are sent uncompressed. |
 | `static` | Static file serving and the fallback responses (404 page, single-page-app shell). | [`static`](#static-files), `fallback` | `static` and `fallback` are ignored: every unmatched request gets a plain `404 Not Found`. |
 | `hotreload` | Browser live reload: a Server-Sent Events stream and a file watcher that tells open pages to refresh when a served file changes. | `hotReload` | `hotReload` is ignored and `/__hot-reload__` is an ordinary unmatched path. |
 
@@ -730,7 +730,7 @@ proxy:
 | `stripPrefix`         | bool                 | `false`       | Remove matched path prefix before forwarding                                   |
 | `hashKey`             | string               | —             | Key for hash-based strategies: `"ip"`, `"url"`, `"header:X-Name"`              |
 | `rewrite`             | object[]             | —             | URL rewrite rules: `[{from, to}]` — first match wins                           |
-| `http2`               | bool                 | `false`       | Enable HTTP/2 for upstream connections                                         |
+| `http2`               | bool or `"h2c"`      | `false`       | HTTP/2 to the upstream: `true` negotiates it through ALPN (TLS upstreams); `"h2c"` also speaks it to a **plaintext** upstream (gRPC without TLS) — see [gRPC](protocols.md#grpc) |
 | `timeout.connectMs`   | number               | `3000`        | TCP connect timeout                                                            |
 | `timeout.sendMs`      | number               | —             | Request send timeout                                                           |
 | `timeout.readMs`      | number               | `30000`       | Response read timeout                                                          |
@@ -4077,7 +4077,10 @@ upload that was fine before; this part comes from reading the code, not from a r
 > **Requires** `cargo build --features tcp`
 
 Forward raw TCP connections without HTTP parsing. Useful for MySQL, PostgreSQL,
-Redis, SMTP, and any other non-HTTP protocol.
+Redis, SMTP, and any other non-HTTP protocol. What a TCP site does and does not do, and a working
+config for RTMP, MQTT, PostgreSQL, Redis, SMTP, FTP (passive ports) and SSH, are in the
+[protocol guide](protocols.md#what-a-tcp-site-does-and-does-not-do). HTTP-based protocols (SSE,
+WebSocket, gRPC, GraphQL, HLS) are not TCP sites: they are ordinary routes, also in that guide.
 
 ```yaml
 # conduit.yaml
@@ -4121,6 +4124,10 @@ sites:
 
 > **Note:** `tcp` cannot be combined with `proxy`, `static`, or other HTTP
 > features on the same site. Use a separate port/site for HTTP traffic.
+
+> **Not supported on a TCP site:** TLS termination (TLS passes through untouched and the client verifies the
+> upstream's certificate), the PROXY protocol (the upstream sees Conduit's address), an IP filter, an idle timeout
+> or a connection limit, UDP, and port ranges. See the [guide](protocols.md#what-a-tcp-site-does-and-does-not-do).
 
 ---
 
