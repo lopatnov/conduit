@@ -25,6 +25,8 @@ use self::warnings::{
 // `warnings` submodule `pub`.
 pub use self::required_features::{compiled_features, required_features, FEATURE_ORDER};
 pub use self::warnings::sanitize_for_log;
+#[cfg(feature = "kubernetes")]
+pub(crate) use self::warnings::site_uses_disk_store;
 
 use crate::config::schema::AppConfig;
 

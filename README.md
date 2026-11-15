@@ -392,7 +392,7 @@ without a restart; an update that fails validation is rejected and the running c
 the `:latest` (full) image (or a build with `--features kubernetes`) and give the pod a service
 account that may `get`, `list` and `watch` `conduitsites`. A `ConduitSite` cannot name files on the
 Conduit host (`static`, `upload`, `tls.cert` and the other path fields are refused, `$VAR` is not
-expanded), so write access to the objects is access to the traffic, not to the pod's files.
+expanded), so write access to the objects is access to the traffic the pod can send (any address it can reach), not to the pod's files.
 **→ CRD, RBAC, Deployment, what reloads and what needs a restart:**
 [docs/kubernetes.md](docs/kubernetes.md)
 

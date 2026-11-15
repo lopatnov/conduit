@@ -123,8 +123,11 @@ The readiness probe asks for `/__health__`, which exists only on a site that set
 port 8080 that setting, as the example below does. The image runs as an unprivileged user, so a site listens on a port
 above 1024 unless the pod is given the right to bind lower ones.
 
-The Admin API listens on `127.0.0.1:2019` inside the pod in this mode; its bind address cannot be set from a
-`ConduitSite`.
+The Admin API listens on `127.0.0.1:2019` inside the pod in this mode, and its bind address cannot be set from a
+`ConduitSite`. It always has a token, because a `ConduitSite` can route to loopback (see
+[who may write](#who-may-write-conduitsite-objects)): the one in the pod's `CONDUIT_ADMIN_TOKEN` environment variable
+(from a `Secret`, for example), or, when that is not set, a random one that nobody knows, which closes the API. The
+`conduit status` and the other admin commands read the same variable, so run them in the pod with it set.
 
 ## Your first site
 
@@ -245,16 +248,17 @@ effect, as in a config file; check the spelling of a field that seems to do noth
 Three differences from a file:
 
 - **No host paths.** A spec that sets one is refused: `static`, `upload`, `middleware`, `tls.cert`, `tls.key`, `tls.ca`,
-  `tls.clientAuth`, `tls.acme.storage`, `logging.file`, `fallback.file` and `fallback.byAccept.*.file`, also inside
-  `routes`. Serve static content from an upstream, get certificates from `tls.acme`, and use a file config for the rest.
+  `tls.clientAuth`, `tls.acme.storage`, `logging.file`, `fallback.file`, `fallback.byAccept.*.file` and a
+  `cache.store` of the form `disk:<path>`, also inside `routes`. Serve static content from an upstream, get certificates from `tls.acme`, and use a file config for the rest.
   `tls.acme` keeps its certificates in `./certs` of the working directory, which is `/certs` in the image: mount a
   writable volume there, because the root filesystem of the example above is read-only.
 - **No `$VAR` expansion.** A config file expands `$VAR` and `${VAR}` from the environment; a `ConduitSite` is taken as
   written, so `$PASSWORD` is the literal text `$PASSWORD`. Whatever a spec holds is readable by anyone who may `get`
-  the object, so do not put a secret in one that those people should not see. Prefer `jwtAuth` (a public JWKS URL) or
-  `forwardAuth` over `basicAuth` and `apiKey`, whose credentials are plain text in the spec.
+  the object, so do not put a secret in one that those people should not see. Credentials are plain text in the spec
+  wherever the config has one: `basicAuth` and `apiKey`, `jwtAuth.secret`, the keys, passwords and secrets of
+  `consumers`, `proxy.*.sticky.secret` and `metrics.token`. Prefer `jwtAuth` with a public JWKS URL or `forwardAuth`.
 - **No `global`.** Workers, the Admin API and the shutdown period belong to the pod, not to a site. Conduit supplies a
-  config whose Admin API is on loopback with no token.
+  config whose Admin API is on loopback with a token (see [Install](#install)).
 
 ## What happens on every change
 
@@ -291,14 +295,18 @@ replaced by the next update.
 
 A `ConduitSite` decides which requests Conduit accepts and where it sends them, so write access to the object is
 access to that traffic. The host-path rule above stops a writer from reading, writing or serving files of the Conduit
-pod; it does not stop them from routing a `host` and `port` to any URL the pod can reach, including services of other
-namespaces. In practice:
+pod. It does not limit where the site sends traffic: a writer can route a `host` and `port` to any address the pod can
+reach, including services of other namespaces, and `tcp` opens a raw TCP port to any `host:port`, with none of the
+checks of an HTTP site. A writer can also point `cache.store` and `rateLimit.store` at any `redis://` address.
+Loopback is covered: the Admin API, which could otherwise be reached through a site that proxies to `127.0.0.1:2019`,
+has a token that a writer does not know. In practice:
 
 - Give `create` and `update` on `conduitsites` only to the people who may configure that traffic, with a `Role` in the
   namespace you watch. Watching `'*'` makes every namespace's writers able to change the one shared config.
 - Two sites with the same `host` and `port` are a validation error for the **whole** config (the table above): in
   `'*'` mode a mistake, or a deliberate collision, in one namespace holds back the updates of all the others. If tenants
-  are not to be able to affect each other, run one Conduit per namespace.
+  are not to be able to affect each other, run one Conduit per namespace, and note that this separates their
+  updates and not the traffic they can send from the pod.
 - A site that uses `tls.acme` must have a `host` that is a plain DNS name; it becomes a file name in `./certs`.
 
 ## Troubleshooting

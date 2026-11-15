@@ -62,6 +62,14 @@ impl CrdConfigBuilder for ConduitSchema {
         let json = serde_json::to_value(spec)?;
         reject_host_paths(&json)?;
         let site: SiteConfig = serde_json::from_value(json)?;
+        // A `disk:<path>` cache store writes upstream responses under a directory of the host: a host
+        // path like the ones above, in a field the key-by-key check cannot see (the route shapes differ).
+        if crate::config::validate::site_uses_disk_store(&site) {
+            anyhow::bail!(
+                "host file paths cannot be set from a ConduitSite (cache.store disk:<path>); \
+                 they are only allowed in a file config"
+            );
+        }
         Ok(site)
     }
 
@@ -70,7 +78,7 @@ impl CrdConfigBuilder for ConduitSchema {
             global: Some(GlobalConfig {
                 admin: Some(AdminConfig {
                     bind: Some(admin_bind.to_owned()),
-                    token: None,
+                    token: Some(admin_token()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -79,6 +87,38 @@ impl CrdConfigBuilder for ConduitSchema {
             ..Default::default()
         }
     }
+}
+
+/// The Admin API token of a pod that takes its config from `ConduitSite` objects.
+///
+/// The Admin API is on loopback, but a `ConduitSite` may route to any address the pod can reach, loopback included
+/// (`proxy: http://127.0.0.1:2019`, or a `tcp` target): without a token, whoever writes a `ConduitSite` could call
+/// `POST /shutdown` or `POST /upstreams/add` through their own site. So the API always has one: `CONDUIT_ADMIN_TOKEN`
+/// from the pod's environment when set (the variable `conduit status` and the other admin commands read, so they work
+/// in the pod), otherwise a random one that nobody knows, which closes the API. It is made once per process: a config
+/// rebuilt on every `ConduitSite` change must not rotate it.
+fn admin_token() -> String {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN
+        .get_or_init(|| match std::env::var("CONDUIT_ADMIN_TOKEN") {
+            Ok(token) if !token.trim().is_empty() => token,
+            _ => random_token(),
+        })
+        .clone()
+}
+
+/// 32 random bytes from the system's secure random source, as 64 hex characters.
+fn random_token() -> String {
+    use std::fmt::Write as _;
+    let mut bytes = [0u8; 32];
+    rustls::crypto::ring::default_provider()
+        .secure_random
+        .fill(&mut bytes)
+        .expect("the system random source is available");
+    bytes.iter().fold(String::with_capacity(64), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
 /// CRD-mode trust boundary (#580): whoever can write a `ConduitSite` must not be
@@ -574,6 +614,64 @@ mod tests {
         );
         let site = spec_to_site_config(&crds[0].spec).unwrap();
         assert!(site.extra.contains_key("jwtAuht"));
+    }
+
+    /// A `disk:<path>` cache store is a host path, in any route shape; `memory` and a Redis URL are not.
+    #[test]
+    fn crd_spec_cannot_cache_to_a_host_directory() {
+        let site_with = |proxy: &str| {
+            let yaml = format!(
+                "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {{name: a}}\nspec:\n  port: 8080\n{proxy}"
+            );
+            spec_to_site_config(&crds_in(&yaml)[0].spec)
+        };
+        let in_map = |store: &str| {
+            format!("  proxy:\n    /:\n      targets: [http://b:1]\n      cache: {{store: '{store}'}}\n")
+        };
+        let in_routes = |store: &str| {
+            format!(
+                "  routes:\n    - match: {{path: /}}\n      proxy:\n        targets: [http://b:1]\n        cache: {{store: '{store}'}}\n"
+            )
+        };
+        for store in ["disk:/etc", "disk:./cache"] {
+            for (shape, proxy) in [("proxy map", in_map(store)), ("routes[]", in_routes(store))] {
+                let err = site_with(&proxy)
+                    .expect_err(&format!("{shape} {store}"))
+                    .to_string();
+                assert!(err.contains("host file paths"), "{shape} {store}: {err}");
+            }
+        }
+        for store in ["memory", "redis://cache.default.svc:6379"] {
+            assert!(site_with(&in_map(store)).is_ok(), "proxy map {store}");
+            assert!(site_with(&in_routes(store)).is_ok(), "routes[] {store}");
+        }
+    }
+
+    /// The Admin API of a CRD-mode pod always has a token: a `ConduitSite` can route to loopback.
+    #[test]
+    fn the_admin_api_of_a_crd_pod_has_a_token_that_does_not_change() {
+        let token_of = |cfg: &AppConfig| {
+            cfg.global
+                .as_ref()
+                .and_then(|g| g.admin.as_ref())
+                .and_then(|a| a.token.clone())
+        };
+        let a = build_app_config(std::iter::empty(), "127.0.0.1:2019").unwrap();
+        let b = build_app_config(std::iter::empty(), "127.0.0.1:2019").unwrap();
+        let token = token_of(&a).expect("a token is set");
+        assert!(
+            token.len() >= 32,
+            "token too short: {} characters",
+            token.len()
+        );
+        assert_eq!(
+            Some(token),
+            token_of(&b),
+            "the token must not rotate with the config"
+        );
+        let (_, hard) =
+            crate::config::validate::partition_by_severity(crate::config::validate::validate(&a));
+        assert!(hard.is_empty(), "{hard:?}");
     }
 
     // ── build_app_config ──────────────────────────────────────────────────────

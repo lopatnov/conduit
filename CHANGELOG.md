@@ -113,8 +113,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the parser, with no message, so a site that asked for a JWT or a consumer check was served open. The definition now
   keeps unknown fields of `spec` (`x-kubernetes-preserve-unknown-fields`; apply `contrib/k8s/conduitsite-crd.yaml`
   again) and the spec keeps every field it does not name; a key that no site field matches is warned about, as in a
-  config file. The guard against host paths (`static`, `tls.cert`, ...) is unchanged and its schema-wide test covers the
-  new fields.
+  config file. The guard against host paths (`static`, `tls.cert`, ...) is unchanged, except that a `cache.store` of the form
+  `disk:<path>` (reachable before, a directory of the host) is now refused too (behaviour change).
+- **The Admin API of a pod that reads `ConduitSite` objects now always has a token** (#573). It was on loopback with
+  no token, and a `ConduitSite` may route to loopback (`proxy: http://127.0.0.1:2019`, or a `tcp` target), so whoever
+  could write one could call `POST /shutdown` or `POST /upstreams/add` through their own site. The token is
+  `CONDUIT_ADMIN_TOKEN` from the pod's environment when set (the variable the admin commands read), otherwise a random
+  one made once at start (behaviour change: set the variable to use the Admin API in this mode).
 
 - **A credential that is an unset environment variable is now warned about** (issue #624, the "sshole" class: a failed
   lookup that degrades into a value an attacker can predict). `basicAuth` passwords, `apiKey` keys, `jwtAuth.secret`,
