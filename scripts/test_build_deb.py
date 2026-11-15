@@ -73,7 +73,10 @@ class BuildDeb(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(os.path.basename(out.strip()), "conduit_2.2.0~rc.1_arm64.deb")
         listing = subprocess.run(["dpkg-deb", "-c", out.strip()], capture_output=True, text=True).stdout
-        for path in ("./usr/bin/conduit", "./etc/conduit/conduit.yaml", "./usr/lib/systemd/system/conduit.service"):
+        for path in (
+            "./usr/bin/conduit", "./etc/conduit/conduit.yaml", "./usr/lib/systemd/system/conduit.service",
+            "./usr/share/doc/conduit/THIRD-PARTY-LICENSES.txt.gz",  # the notices of the compiled-in crates (#640)
+        ):
             self.assertIn(path, listing)
 
 

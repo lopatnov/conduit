@@ -549,7 +549,8 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/conduit dist/${{ matrix.asset_name }}
           chmod +x dist/${{ matrix.asset_name }}
-          tar -czf dist/${{ matrix.asset_name }}.tar.gz -C dist ${{ matrix.asset_name }}
+          # The archive carries Conduit's licence and the notices of the crates compiled into it (issue #640).
+          tar -czf dist/${{ matrix.asset_name }}.tar.gz -C dist ${{ matrix.asset_name }} -C "$GITHUB_WORKSPACE" LICENSE THIRD-PARTY-LICENSES.txt
 
       - name: Package (zip, Windows)
         if: matrix.archive_ext == 'zip'
@@ -557,7 +558,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "target\${{ matrix.target }}\release\conduit.exe" "dist\${{ matrix.asset_name }}"
-          Compress-Archive -Path "dist\${{ matrix.asset_name }}" -DestinationPath "dist\${{ matrix.asset_name }}.zip"
+          Compress-Archive -Path "dist\${{ matrix.asset_name }}", "LICENSE", "THIRD-PARTY-LICENSES.txt" -DestinationPath "dist\${{ matrix.asset_name }}.zip"
 
       # The Debian package (issue #669): the static musl full builds, for amd64 and arm64. A static binary needs no
       # libc, so one package installs on every Debian and Ubuntu release. It is uploaded as a `binary-*` artifact, so
@@ -669,6 +670,11 @@ jobs:
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The licence notices as a release asset of their own (issue #640), next to the archives that also carry them;
+      # the npm package ships no binary and points here.
+      - name: Add the third-party licence notices
+        run: cp THIRD-PARTY-LICENSES.txt dist/
 
       - name: Generate checksums
         working-directory: dist

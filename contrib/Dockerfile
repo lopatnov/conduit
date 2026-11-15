@@ -54,6 +54,11 @@ FROM scratch
 # Copy the static binary.
 COPY --from=builder /src/target/release/conduit /conduit
 
+# Licence notices (issue #640): Conduit's own licence and the licences of the crates compiled into the binary.
+# `docker run --entrypoint` has no shell here, so read them with `docker cp <container>:/licenses/... .`.
+COPY --from=builder /src/LICENSE /licenses/LICENSE
+COPY --from=builder /src/THIRD-PARTY-LICENSES.txt /licenses/THIRD-PARTY-LICENSES.txt
+
 # Expose the default proxy port.
 EXPOSE 8080
 
