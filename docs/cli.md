@@ -34,6 +34,7 @@ conduit [OPTIONS] [COMMAND]
   - [`forward-auth`](#forward-auth--forwardauth-middleware)
   - [`rhai`](#rhai--rhai-scripting-middleware)
   - [`wasm`](#wasm--webassembly-plugin-middleware)
+  - [`ext-proc`](#ext-proc--external-processor-over-grpc)
   - [`tcp`](#tcp--tcp-passthrough-proxy)
   - [`upload`](#upload--file-upload-handler)
   - [`redis`](#redis--redis-backed-rate-limiting-and-caching)
@@ -667,6 +668,7 @@ extra crates each feature compiles in. `conduit features -c FILE` prints what a 
 | `forward-auth`    | ForwardAuth subrequest middleware                   | —                       |
 | `rhai`            | Rhai scripting middleware (`type: "script"`)        | `rhai`                  |
 | `wasm`            | WASM plugin middleware (`type: "wasm"`)             | `wasmtime`              |
+| `ext-proc`        | External processor over gRPC (`type: "ext_proc"`)   | `tonic`, `prost`        |
 | `tcp`             | TCP passthrough proxy (`type: "tcp"` site)          | —                       |
 | `upload`          | File upload handler (`upload:` site config)         | `multer`                |
 | `redis`           | Redis-backed rate limiting & caching                | `redis`                 |
@@ -913,6 +915,25 @@ forwardAuth:
   responseHeaders: [X-User-ID, X-Role]
   timeoutMs: 3000
   skipPaths: [/__health__]
+```
+
+---
+
+### `ext-proc` — External processor over gRPC
+
+Enables `type: "ext_proc"` entries in `middleware`: the request headers, the request body,
+the response headers and a copy of the response body go to a gRPC service that speaks
+Envoy's `ext_proc` protocol, which can change the headers, rewrite the request body,
+replace the response or answer the request itself. Fails closed (503) when the processor
+does not answer, unless `failOpen: true`. A build without this feature **refuses to start** with a fail-closed
+entry. Details: [configuration.md](configuration.md#external-processing-ext_proc).
+
+```yaml
+middleware:
+  - type: ext_proc
+    config:
+      grpc: "grpc://127.0.0.1:50051"
+      timeoutMs: 200
 ```
 
 ---

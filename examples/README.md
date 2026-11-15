@@ -45,6 +45,7 @@ Cells marked with a feature badge require `cargo build --features <name>` (or th
 | Security hardening                      | `security-hardened.yaml`                 | standard          |
 | URL rewriting                           | `path-rewrite.yaml`                      | standard          |
 | Custom Rhai middleware                  | `rhai-middleware.yaml`                   | `--features rhai` |
+| External processor over gRPC (ext_proc) | `ext-proc.yaml`                          | `--features ext-proc` |
 | File upload                             | `file-upload.yaml`                       | `--features upload` |
 
 For each scenario with both YAML and JSON side by side, and explanations, see
@@ -273,6 +274,18 @@ Custom request middleware in Rhai script: read headers, inject values, or
 reject requests.
 
 **Features:** `middleware[].type: script`, Rhai scripting
+
+---
+
+### [ext-proc.yaml](ext-proc.yaml) / [ext-proc.json](ext-proc.json)
+
+Send the request headers to an external gRPC processor (Envoy's `ext_proc`
+protocol), which may change them or answer the request itself. Fails closed
+(503) when the processor is down, unless `failOpen: true`.
+
+> **Requires** `--features ext-proc`
+
+**Features:** `middleware[].type: ext_proc`, `timeoutMs`, `failOpen`, `statusOnError`
 
 ---
 

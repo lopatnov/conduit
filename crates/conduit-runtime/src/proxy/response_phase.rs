@@ -66,6 +66,7 @@ fn record_retry_failure(
 /// the upstream response headers.  The chain encapsulates all header-level
 /// concerns in six discrete phases:
 ///
+/// 0. (feature `ext-proc`) the `ext_proc` response-headers exchange, the chain's one async stage
 /// 1. CRLF injection protection
 /// 2. Inject CORS + security + custom site headers
 /// 3. Apply `responseTransform` (set / remove headers)
@@ -149,6 +150,12 @@ pub(super) async fn upstream_response_filter(
         ));
     }
 
+    // External processing (#27): the entries that handle the response are a stage of the chain (`ExtProcResponseFilter`,
+    // run first by `run_async`). Here only the body observation is kept: it starts once the response is known to be final
+    // (below).
+    #[cfg(feature = "ext-proc")]
+    let ext_proc_sessions = req_ctx.ext_proc.clone().filter(|s| s.handles_response());
+
     let config = proxy.state.config.load();
     let chain = ResponseFilterChain::build(req_ctx, &config);
 
@@ -160,14 +167,21 @@ pub(super) async fn upstream_response_filter(
     // The response chain may execute WASM plugins whose .wasm file is read from disk on first load, so a chain that
     // has one runs through `block_in_place`; a chain that only edits headers runs in place (issue #475: the
     // unconditional `block_in_place` cost ~30 us of CPU and a thread hand-off per response).
-    // Decide whether a body replacement could be delivered on the response as the upstream sent it: a
-    // `responseTransform` or plugin may drop `Content-Length` later and must not defeat the check (#561).
-    let upstream_has_body = body_can_be_replaced(upstream_response);
-    let run_result = chain.run_offloading(upstream_response, req_ctx);
+    // `run_async` also decides whether a body replacement could be delivered on the response as it stood before the
+    // synchronous filters (`body_replaceable`: a `responseTransform` or plugin may drop `Content-Length` later and must
+    // not defeat the check, #561), and drops a retry that a replaced `ext_proc` response made pointless (#27).
+    let run_result = chain.run_async(upstream_response, req_ctx).await;
     // The chain borrows `req_ctx` and `config`; end that borrow here so the match below can take `ctx` mutably.
     drop(chain);
 
-    match run_result? {
+    let run = run_result?;
+    let upstream_has_body = run.body_replaceable;
+    #[cfg(feature = "ext-proc")]
+    let ext_proc_replaced = run.state.replaced;
+    #[cfg(feature = "ext-proc")]
+    let ext_proc_body = run.state.replacement_body;
+
+    match run.outcome {
         ResponseFilterOutcome::Continue => {}
 
         ResponseFilterOutcome::RetryUpstream => {
@@ -215,6 +229,25 @@ pub(super) async fn upstream_response_filter(
         }
     }
 
+    // The response is final now (it is not retried): an entry with `responseBody: observe` starts being sent the body.
+    #[cfg(feature = "ext-proc")]
+    if let (Some(sessions), true) = (
+        &ext_proc_sessions,
+        should_observe_body(upstream_response, ext_proc_replaced),
+    ) {
+        sessions.start_observing().await;
+    }
+
+    // The body of an `ext_proc` answer that replaced the response (#27) goes out in place of the upstream's, unless the
+    // chain that ran after it already took over the body: a plugin's replacement or the 5xx mask each set a
+    // `Content-Length` of their own, and the header and the body must come from the same source.
+    #[cfg(feature = "ext-proc")]
+    if let Some(bytes) = ext_proc_body {
+        if let Some(req_ctx_mut) = ctx.as_mut() {
+            place_ext_proc_body(req_ctx_mut, bytes);
+        }
+    }
+
     // Sticky-session Set-Cookie injection (#39): when `sticky.secret` is
     // configured the chosen upstream URL is HMAC-signed and returned to
     // the client so future requests pin to the same backend.
@@ -241,10 +274,26 @@ pub(super) async fn upstream_response_filter(
     Ok(())
 }
 
+/// `true` when the body that follows is an HTTP response body a `responseBody: observe` entry may be sent: not the answer a
+/// processor replaced (its own text, already seen) and not the tunnel after `101 Switching Protocols`, whose bytes pass
+/// through the body hooks too (WebSocket frames are not a response body).
+#[cfg(feature = "ext-proc")]
+fn should_observe_body(resp: &pingora_http::ResponseHeader, replaced: bool) -> bool {
+    !replaced && resp.status != pingora_http::StatusCode::SWITCHING_PROTOCOLS
+}
+
 /// `true` when the response status can carry content (not `1xx`, `204`, `205`, `304`).
 fn status_allows_body(resp: &pingora_http::ResponseHeader) -> bool {
     let status = resp.status.as_u16();
     !(status < 200 || status == 204 || status == 205 || status == 304)
+}
+
+/// Take the body of an `ext_proc` answer as the response's body, unless the chain already took the body over (#27).
+#[cfg(feature = "ext-proc")]
+fn place_ext_proc_body(req_ctx: &mut RequestCtx, bytes: Bytes) {
+    if req_ctx.replacement_body.is_none() && !req_ctx.mask_upstream_body {
+        req_ctx.replacement_body = Some(bytes);
+    }
 }
 
 /// `true` when a WASM `on_response` body replacement can be delivered for this response (issue #379).
@@ -255,7 +304,7 @@ fn status_allows_body(resp: &pingora_http::ResponseHeader) -> bool {
 /// (`Content-Length: 0`). Advertising a `Content-Length` there would promise bytes that never come, so the
 /// response is left as the upstream sent it. (An HTTP/2 upstream that ends the stream on the HEADERS frame
 /// without a `Content-Length` cannot be told apart here and is a known limitation.)
-fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
+pub(crate) fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
     let status = resp.status.as_u16();
     if status < 200 || status == 204 || status == 205 || status == 304 {
         return false;
@@ -268,7 +317,7 @@ fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
 }
 
 /// Log, once per process, that a WASM plugin's body replacement was skipped because the response has no body.
-fn warn_body_not_replaceable(status: u16) {
+pub(crate) fn warn_body_not_replaceable(status: u16) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static WARNED: AtomicBool = AtomicBool::new(false);
     if !WARNED.swap(true, Ordering::Relaxed) {
@@ -290,6 +339,19 @@ pub(super) fn upstream_response_body_filter(
     ctx: &mut Option<RequestCtx>,
     health: &conduit_upstream::health::UpstreamRegistry,
 ) -> Result<Option<std::time::Duration>> {
+    // External processing (#27): an entry with `responseBody: observe` is sent a copy of every chunk, without waiting for it.
+    #[cfg(feature = "ext-proc")]
+    if let Some(sessions) = ctx
+        .as_ref()
+        .and_then(|c| c.ext_proc.as_ref())
+        .filter(|s| s.handles_response())
+    {
+        match body.as_ref() {
+            Some(chunk) => sessions.observe_response_body(chunk, end_of_stream),
+            None if end_of_stream => sessions.observe_response_body(&Bytes::new(), true),
+            None => {}
+        }
+    }
     // `least-bandwidth` (issue #627): count what the upstream sent, before any replacement below.
     if let (Some(req_ctx), Some(chunk)) = (ctx.as_ref(), body.as_ref()) {
         if req_ctx.proxy.meters_traffic && !chunk.is_empty() {
@@ -492,6 +554,60 @@ mod tests {
             resp.insert_header("content-length", cl).unwrap();
         }
         resp
+    }
+
+    #[cfg(feature = "ext-proc")]
+    fn ctx_for_body() -> crate::proxy::ctx::RequestCtx {
+        use crate::proxy::ctx::{ProxyReqState, RequestCtx};
+        RequestCtx::new(
+            0,
+            crate::proxy::ctx::UpstreamTarget::Proxy {
+                addr: "backend:4000".to_owned(),
+                tls: false,
+                sni: String::new(),
+                strip_prefix: None,
+                rewrite: None,
+                mirror_url: None,
+                upstream_tls: None,
+            },
+            ProxyReqState::default(),
+            None,
+        )
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn an_ext_proc_body_is_used_when_nothing_took_the_body_over() {
+        let mut ctx = ctx_for_body();
+        super::place_ext_proc_body(&mut ctx, bytes::Bytes::from_static(b"from the processor"));
+        assert_eq!(
+            ctx.replacement_body.as_deref(),
+            Some(&b"from the processor"[..])
+        );
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_plugin_replacement_or_the_5xx_mask_keeps_the_body_its_content_length_describes() {
+        let mut ctx = ctx_for_body();
+        ctx.replacement_body = Some(bytes::Bytes::from_static(b"plugin"));
+        super::place_ext_proc_body(&mut ctx, bytes::Bytes::from_static(b"processor"));
+        assert_eq!(ctx.replacement_body.as_deref(), Some(&b"plugin"[..]));
+
+        let mut ctx = ctx_for_body();
+        ctx.mask_upstream_body = true;
+        super::place_ext_proc_body(&mut ctx, bytes::Bytes::from_static(b"processor"));
+        assert!(ctx.replacement_body.is_none());
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_body_is_observed_unless_the_answer_was_replaced_or_the_connection_was_upgraded() {
+        use super::should_observe_body;
+        assert!(should_observe_body(&resp_with(200, None), false));
+        assert!(should_observe_body(&resp_with(500, None), false));
+        assert!(!should_observe_body(&resp_with(200, None), true));
+        assert!(!should_observe_body(&resp_with(101, None), false));
     }
 
     #[test]

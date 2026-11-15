@@ -69,6 +69,8 @@
 //! `RequestCtx` (which isn't reachable from here at all).
 
 pub mod config;
+#[cfg(feature = "ext-proc")]
+pub mod ext_proc;
 pub mod guard;
 pub mod response;
 pub mod validate;
@@ -76,13 +78,15 @@ pub mod warnings;
 
 pub use config::MiddlewareEntry;
 
-/// Forget the compiled scripts (`rhai`) and WASM modules (`wasm`) that were cached by path, so that the
-/// next request reads the files again. A configuration reload calls this: the files of the new
-/// configuration, or an edited file at an unchanged path, must take effect without a restart
-/// (issue #566). Without either feature it does nothing.
+/// Forget the compiled scripts (`rhai`) and WASM modules (`wasm`) that were cached by path, and the gRPC channels to
+/// external processors (`ext-proc`), so that the next request reads the files again. A configuration reload calls this:
+/// the files of the new configuration, or an edited file at an unchanged path, must take effect without a restart
+/// (issue #566). Without any of the features it does nothing.
 pub fn clear_caches() {
     #[cfg(feature = "rhai")]
     conduit_script_rhai::clear_cache();
     #[cfg(feature = "wasm")]
     conduit_plugin_wasm::clear_module_cache();
+    #[cfg(feature = "ext-proc")]
+    conduit_ext_proc::clear_channels();
 }

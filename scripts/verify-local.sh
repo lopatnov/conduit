@@ -215,7 +215,7 @@ if ! skipped goldens; then
   golden gateway --no-default-features --features gateway
   golden redis-cache --no-default-features --features proxy,redis,cache
   golden consumers-jwt --no-default-features --features consumers,jwt
-  FEATS=proxy,compression,static,hotreload,jwt,consumers,forward-auth,rhai,wasm,tcp,upload,redis,cache,acme,fault-injection,otlp
+  FEATS=proxy,compression,static,hotreload,jwt,consumers,forward-auth,rhai,wasm,ext-proc,tcp,upload,redis,cache,acme,fault-injection,otlp
   if cargo hack test -p lopatnov-conduit --lib --each-feature --keep-going --include-features "$FEATS" -- golden >"$OUT/golden-each.log" 2>&1 </dev/null
   then result "golden [each feature]" PASS "$(grep -c '^info: running' "$OUT/golden-each.log") combinations"
   else result "golden [each feature]" FAIL "see $OUT/golden-each.log"; fi

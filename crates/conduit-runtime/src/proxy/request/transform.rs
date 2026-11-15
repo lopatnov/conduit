@@ -61,7 +61,75 @@ pub(crate) async fn upstream_request_filter(
     // Traffic mirroring: fire-and-forget copy to the mirror backend.
     maybe_fire_mirror(session, upstream_request, ctx);
 
+    #[cfg(feature = "ext-proc")]
+    frame_rewritten_body(session, upstream_request, ctx);
+
     Ok(())
+}
+
+/// A request whose body an `ext_proc` entry reads or changes (issue #27) cannot keep the client's `Content-Length`: what is
+/// forwarded is what the processor answered, whose length is not known up front (a buffered body is held until the whole of it
+/// is sent to the processor, a streamed one is rewritten chunk by chunk). The body is then framed by the protocol: chunked for
+/// HTTP/1.x (`Transfer-Encoding` does not exist in HTTP/2, whose frames carry the end of the body themselves). A request with no
+/// body keeps its headers, unless the method carries one (a processor may supply the body of an empty POST).
+#[cfg(feature = "ext-proc")]
+fn frame_rewritten_body(
+    session: &mut Session,
+    upstream_request: &mut RequestHeader,
+    ctx: &mut Option<RequestCtx>,
+) {
+    let Some(req_ctx) = ctx.as_mut() else {
+        return;
+    };
+    if !req_ctx
+        .ext_proc
+        .as_ref()
+        .is_some_and(|s| s.rewrites_request_body())
+    {
+        return;
+    }
+    let body_is_empty = session.is_body_empty();
+    // Decided on the first attempt and kept: the body hook must see the same answer at the last chunk, and an upstream retry
+    // runs this function again, when a chunked body that held no data already reads as empty (see `ext_proc_body_processable`).
+    let processable = decide_body_processing(
+        &mut req_ctx.ext_proc_body_processable,
+        upstream_request.method.as_str(),
+        body_is_empty,
+    );
+    if processable {
+        // A request that is shown to the body phases is framed for a body, whatever `is_body_empty()` says now.
+        reframe_request(upstream_request, false);
+    }
+}
+
+/// The decision of [`body_can_be_processed`], made once per request: the first call stores it in `slot`, later calls (an
+/// upstream retry) return what was stored.
+#[cfg(feature = "ext-proc")]
+fn decide_body_processing(slot: &mut Option<bool>, method: &str, body_is_empty: bool) -> bool {
+    *slot.get_or_insert_with(|| body_can_be_processed(method, body_is_empty))
+}
+
+/// `true` when a request can carry a body after an `ext_proc` entry: it has one, or its method is one that carries one (a
+/// processor may supply the body of an empty POST). Any other request that has none (a GET) is not shown to the body phases:
+/// the upstream request is not framed for a body, so what a processor generated would be dropped by the writer.
+#[cfg(feature = "ext-proc")]
+pub(super) fn body_can_be_processed(method: &str, body_is_empty: bool) -> bool {
+    !body_is_empty || matches!(method, "POST" | "PUT" | "PATCH")
+}
+
+/// The header half of [`frame_rewritten_body`], apart from the session so that it can be tested.
+#[cfg(feature = "ext-proc")]
+fn reframe_request(upstream_request: &mut RequestHeader, body_is_empty: bool) {
+    if !body_can_be_processed(upstream_request.method.as_str(), body_is_empty) {
+        return;
+    }
+    upstream_request.remove_header("content-length");
+    upstream_request.remove_header("transfer-encoding");
+    if upstream_request.version != http::Version::HTTP_2 {
+        // HTTP/1.0 has no chunked framing, so the request goes upstream as HTTP/1.1 (what Pingora's H1 writer sends).
+        upstream_request.set_version(http::Version::HTTP_11);
+        let _ = upstream_request.insert_header("transfer-encoding", "chunked");
+    }
 }
 
 /// Bump the per-upstream active-connections gauge and the selection counters
@@ -503,6 +571,85 @@ mod tests {
     // test modules -- `peer.rs` holds the "canonical" original location.
     fn make_ctx(upstream: UpstreamTarget) -> RequestCtx {
         RequestCtx::new(0, upstream, ProxyReqState::default(), None)
+    }
+
+    // ── reframe_request (#27) ─────────────────────────────────────────────────
+
+    #[cfg(feature = "ext-proc")]
+    fn post(version: http::Version) -> RequestHeader {
+        let mut req = RequestHeader::build("POST", b"/x", None).unwrap();
+        req.set_version(version);
+        req.insert_header("content-length", "5").unwrap();
+        req
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_rewritten_http11_body_is_framed_chunked() {
+        let mut req = post(http::Version::HTTP_11);
+        reframe_request(&mut req, false);
+        assert!(req.headers.get("content-length").is_none());
+        assert_eq!(req.headers.get("transfer-encoding").unwrap(), "chunked");
+        assert_eq!(req.version, http::Version::HTTP_11);
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_rewritten_http10_body_goes_upstream_as_chunked_http11() {
+        // HTTP/1.0 has no chunked framing; without this the body would be forwarded with no framing at all.
+        let mut req = post(http::Version::HTTP_10);
+        reframe_request(&mut req, false);
+        assert!(req.headers.get("content-length").is_none());
+        assert_eq!(req.headers.get("transfer-encoding").unwrap(), "chunked");
+        assert_eq!(req.version, http::Version::HTTP_11);
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_rewritten_http2_body_has_no_framing_header() {
+        let mut req = post(http::Version::HTTP_2);
+        reframe_request(&mut req, false);
+        assert!(req.headers.get("content-length").is_none());
+        assert!(req.headers.get("transfer-encoding").is_none());
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_bodyless_get_keeps_its_headers() {
+        let mut req = RequestHeader::build("GET", b"/x", None).unwrap();
+        req.insert_header("content-length", "0").unwrap();
+        reframe_request(&mut req, true);
+        assert_eq!(req.headers.get("content-length").unwrap(), "0");
+        assert!(req.headers.get("transfer-encoding").is_none());
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn the_body_decision_is_made_once_and_survives_an_upstream_retry() {
+        // First attempt: a chunked GET that announced a body is processed. On a retry the same body reads as empty (its
+        // terminating chunk was read), and the decision must not flip.
+        let mut slot = None;
+        assert!(decide_body_processing(&mut slot, "GET", false));
+        assert!(decide_body_processing(&mut slot, "GET", true));
+        // A request that was left out stays out when it later reads as non-empty.
+        let mut slot = None;
+        assert!(!decide_body_processing(&mut slot, "GET", true));
+        assert!(!decide_body_processing(&mut slot, "GET", false));
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn only_a_request_that_can_carry_a_body_is_shown_to_the_body_phases() {
+        // a body that is there is always processed; an empty one only for a method that carries a body, where a processor
+        // may supply it. An empty GET has nothing to process, and the writer would drop what a processor made up.
+        assert!(body_can_be_processed("GET", false));
+        assert!(body_can_be_processed("POST", false));
+        assert!(body_can_be_processed("POST", true));
+        assert!(body_can_be_processed("PUT", true));
+        assert!(body_can_be_processed("PATCH", true));
+        assert!(!body_can_be_processed("GET", true));
+        assert!(!body_can_be_processed("HEAD", true));
+        assert!(!body_can_be_processed("DELETE", true));
     }
 
     // ── forwarded_for_value / via_header_value ───────────────────────────────

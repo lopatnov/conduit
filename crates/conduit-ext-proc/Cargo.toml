@@ -1,0 +1,47 @@
+[package]
+name        = "lopatnov-conduit-ext-proc"
+version.workspace    = true
+edition.workspace    = true
+rust-version.workspace = true
+description = "External processing filter (Envoy ext_proc protocol over gRPC): config, client and header-mutation rules for conduit (issue #27)"
+license.workspace    = true
+repository.workspace = true
+
+[lib]
+name = "conduit_ext_proc"
+path = "src/lib.rs"
+
+[dependencies]
+# The config (`ExtProcConfig`) is always compiled, so a config that names an `ext_proc` middleware entry parses and validates
+# in every build and gets an explicit feature-off message instead of a silent drop. Everything below is the real client,
+# behind this crate's own `ext-proc` feature.
+serde      = { workspace = true }
+serde_json = { workspace = true }
+
+bytes   = { workspace = true, optional = true }
+http    = { workspace = true, optional = true }
+prost   = { workspace = true, optional = true }
+tokio   = { workspace = true, optional = true }
+tonic   = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tokio-stream = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile     = { workspace = true }
+tokio        = { workspace = true }
+tokio-stream = { workspace = true }
+# the in-process mock processor needs tonic's server half (and its router, to serve one service)
+tonic        = { workspace = true, features = ["server", "router", "codegen"] }
+
+[features]
+ext-proc = [
+    "dep:bytes",
+    "dep:http",
+    "dep:prost",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:tonic",
+    "dep:tonic-prost",
+    "dep:tracing",
+]

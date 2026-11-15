@@ -22,7 +22,7 @@
 //!
 //! ## Features
 //!
-//! Fourteen root features gate code in this crate; each one is declared here with the same forwards as in the
+//! Fifteen root features gate code in this crate; each one is declared here with the same forwards as in the
 //! root, and [`features`] exposes them as constants so the root can assert at compile time that the two agree
 //! (a root feature that is on while this crate's is off would compile and quietly drop a guard).
 
@@ -32,7 +32,7 @@ pub mod proxy;
 #[cfg(feature = "upload")]
 pub mod upload;
 
-/// This crate's own view of the 14 features it hosts, for the root's parity asserts.
+/// This crate's own view of the 15 features it hosts, for the root's parity asserts.
 pub mod features {
     pub const PROXY: bool = cfg!(feature = "proxy");
     pub const COMPRESSION: bool = cfg!(feature = "compression");
@@ -48,4 +48,5 @@ pub mod features {
     pub const FAULT_INJECTION: bool = cfg!(feature = "fault-injection");
     pub const OTLP: bool = cfg!(feature = "otlp");
     pub const TOKIO_METRICS: bool = cfg!(feature = "tokio-metrics");
+    pub const EXT_PROC: bool = cfg!(feature = "ext-proc");
 }

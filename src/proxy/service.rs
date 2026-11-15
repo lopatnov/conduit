@@ -56,6 +56,10 @@ const _: () = assert!(
     "`conduit-runtime`'s `fault-injection` feature and the root crate's `fault-injection` feature must be enabled together"
 );
 const _: () = assert!(
+    conduit_runtime::features::EXT_PROC == cfg!(feature = "ext-proc"),
+    "`conduit-runtime`'s `ext-proc` feature and the root crate's `ext-proc` feature must be enabled together"
+);
+const _: () = assert!(
     conduit_runtime::features::OTLP == cfg!(feature = "otlp"),
     "`conduit-runtime`'s `otlp` feature and the root crate's `otlp` feature must be enabled together"
 );

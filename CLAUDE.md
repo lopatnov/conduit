@@ -95,6 +95,8 @@ upstream_request_filter()
 
 upstream_response_filter()                    ← тонкая обёртка над ResponseFilterChain
   ResponseFilterChain (crates/conduit-runtime/src/filter/response_chain.rs; в корне — фасад):
+  Phase 0  ExtProcResponseFilter  — ext_proc response headers (feature ext-proc; the only async stage, `push_async`/`run_async`;
+                                    the chain drops a retry after a replaced response)
   Phase 1  CrlfProtectionFilter   — strip CR/LF from upstream headers
   Phase 2  InjectExtraHeadersFilter — CORS + security + custom headers
   Phase 3  ResponseTransformFilter — responseTransform: set/remove

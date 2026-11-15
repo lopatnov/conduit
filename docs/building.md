@@ -63,6 +63,7 @@ proxy. Add features with `--features`:
 | `forward-auth`  | Delegate auth to an external HTTP service (`forwardAuth`)                  |
 | `rhai`          | Rhai scripting middleware (`type: "script"`)                               |
 | `wasm`          | WebAssembly plugin middleware (`type: "wasm"`) via Wasmtime                |
+| `ext-proc`      | External processor over gRPC (`type: "ext_proc"`, Envoy's protocol)        |
 | `tcp`           | Raw TCP proxy mode (`type: "tcp"` site)                                    |
 | `upload`        | Multipart file upload handler (`upload:` site config)                      |
 | `redis`         | Redis-backed rate limiting and caching                                     |

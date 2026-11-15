@@ -204,19 +204,27 @@
             "properties": {
               "type": {
                 "type": "string",
-                "enum": ["script", "wasm", "ipFilter", "rateLimit", "auth", "headers"],
-                "description": "Middleware type. Use \"script\" for Rhai scripts (Phase 4), \"wasm\" for WASM plugins (requires --features wasm)."
+                "enum": ["script", "wasm", "ext_proc", "ipFilter", "rateLimit", "auth", "headers"],
+                "description": "Middleware type. Use \"script\" for Rhai scripts (Phase 4), \"wasm\" for WASM plugins (requires --features wasm), \"ext_proc\" for an external processor over gRPC, Envoy's ext_proc protocol (requires --features ext-proc; a fail-closed entry is refused at validation in a build without it)."
               },
               "config": {
-                "description": "Type-specific configuration object (used by built-in types)."
+                "description": "Type-specific configuration object (used by built-in types). For \"ext_proc\" see ExtProcConfig."
               },
               "path": {
                 "type": "string",
                 "description": "Path to the Rhai script (\"script\") or WASM module (\"wasm\") file. Required for both types."
               }
             },
-            "if": { "properties": { "type": { "enum": ["script", "wasm"] } }, "required": ["type"] },
-            "then": { "required": ["path"] }
+            "allOf": [
+              {
+                "if": { "properties": { "type": { "enum": ["script", "wasm"] } }, "required": ["type"] },
+                "then": { "required": ["path"] }
+              },
+              {
+                "if": { "properties": { "type": { "const": "ext_proc" } }, "required": ["type"] },
+                "then": { "required": ["config"], "properties": { "config": { "$ref": "#/$defs/ExtProcConfig" } } }
+              }
+            ]
           }
         }
       },
@@ -669,6 +677,85 @@
         "issuer":          { "type": "string" },
         "skipPaths":       { "type": "array", "items": { "type": "string" } }
       }
+    },
+    "ExtProcConfig": {
+      "type": "object",
+      "description": "The config of a middleware entry of type \"ext_proc\": the request headers, the request body, the response headers and a copy of the response body (each chosen per entry) are sent to an external processor (Envoy's ext_proc protocol over gRPC), which may change them, rewrite the request body, replace the response or answer the request itself. Requires --features ext-proc.",
+      "required": ["grpc"],
+      "properties": {
+        "grpc": {
+          "type": "string",
+          "pattern": "^grpcs?://.+:[0-9]+/?$",
+          "description": "The processor: grpc://host:port (plain text) or grpcs://host:port (TLS). The port is mandatory."
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60000,
+          "default": 200,
+          "description": "Milliseconds one exchange with the processor may take."
+        },
+        "failOpen": {
+          "type": "boolean",
+          "default": false,
+          "description": "true: a request continues unchanged when the processor fails (unreachable, late, an answer that is not accepted). false: it is refused with statusOnError."
+        },
+        "statusOnError": {
+          "type": "integer",
+          "minimum": 400,
+          "maximum": 599,
+          "default": 503,
+          "description": "The status of the refusal when the processor fails and failOpen is not set."
+        },
+        "caFile": {
+          "type": "string",
+          "description": "PEM file with the certificate authority that signed the processor's certificate (grpcs:// only). Absent: the bundled public roots."
+        },
+        "maxHeaderMutations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024,
+          "default": 64,
+          "description": "The most header sets plus removals one answer may carry; an answer over it is refused as a whole."
+        },
+        "maxHeaderValueBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536,
+          "default": 8192,
+          "description": "The most bytes a header value set by the processor may have; an answer over it is refused as a whole."
+        },
+        "requestPhase": {
+          "type": "boolean",
+          "default": true,
+          "description": "false: the request headers are not sent to the processor (an entry that wants only bodies, or only the response)."
+        },
+        "requestBody": {
+          "type": "string",
+          "enum": ["none", "buffered", "streamed"],
+          "default": "none",
+          "description": "none: the request body is not sent. buffered: the whole body is held (up to maxBodyBytes, 413 above), sent as one message and replaced by the processor's answer. streamed: every chunk is sent as it arrives and replaced by the answer to it. A rewritten request is forwarded with chunked framing."
+        },
+        "maxBodyBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216,
+          "default": 1048576,
+          "description": "requestBody: buffered only. The largest request body held for the processor; a larger one is refused with 413 and never sent."
+        },
+        "responsePhase": {
+          "type": "boolean",
+          "default": false,
+          "description": "true: the response headers are sent to the processor, which may change them or replace the response."
+        },
+        "responseBody": {
+          "type": "string",
+          "enum": ["none", "observe"],
+          "default": "none",
+          "description": "observe: a copy of every chunk of the response body is sent to the processor without waiting for it; its answers about the body are ignored."
+        }
+      },
+      "additionalProperties": false
     },
     "ForwardAuthConfig": {
       "type": "object",

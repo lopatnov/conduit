@@ -7,6 +7,10 @@
 //!
 //! ## Phases (in default order)
 //!
+//! 0. `ExtProcResponseFilter` — the `ext_proc` response-headers phase (feature `ext-proc`, async: it awaits a gRPC
+//!    processor). It is the only *async* stage; it runs before the others, so a processor sees the upstream's headers
+//!    before anything of the site's is added, and the chain, not its caller, decides what its answer means for the
+//!    phases after it (a replaced response is final: no retry) — see [`ResponseFilterChain::run_async`].
 //! 1. `CrlfProtectionFilter`  — strip CRLF-injected response headers
 //! 2. `InjectExtraHeadersFilter` — CORS + security + custom site headers
 //! 3. `ResponseTransformFilter` — static set/remove from `responseTransform`
@@ -22,8 +26,13 @@
 //!    runs through `block_in_place`, a thread hand-off per response (issue #475).
 //! 3. Push it into `ResponseFilterChain::build()` at the correct position.
 //!
+//! A phase that must `await` (network I/O) implements [`AsyncResponseFilter`] instead and is added with
+//! [`ResponseFilterChain::push_async`]; async stages run first, in order, and only they cost a boxed future.
+//!
 //! No other files need to change.
 
+use async_trait::async_trait;
+use bytes::Bytes;
 use pingora_core::Result;
 use pingora_http::ResponseHeader;
 
@@ -46,6 +55,40 @@ impl ResponseCtx for RequestCtx {
     }
 }
 
+// ── Async stages ──────────────────────────────────────────────────────────────
+
+/// What the async stages leave behind for the phases after them and for whoever applies the chain's outcome.
+#[derive(Default)]
+pub struct ResponseRunState {
+    /// An `ext_proc` answer replaced the response (#27). It is final: a retry would send the request to the upstream
+    /// again for a response the processor never sees, and the processor's refusal is not the upstream's failure.
+    pub replaced: bool,
+    /// The body of that answer, to send in place of the upstream's (`None` when none can be sent).
+    pub replacement_body: Option<Bytes>,
+}
+
+/// A response phase that awaits (a gRPC processor), where [`ResponseFilter`] only edits the header map in memory.
+///
+/// The stages run before the synchronous filters, in the order they were pushed. A stage that fails ends the chain
+/// with that error.
+#[async_trait]
+pub trait AsyncResponseFilter: Send + Sync {
+    async fn apply(&self, resp: &mut ResponseHeader, state: &mut ResponseRunState) -> Result<()>;
+}
+
+/// The result of [`ResponseFilterChain::run_async`].
+pub struct ChainRun {
+    /// The chain's terminal outcome (`Continue` when no filter raised one). A retry that an `ext_proc` answer made
+    /// pointless has already been turned into `Continue`.
+    pub outcome: ResponseFilterOutcome,
+    /// What the async stages recorded.
+    pub state: ResponseRunState,
+    /// Whether a body replacement could be delivered on the response as it stood after the async stages and before
+    /// the synchronous filters: a `responseTransform` or a plugin may drop `Content-Length` later and must not
+    /// defeat the check (#561).
+    pub body_replaceable: bool,
+}
+
 // ── Chain ─────────────────────────────────────────────────────────────────────
 
 /// An ordered list of response filters.
@@ -54,6 +97,8 @@ impl ResponseCtx for RequestCtx {
 /// non-Continue outcome.
 #[derive(Default)]
 pub struct ResponseFilterChain<'a> {
+    /// Async stages, run first ([`ResponseFilterChain::run_async`]); empty for most requests.
+    leading: Vec<Box<dyn AsyncResponseFilter + 'a>>,
     filters: Vec<Box<dyn ResponseFilter + 'a>>,
     /// Whether a filter in the chain can block the thread (a script or a WASM plugin) — see
     /// [`ResponseFilterChain::run_offloading`].
@@ -70,6 +115,12 @@ impl<'a> ResponseFilterChain<'a> {
     pub fn push(mut self, f: impl ResponseFilter + 'a) -> Self {
         self.may_block |= f.may_block();
         self.filters.push(Box::new(f));
+        self
+    }
+
+    /// Append an async stage. It runs before every synchronous filter, after the stages pushed before it.
+    pub fn push_async(mut self, f: impl AsyncResponseFilter + 'a) -> Self {
+        self.leading.push(Box::new(f));
         self
     }
 
@@ -91,11 +142,45 @@ impl<'a> ResponseFilterChain<'a> {
         resp: &mut ResponseHeader,
         req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
+        self.offload(resp, req_ctx, false)
+    }
+
+    /// [`run_offloading`](Self::run_offloading) with the choice of [`run_dropping_retry`](Self::run_dropping_retry).
+    fn offload(
+        &self,
+        resp: &mut ResponseHeader,
+        req_ctx: &dyn ResponseCtx,
+        drop_retry: bool,
+    ) -> Result<ResponseFilterOutcome> {
         if self.may_block {
-            tokio::task::block_in_place(|| self.run(resp, req_ctx))
+            tokio::task::block_in_place(|| self.run_dropping_retry(resp, req_ctx, drop_retry))
         } else {
-            self.run(resp, req_ctx)
+            self.run_dropping_retry(resp, req_ctx, drop_retry)
         }
+    }
+
+    /// Run the whole chain: the async stages, then every synchronous filter ([`run_offloading`](Self::run_offloading)).
+    ///
+    /// The chain owns what the async stages mean for the phases after them, so that no caller has to repeat it: a
+    /// response that an `ext_proc` answer replaced is final, and a `RetryUpstream` raised after that is dropped.
+    pub async fn run_async(
+        &self,
+        resp: &mut ResponseHeader,
+        req_ctx: &dyn ResponseCtx,
+    ) -> Result<ChainRun> {
+        let mut state = ResponseRunState::default();
+        for stage in &self.leading {
+            stage.apply(resp, &mut state).await?;
+        }
+        let body_replaceable = crate::proxy::response_phase::body_can_be_replaced(resp);
+        // A replaced response is final: the filters after the retry one (the 5xx mask, the site's middleware) still run on
+        // it, only the retry is not raised.
+        let outcome = self.offload(resp, req_ctx, state.replaced)?;
+        Ok(ChainRun {
+            outcome,
+            state,
+            body_replaceable,
+        })
     }
 
     /// Run every filter in order.
@@ -107,9 +192,21 @@ impl<'a> ResponseFilterChain<'a> {
         resp: &mut ResponseHeader,
         req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
+        self.run_dropping_retry(resp, req_ctx, false)
+    }
+
+    /// [`run`](Self::run); with `drop_retry` a `RetryUpstream` is ignored and the filters after it still run, for a
+    /// response that must not be retried (one that an `ext_proc` answer replaced) but is otherwise treated as any other.
+    fn run_dropping_retry(
+        &self,
+        resp: &mut ResponseHeader,
+        req_ctx: &dyn ResponseCtx,
+        drop_retry: bool,
+    ) -> Result<ResponseFilterOutcome> {
         for filter in &self.filters {
             match filter.apply(resp, req_ctx)? {
                 ResponseFilterOutcome::Continue => continue,
+                ResponseFilterOutcome::RetryUpstream if drop_retry => continue,
                 other => return Ok(other),
             }
         }
@@ -127,9 +224,22 @@ impl<'a> ResponseFilterChain<'a> {
 
         // Eight slots hold the seven phases without regrowing the vector (it was two reallocations per response).
         let mut chain = Self {
+            leading: Vec::new(),
             filters: Vec::with_capacity(8),
             may_block: false,
         };
+
+        // Phase 0 — External processing (#27): told the upstream's response headers before anything of the site's is
+        // added (so a processor can neither see nor strip the site's CORS and security headers); it may change them or
+        // replace the response.
+        #[cfg(feature = "ext-proc")]
+        if let Some(sessions) = req_ctx.ext_proc.as_ref().filter(|s| s.handles_response()) {
+            chain = chain.push_async(
+                crate::filter::response_ext_proc::ExtProcResponseFilter::new(
+                    std::sync::Arc::clone(sessions),
+                ),
+            );
+        }
 
         // Phase 1 — Security: strip header-injection characters; deduplicate chunked.
         let allow_duplicate_chunked = site
@@ -882,6 +992,250 @@ mod tests {
             chain.run(&mut resp, &ctx).unwrap(),
             ResponseFilterOutcome::Continue
         ));
+    }
+
+    // ── async stages (`run_async`) ───────────────────────────────────────────
+
+    /// An async stage that appends `tag` to `x-order`, and records `replaced` when told to.
+    struct Stage {
+        tag: &'static str,
+        replaced: bool,
+        content_length: Option<&'static str>,
+        fail: bool,
+    }
+    impl Stage {
+        fn tagged(tag: &'static str) -> Self {
+            Stage {
+                tag,
+                replaced: false,
+                content_length: None,
+                fail: false,
+            }
+        }
+    }
+    #[async_trait]
+    impl AsyncResponseFilter for Stage {
+        async fn apply(
+            &self,
+            resp: &mut ResponseHeader,
+            state: &mut ResponseRunState,
+        ) -> Result<()> {
+            if self.fail {
+                return Err(pingora_core::Error::explain(
+                    pingora_core::ErrorType::InternalError,
+                    "stage failed",
+                ));
+            }
+            // Yield, so the stage is a real await point.
+            tokio::task::yield_now().await;
+            let seen = resp
+                .headers
+                .get("x-order")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            resp.insert_header("x-order", format!("{seen}{}", self.tag))?;
+            if let Some(len) = self.content_length {
+                resp.insert_header("content-length", len)?;
+            }
+            state.replaced |= self.replaced;
+            Ok(())
+        }
+    }
+
+    /// A synchronous filter that appends `tag` to `x-order` and raises `outcome`.
+    struct SyncStage {
+        tag: &'static str,
+        outcome: fn() -> ResponseFilterOutcome,
+        drop_content_length: bool,
+    }
+    impl ResponseFilter for SyncStage {
+        fn may_block(&self) -> bool {
+            false
+        }
+        fn apply(
+            &self,
+            resp: &mut ResponseHeader,
+            _: &dyn ResponseCtx,
+        ) -> Result<ResponseFilterOutcome> {
+            let seen = resp
+                .headers
+                .get("x-order")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned();
+            resp.insert_header("x-order", format!("{seen}{}", self.tag))?;
+            if self.drop_content_length {
+                resp.remove_header("content-length");
+            }
+            Ok((self.outcome)())
+        }
+    }
+    fn continue_() -> ResponseFilterOutcome {
+        ResponseFilterOutcome::Continue
+    }
+    fn retry() -> ResponseFilterOutcome {
+        ResponseFilterOutcome::RetryUpstream
+    }
+
+    #[tokio::test]
+    async fn async_stages_run_first_in_the_order_pushed_then_the_synchronous_filters() {
+        // The synchronous filter is pushed FIRST and still runs last.
+        let chain = ResponseFilterChain::new()
+            .push(SyncStage {
+                tag: "s",
+                outcome: continue_,
+                drop_content_length: false,
+            })
+            .push_async(Stage::tagged("a"))
+            .push_async(Stage::tagged("b"));
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        let run = chain.run_async(&mut resp, &ctx).await.unwrap();
+        assert!(matches!(run.outcome, ResponseFilterOutcome::Continue));
+        assert_eq!(resp.headers.get("x-order").unwrap(), "abs");
+    }
+
+    #[tokio::test]
+    async fn a_retry_is_dropped_after_a_replaced_response_and_kept_otherwise() {
+        for (replaced, expect_retry) in [(true, false), (false, true)] {
+            let chain = ResponseFilterChain::new()
+                .push_async(Stage {
+                    replaced,
+                    ..Stage::tagged("a")
+                })
+                .push(SyncStage {
+                    tag: "s",
+                    outcome: retry,
+                    drop_content_length: false,
+                });
+            let mut resp = make_resp(502);
+            let ctx = dummy_ctx();
+            let run = chain.run_async(&mut resp, &ctx).await.unwrap();
+            assert_eq!(run.state.replaced, replaced);
+            assert_eq!(
+                matches!(run.outcome, ResponseFilterOutcome::RetryUpstream),
+                expect_retry,
+                "replaced={replaced}"
+            );
+        }
+    }
+
+    /// A replaced 5xx is not retried, but the filters after the retry one still run on it: the 5xx mask is raised and the
+    /// site's later filters (here a tagging stage, standing for the middleware) see the response.
+    #[tokio::test]
+    async fn a_replaced_response_is_not_retried_but_the_later_filters_still_run() {
+        let retry_filter = || RetryOnErrorFilter {
+            retry: Some(RetrySpec {
+                has_attempts_left: true,
+                has_5xx_condition: true,
+            }),
+            stale_on_error: false,
+        };
+        // Replaced: no retry, the mask is reached.
+        let chain = ResponseFilterChain::new()
+            .push_async(Stage {
+                replaced: true,
+                ..Stage::tagged("a")
+            })
+            .push(retry_filter())
+            .push(ErrorMaskFilter { mask_enabled: true });
+        let mut resp = make_resp(503);
+        let run = chain.run_async(&mut resp, &dummy_ctx()).await.unwrap();
+        assert!(
+            matches!(run.outcome, ResponseFilterOutcome::MaskBody),
+            "a replaced 503 with retry available must still be masked"
+        );
+
+        // Not replaced: the retry ends the chain before the mask, as before.
+        let chain = ResponseFilterChain::new()
+            .push(retry_filter())
+            .push(ErrorMaskFilter { mask_enabled: true });
+        let mut resp = make_resp(503);
+        let run = chain.run_async(&mut resp, &dummy_ctx()).await.unwrap();
+        assert!(matches!(run.outcome, ResponseFilterOutcome::RetryUpstream));
+
+        // Replaced, and a filter after the retry one: it ran.
+        let chain = ResponseFilterChain::new()
+            .push_async(Stage {
+                replaced: true,
+                ..Stage::tagged("a")
+            })
+            .push(retry_filter())
+            .push(SyncStage {
+                tag: "s",
+                outcome: continue_,
+                drop_content_length: false,
+            });
+        let mut resp = make_resp(503);
+        let run = chain.run_async(&mut resp, &dummy_ctx()).await.unwrap();
+        assert!(matches!(run.outcome, ResponseFilterOutcome::Continue));
+        assert!(
+            resp.headers
+                .get("x-order")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with('s'),
+            "the filter after the retry one was skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_body_check_is_made_after_the_async_stages_and_before_the_synchronous_filters() {
+        let ctx = dummy_ctx();
+        // A stage that leaves an empty body: nothing can be replaced.
+        let chain = ResponseFilterChain::new().push_async(Stage {
+            content_length: Some("0"),
+            ..Stage::tagged("a")
+        });
+        let mut resp = make_resp(200);
+        assert!(
+            !chain
+                .run_async(&mut resp, &ctx)
+                .await
+                .unwrap()
+                .body_replaceable
+        );
+
+        // A synchronous filter that drops `Content-Length: 0` later does not change what was decided before it (decided
+        // after it, the empty body would look replaceable).
+        let chain = ResponseFilterChain::new().push(SyncStage {
+            tag: "s",
+            outcome: continue_,
+            drop_content_length: true,
+        });
+        let mut resp = make_resp(200);
+        resp.insert_header("content-length", "0").unwrap();
+        assert!(
+            !chain
+                .run_async(&mut resp, &ctx)
+                .await
+                .unwrap()
+                .body_replaceable
+        );
+        assert!(resp.headers.get("content-length").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failing_async_stage_ends_the_chain_with_its_error() {
+        let chain = ResponseFilterChain::new()
+            .push_async(Stage {
+                fail: true,
+                ..Stage::tagged("a")
+            })
+            .push(SyncStage {
+                tag: "s",
+                outcome: continue_,
+                drop_content_length: false,
+            });
+        let mut resp = make_resp(200);
+        let ctx = dummy_ctx();
+        assert!(chain.run_async(&mut resp, &ctx).await.is_err());
+        assert!(
+            resp.headers.get("x-order").is_none(),
+            "no filter ran after the failure"
+        );
     }
 
     // ── ResponseTimeFilter ────────────────────────────────────────────────────

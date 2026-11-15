@@ -32,12 +32,13 @@ pub const FEATURE_ORDER: &[&str] = &[
     "fault-injection",
     "rhai",
     "wasm",
+    "ext-proc",
     "otlp",
 ];
 
 /// Features this build was compiled with, among [`FEATURE_ORDER`].
 pub fn compiled_features() -> Vec<&'static str> {
-    let flags: [(&str, bool); 17] = [
+    let flags: [(&str, bool); 18] = [
         ("proxy", conduit_proxy_http::warnings::COMPILED),
         ("cache", conduit_cache::warnings::COMPILED),
         ("disk-cache", conduit_cache::warnings::DISK_COMPILED),
@@ -54,6 +55,7 @@ pub fn compiled_features() -> Vec<&'static str> {
         ("fault-injection", conduit_faults::warnings::COMPILED),
         ("rhai", conduit_middleware::warnings::RHAI_COMPILED),
         ("wasm", conduit_middleware::warnings::WASM_COMPILED),
+        ("ext-proc", conduit_middleware::warnings::EXT_PROC_COMPILED),
         ("otlp", conduit_otlp::warnings::COMPILED),
     ];
     flags
@@ -152,6 +154,7 @@ fn site_requires(site: &SiteConfig, need: &mut impl FnMut(&str)) {
         match entry.r#type.as_str() {
             "script" => need("rhai"),
             "wasm" => need("wasm"),
+            "ext_proc" => need("ext-proc"),
             _ => {}
         }
     }
