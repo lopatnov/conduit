@@ -24,6 +24,7 @@
   - [Security model](#security-model)
   - [Limits and timeouts](#limits-and-timeouts)
   - [Configuration](#configuration)
+    - [Resource scopes](#resource-scopes)
   - [Crates, Cargo features and the `webapp` bundle](#crates-cargo-features-and-the-webapp-bundle)
   - [Rhai and WASM parity](#rhai-and-wasm-parity)
 - [Phased plan](#phased-plan)
@@ -53,8 +54,8 @@ sub-questions:
    templated text, validation, mock APIs. For an application it needs **capabilities** that the host grants one by one,
    denied by default: read-only files, a key-value store, SQLite, outbound HTTP to an allowlist, named secrets. This is
    exactly the model of Spin, Fastly Compute, wasmCloud and Cloudflare Workers.
-3. A new `handler:` action on a `routes[]` entry (next to `proxy:` and `static:`), named resources declared once and
-   granted per handler, and a `webapp` Cargo feature bundle. See [Configuration](#configuration).
+3. A new `handler:` action on a `routes[]` entry (next to `proxy:` and `static:`), named resources (global defaults that a site
+   can override or extend) granted per handler, and a `webapp` Cargo feature bundle. See [Configuration](#configuration).
 
 ---
 
@@ -473,7 +474,9 @@ optimisation, and only for 0.3 components, because a reused instance keeps the p
 
 ### Configuration
 
-The proposal adds a `handler:` action to a `routes[]` entry, and a `resources:` block declared once in `global`.
+The proposal adds a `handler:` action to a `routes[]` entry, and a `resources:` block that can be declared at two
+levels: in `global` (defaults for every site) and in a site (overrides a global definition, or adds a site-only one).
+The merge rules are in [Resource scopes](#resource-scopes) below.
 
 <!-- docs-check: skip (design proposal: handler and resources keys do not exist yet) -->
 ```yaml
@@ -494,6 +497,13 @@ global:
 sites:
   - host: app.example.com
     port: 8080
+    resources:
+      sqlite:
+        app: { path: ./data/app-example.db }      # overrides global `app` for this site only
+      secrets:
+        stripe_key: { env: APP_EXAMPLE_STRIPE_KEY } # this site's own key
+      kv:
+        carts: { backend: redb, path: ./data/carts.redb } # site-only: no global `carts`
     routes:
       # A WASM component that answers /api/users/{id}
       - match: { path: "/api/users/{id}", method: [GET, PUT, DELETE] }
@@ -523,13 +533,50 @@ sites:
       # Everything else: the static site
       - match: { path: "/**" }
         static: ./public
+
+  - host: blog.example.com
+    port: 8080
+    # no `resources:` here: this site sees the global ones as they are (`app` is ./data/app.db)
+    routes:
+      - match: { path: "/api/{*rest}" }
+        handler:
+          wasm: ./handlers/blog.wasm
+          allow: { sqlite: [app], kv: [sessions] }
 ```
+
+#### Resource scopes
+
+Resources live at two levels, `global.resources` (defaults) and `sites[].resources` (local), with the same shape.
+The rules, decided by the owner on 2026-11-15:
+
+1. **Global is the default for every site.** A site with no `resources:` block sees every global resource.
+2. **A local definition with the same kind and label replaces the global one for that site.** The whole definition is
+   replaced, not merged field by field: a local `app: { path: … }` does not inherit `busyTimeoutMs` or any other field
+   from the global `app`. Field-level merging looks convenient, but then nobody can tell from the site block alone
+   which file a handler writes to.
+3. **A local label with no global counterpart is site-only.** Other sites cannot grant it.
+4. **Lookup.** A label in a handler's `allow` is looked up in its own site first, then in `global`. Kinds are separate
+   namespaces: `kv: [cache]` and `files: [cache]` are two different resources.
+5. **An unknown label after the merge is a startup error**, not a warning.
+6. **Sharing is explicit.** A global resource that no site overrides is one store, opened once and shared by every
+   site that grants it (two sites writing the same `sessions` see each other's keys; that is why it is global). A site
+   that must not share overrides the label. For KV a global definition can also say `isolate: perSite`, which keeps
+   one backend but prefixes every key with the site label, so sites cannot read each other's keys without a separate
+   file per site.
+7. **One backend, one owner.** Two definitions (at any level) with the same backend and the same `path` or `url` are
+   opened once if they are identical, and are a validation error if their options differ (a `redb` or SQLite file must
+   not be opened twice with different settings).
+
+The broker resolves the merged set per site once, at load and on every hot reload, so a request never walks two
+maps: the handler holds direct references to its granted stores.
 
 Rules for validation:
 
 - `handler` excludes `proxy` and `static` on the same entry; exactly one of `wasm` / `rhai`.
-- Every label in `allow` must exist in `global.resources`; an unknown label is an error, not a warning (a missing
-  grant is not a typo to ignore).
+- Every label in `allow` must exist in the site's merged resources (its own, then `global.resources`); an unknown
+  label is an error, not a warning (a missing grant is not a typo to ignore).
+- A site-level resource that no route of that site grants is a warning (dead config), as is a global one that no
+  route of any site grants.
 - `{name}` captures must be unique in a pattern, and `{*name}` only last.
 - `handler.wasm` must be a component when option B is chosen; a core module is reported with a message that points to
   `type: wasm` middleware instead.
@@ -537,7 +584,9 @@ Rules for validation:
   is nothing to fall back to, and serving `404` for an application silently would be worse.
 - **Hot or cold.** Handlers, `allow` and `limits` reload hot (ArcSwap, as everything else). Resource definitions
   reload hot when the backend can be reopened safely (memory, Redis); changing the `path` of a `redb` or SQLite
-  resource needs a restart (decision #12's cold list gains `global.resources.{kv,sqlite}.*.path`).
+  resource needs a restart (decision #12's cold list gains `global.resources.{kv,sqlite}.*.path` and
+  `sites[].resources.{kv,sqlite}.*.path`). Adding or removing a site-level override is hot only when the store it
+  switches to can be opened hot by the same rule.
 
 The JSON schema (`schema/conduit.schema.json`), `docs/configuration.md` and a new `docs/handlers.md` guide would
 follow the implementation, not this design.
@@ -604,7 +653,8 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
    handler against a static file (the cachegrind harness from #636), and the same for an 8 MB JavaScript
    (StarlingMonkey) component. Acceptance: a Rust, a Python (`componentize-py`) and a JavaScript (`jco componentize`)
    hello-world component pass the same e2e test; the handler guide has a JavaScript example and a `jco` template.
-2. **State.** `global.resources`; KV (`memory`, `redb`, `redis`) through `wasi:keyvalue` and `kv::*`; read-only files;
+2. **State.** `global.resources` and `sites[].resources` with the scope rules above; KV (`memory`, `redb`,
+   `redis`) through `wasi:keyvalue` and `kv::*`; read-only files;
    secrets; `identity` grant. `lawyer` review of `redb`.
 3. **Outbound and SQL.** `fetch` with the allowlist, SSRF checks and `upstream:` targets; SQLite through
    `conduit:sqlite` and `sql::*`; the `webapp` bundle and, if the size allows, the `conduit-webapp` artifact.
@@ -618,14 +668,14 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
 
 | # | Question | Options | Recommendation |
 | --- | --- | --- | --- |
-| 1 | WASM interface for handlers | A: extend the current ABI · B: WASI HTTP components · C: B for handlers, A stays for middleware | **C** |
-| 2 | Rhai handlers in phase 1? | with WASM in phase 1 · after WASM | **phase 1** (cheap, and it keeps parity from the start) |
-| 3 | A broken handler | fail closed (`500`) · fail open (`404`/fall through to the next route) | **fail closed** |
-| 4 | Path parameter syntax | `{id}`/`{*rest}` (Axum 0.8) · `:id`/`...` (Spin) | **`{id}`/`{*rest}`** |
-| 5 | Route data to WASM | reserved headers · a WIT interface · both | **headers first, WIT later** |
-| 6 | Where resources are declared | `global.resources` · per site · both | **`global.resources`** (a store shared by two sites is common) |
+| 1 | WASM interface for handlers | A: extend the current ABI · B: WASI HTTP components · C: B for handlers, A stays for middleware | **C — decided by the owner, 2026-11-15** |
+| 2 | Rhai handlers in phase 1? | with WASM in phase 1 · after WASM | **phase 1 — decided by the owner, 2026-11-15** (cheap, and it keeps parity from the start) |
+| 3 | A broken handler | fail closed (`500`) · fail open (`404`/fall through to the next route) | **fail closed — decided by the owner, 2026-11-15** |
+| 4 | Path parameter syntax | `{id}`/`{*rest}` (Axum 0.8) · `:id`/`...` (Spin) | **`{id}`/`{*rest}` — decided by the owner, 2026-11-15** |
+| 5 | Route data to WASM | reserved headers · a WIT interface · both | **headers first, WIT later** (open) |
+| 6 | Where resources are declared | `global.resources` · per site · both | **both — decided by the owner, 2026-11-15**: global as defaults, a site overrides a label or adds its own ([Resource scopes](#resource-scopes)) |
 | 7 | `conduit-webapp` | separate release artifact · only a feature set in `full` | **decide after the phase-1 size measurement** |
-| 8 | Phase-1 scope | stateless only (as above) · stateless plus KV | **stateless only**: the routing and fail-closed plumbing is the part that touches the hot path |
+| 8 | Phase-1 scope | stateless only (as above) · stateless plus KV | **stateless only — decided by the owner, 2026-11-15**: the routing and fail-closed plumbing is the part that touches the hot path |
 | 9 | JavaScript | J1: `jco` components (WASI HTTP) · J2: embedded engine (`rquickjs` or Boa) | **J1 — decided by the owner, 2026-11-15**; J2a (`rquickjs`) only as the fallback if J1 fails |
 
 ## What is not known yet
