@@ -169,6 +169,10 @@ pub fn plan(mutation: &HeaderMutation, limits: Limits) -> Result<Plan, Rejected>
         if bytes.is_empty() && !option.keep_empty_value {
             // Envoy: an empty value is dropped unless keep_empty_value; for a header that is overwritten that means removed
             if matches!(mode, SetMode::Overwrite | SetMode::OverwriteIfExists) {
+                // The removal is applied before every set (see `HeaderChanges::remove`), so a set of this name that the
+                // processor sent earlier would survive it; applied in the processor's order it would have been removed.
+                // Whatever it was, the header is gone after this entry: the earlier sets are dropped.
+                plan.changes.set.retain(|earlier| earlier.name != name);
                 plan.changes.remove.push(name);
             }
             continue;
@@ -382,5 +386,37 @@ mod tests {
         kept.keep_empty_value = true;
         let plan_kept = plan(&mutation(vec![kept], &[]), LIMITS).unwrap();
         assert_eq!(plan_kept.changes.set[0].value, "");
+    }
+
+    /// The removals are applied before the sets, so an empty overwrite must take the earlier sets of its name with it, and
+    /// leave a later one and other names alone.
+    #[test]
+    fn an_empty_overwrite_removes_what_the_processor_set_before_it_but_not_after() {
+        let name = |s: &str| HeaderName::from_bytes(s.as_bytes()).unwrap();
+        // set then empty overwrite: the header ends up absent (removed, nothing set)
+        let plan_a = plan(
+            &mutation(
+                vec![
+                    set("x-a", b"first", 2),
+                    set("x-b", b"keep", 2),
+                    set("x-a", b"", 2),
+                ],
+                &[],
+            ),
+            LIMITS,
+        )
+        .unwrap();
+        assert_eq!(plan_a.changes.remove, vec![name("x-a")]);
+        assert_eq!(plan_a.changes.set.len(), 1);
+        assert_eq!(plan_a.changes.set[0].name, name("x-b"));
+        // empty overwrite then set: the later one survives
+        let plan_b = plan(
+            &mutation(vec![set("x-a", b"", 2), set("x-a", b"second", 2)], &[]),
+            LIMITS,
+        )
+        .unwrap();
+        assert_eq!(plan_b.changes.remove, vec![name("x-a")]);
+        assert_eq!(plan_b.changes.set.len(), 1);
+        assert_eq!(plan_b.changes.set[0].value, "second");
     }
 }
