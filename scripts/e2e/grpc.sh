@@ -69,6 +69,6 @@ checks() { # ARGS...: grpc_checks.py in the client image
 checks works app.test:8081 || fail "gRPC over h2c to a cleartext upstream (http2: h2c)"
 checks works app.test:8083 || fail "gRPC over h2c to a TLS upstream (http2: true)"
 checks works app.test:8443 --ca /conf/cert.pem || fail "gRPC over TLS (ALPN h2) to a cleartext upstream (http2: h2c)"
-checks refused app.test:8082 || fail "the control: http2: true to a cleartext gRPC upstream must not work"
+checks refused app.test:8082 --direct grpcb.test:50051 || fail "the control: http2: true to a cleartext gRPC upstream must not work"
 
 echo "grpc scenario passed"

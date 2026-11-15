@@ -41,7 +41,8 @@ cp "$WORK/scenario.yaml" "$WORK/conduit.yaml"
 docker run -d --name "$APP" --network "$NET" --ip 192.0.2.20 --network-alias app.test \
   -v "$BIN:/usr/local/bin/conduit:ro" -v "$WORK:/conf:ro" "$CONDUIT_IMAGE" conduit -c /conf/conduit.yaml >/dev/null
 for _ in $(seq 1 60); do
-  if client sh -c 'for p in 6379 1883 5432 25 22 1935 21 2122 8883; do nc -z -w 1 app.test $p && nc -z -w 1 backend.test $p || exit 1; done'; then up=1; break; fi
+  # 2122 is the FTP passive data port: the backend binds it only after PASV, so only Conduit's listener is probed for it
+  if client sh -c 'for p in 6379 1883 5432 25 22 1935 21 8883; do nc -z -w 1 app.test $p && nc -z -w 1 backend.test $p || exit 1; done; nc -z -w 1 app.test 2122'; then up=1; break; fi
   sleep 0.5
 done
 [ -n "${up:-}" ] || fail "the TCP sites or the backend servers do not accept connections"

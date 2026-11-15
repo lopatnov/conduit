@@ -154,6 +154,8 @@ fn validate_tcp_site(
         ("rateLimit", site.rate_limit.is_some()),
         ("basicAuth", site.basic_auth.is_some()),
         ("apiKey", site.api_key.is_some()),
+        ("jwtAuth", site.jwt_auth.is_some()),
+        ("forwardAuth", site.forward_auth.is_some()),
         ("consumers", site.consumers.is_some()),
         ("limits", site.limits.is_some()),
         ("middleware", site.middleware.is_some()),

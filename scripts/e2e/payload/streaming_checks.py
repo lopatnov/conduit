@@ -41,7 +41,8 @@ def sse_checks(base, label):
     check(out["content_encoding"] is None, f"{label}: an event stream was compressed: {out['content_encoding']}")
     at = [e["at"] for e in out["events"]]
     check([e["data"] for e in out["events"]] == ["tick 0", "tick 1", "tick 2"], f"{label}: events {out['events']}")
-    check(at[0] < 0.4 and at[2] - at[0] >= 0.8, f"{label}: events were not delivered as they were sent: {at}")
+    check(at[0] < 0.4 and min(at[1] - at[0], at[2] - at[1]) >= 0.3 and at[2] - at[0] >= 0.8,
+          f"{label}: events were not delivered as they were sent: {at}")
     ok(f"{label}: SSE events arrive one by one, uncompressed, content type kept")
 
     # 2. A reconnecting EventSource sends Last-Event-ID; the upstream must see it.

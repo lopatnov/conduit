@@ -25,6 +25,14 @@ def bind_address():
     return os.environ.get("BIND_ADDRESS") or socket.gethostbyname(socket.gethostname())
 
 
+def recv_some(sock, n):
+    """One read that must return data: an empty read means the peer closed, which is a failed exchange, not a wait."""
+    part = sock.recv(n)
+    if not part:
+        raise ConnectionError("closed")
+    return part
+
+
 def recv_exact(sock, n):
     buf = b""
     while len(buf) < n:
@@ -160,7 +168,10 @@ class Ssh(socketserver.BaseRequestHandler):
         sock.sendall(b"SSH-2.0-e2e_server\r\n")
         client = b""
         while not client.endswith(b"\n"):
-            client += sock.recv(1)
+            part = sock.recv(1)
+            if not part:
+                return  # the peer closed (a readiness probe, for one) without an identification string
+            client += part
         sock.sendall(b"you said " + client)  # the server speaks next only after the client's identification string
 
 
@@ -274,12 +285,12 @@ def client_postgres(host, port):
     s.sendall(struct.pack(">II", 8 + len(params), 196608) + params)
     seen = b""
     while not seen.endswith(b"Z\x00\x00\x00\x05I"):
-        seen += s.recv(4096)
+        seen += recv_some(s, 4096)
     query = b"SELECT 1\x00"
     s.sendall(b"Q" + struct.pack(">I", 4 + len(query)) + query)
     rows = b""
     while not rows.endswith(b"Z\x00\x00\x00\x05I"):
-        rows += s.recv(4096)
+        rows += recv_some(s, 4096)
     s.sendall(b"X\x00\x00\x00\x04")
     return {"ssl_answer": answer.decode(), "auth_ok": b"R\x00\x00\x00\x08\x00\x00\x00\x00" in seen,
             "server_version": b"16.0" in seen, "row": b"hello alice" in rows}
@@ -296,11 +307,11 @@ def client_ssh(host, port):
     s = socket.create_connection((host, port), timeout=10)
     banner = b""
     while not banner.endswith(b"\n"):
-        banner += s.recv(1)
+        banner += recv_some(s, 1)
     s.sendall(b"SSH-2.0-e2e_client\r\n")
     answer = b""
     while not answer.endswith(b"\n"):
-        answer += s.recv(1)
+        answer += recv_some(s, 1)
     return {"banner": banner.decode().strip(), "answer": answer.decode().strip()}
 
 

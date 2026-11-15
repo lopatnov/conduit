@@ -73,15 +73,21 @@ docker run --rm --network "$NET" -v "$WORK:/conf:ro" -v "$here/payload:/payload:
   -w /payload conduit-e2e-client python3 streaming_checks.py http://app.test:8080 https://app.test:8443 \
   || fail "streaming_checks.py reported a failure (its last line above says which)"
 
-# 2. The same SSE stream over HTTP/2: the first event comes out long before the stream ends (not held back by framing).
-out=$(client curl -sS --max-time 20 --cacert /conf/cert.pem --http2 -N \
-  -w '\n%{http_version} %{time_starttransfer} %{time_total}\n' 'https://app.test:8443/sse/events?n=3&gap=0.5')
-stats=$(echo "$out" | tail -1)
-set -- $stats
-[ "$1" = "2" ] || fail "the SSE request did not use HTTP/2: $stats"
-echo "$out" | grep -c '^data: tick' | grep -qx 3 || fail "the three events did not arrive over HTTP/2: $out"
-awk -v first="$2" -v total="$3" 'BEGIN { exit !(first < 0.4 && total >= 1.0) }' \
-  || fail "over HTTP/2 the first byte came at $2 s and the stream ended at $3 s: events were held back"
-ok "SSE over HTTP/2: first event after ${2}s, stream ends after ${3}s"
+# 2. The same SSE stream over HTTP/2: the first event is read long before the stream ends (not held back by framing).
+#    Every line curl prints is stamped when it is read, so the time is that of the first completed event, not of the
+#    response's first byte (headers can arrive early while the events are held back).
+out=$(client sh -c 'echo "start $(date +%s.%N)"
+  curl -sS --max-time 20 --cacert /conf/cert.pem --http2 -N -w "\n%{http_version}\n" \
+    "https://app.test:8443/sse/events?n=3&gap=0.5" | while IFS= read -r line; do printf "%s %s\n" "$(date +%s.%N)" "$line"; done
+  echo "end $(date +%s.%N)"')
+version=$(echo "$out" | awk 'NF == 2 && $1 ~ /^[0-9.]+$/ && $2 ~ /^[0-9]$/ { print $2 }')
+[ "$version" = "2" ] || fail "the SSE request did not use HTTP/2 (version '$version'): $out"
+echo "$out" | grep -c ' data: tick' | grep -qx 3 || fail "the three events did not arrive over HTTP/2: $out"
+times=$(echo "$out" | awk '$1 == "start" { s = $2 } $2 == "data:" && !f { f = $1 } $1 == "end" { e = $2 }
+  END { printf "%.2f %.2f", f - s, e - s }')
+set -- $times
+awk -v first="$1" -v total="$2" 'BEGIN { exit !(first < 0.4 && total >= 1.0) }' \
+  || fail "over HTTP/2 the first event was read at $1 s and the stream ended at $2 s: events were held back"
+ok "SSE over HTTP/2: first event after ${1}s, stream ends after ${2}s"
 
 echo "streaming scenario passed"

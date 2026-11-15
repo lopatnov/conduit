@@ -158,6 +158,8 @@
 [] error|sites[186].ipFilter|ipFilter does not apply to a tcp site (it relays bytes and runs no HTTP filters): remove it and restrict who can reach the port with a firewall or network policy
 [] error|sites[186].rateLimit|rateLimit does not apply to a tcp site (it relays bytes and runs no HTTP filters): remove it and restrict who can reach the port with a firewall or network policy
 [] error|sites[186].apiKey|apiKey does not apply to a tcp site (it relays bytes and runs no HTTP filters): remove it and restrict who can reach the port with a firewall or network policy
+[] error|sites[186].jwtAuth|jwtAuth does not apply to a tcp site (it relays bytes and runs no HTTP filters): remove it and restrict who can reach the port with a firewall or network policy
+[] error|sites[186].forwardAuth|forwardAuth does not apply to a tcp site (it relays bytes and runs no HTTP filters): remove it and restrict who can reach the port with a firewall or network policy
 [] error|sites[186].consumers|consumers does not apply to a tcp site (it relays bytes and runs no HTTP filters): remove it and restrict who can reach the port with a firewall or network policy
 [] error|sites[186].limits|limits does not apply to a tcp site (it relays bytes and runs no HTTP filters): remove it and restrict who can reach the port with a firewall or network policy
 [] error|sites[186].middleware|middleware does not apply to a tcp site (it relays bytes and runs no HTTP filters): remove it and restrict who can reach the port with a firewall or network policy

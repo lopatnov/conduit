@@ -222,6 +222,8 @@ fn tcp_site_refuses_keys_that_would_be_ignored() {
         ("rateLimit", r#"{ "windowSecs": 60, "limit": 10 }"#),
         ("basicAuth", r#"{ "users": { "u": "p" } }"#),
         ("apiKey", r#"{ "keys": ["k"] }"#),
+        ("jwtAuth", r#"{ "secret": "0123456789abcdef0123456789abcdef" }"#),
+        ("forwardAuth", r#"{ "url": "http://auth.internal:9000/check" }"#),
     ] {
         let json =
             format!(r#"{{ "port": 5432, "tcp": {{ "targets": ["db:5432"] }}, "{key}": {value} }}"#);

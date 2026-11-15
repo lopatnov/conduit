@@ -32,10 +32,12 @@ opening exchange of the real protocol, not a full database). `scripts/e2e/run.sh
 sites:
   - port: 5432
     tcp:
-      targets: ["db-primary.internal:5432", "db-replica.internal:5432"]
-      strategy: round-robin     # or random
+      targets: ["db-primary.internal:5432"]
       connectTimeoutMs: 5000
 ```
+
+Several targets (`strategy: round-robin` or `random`) are for interchangeable backends, such as a pool of read replicas on
+a site of their own. Do not list a primary and a replica together: Conduit does not know their roles.
 
 - It relays bytes both ways and passes a half-close on, so a client that finishes sending and waits for the answer works.
 - It does **not** terminate TLS. A TLS client talks to the upstream through Conduit and verifies the **upstream's**
@@ -44,7 +46,7 @@ sites:
 - It adds nothing to the stream: the upstream sees Conduit's address as the client, because there is no PROXY protocol
   support. Anything that decides by client address on the backend (`pg_hba.conf`, mail relay rules, fail2ban) sees Conduit.
 - None of the HTTP features apply: no IP filter, rate limit, authentication or metrics per route. Conduit refuses a
-  configuration that puts `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` or `middleware` on a `tcp`
+  configuration that puts `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`, `limits` or `middleware` on a `tcp`
   site (it would be silently ignored and look like protection). Put access control in front of the port (a firewall or
   network policy) or on the backend.
 - There is no idle timeout and Conduit sets no limit on the number of connections: a connection lives until one side closes it

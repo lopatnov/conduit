@@ -78,7 +78,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- A `tcp` site that also had `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` or `middleware` was
+- A `tcp` site that also had `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`, `limits` or `middleware` was
   accepted and the key silently ignored, so an operator could believe a database port was protected. Validation now
   refuses it, with a message that points to a firewall or network policy (behaviour change).
 - Static files and fallback `file:` responses use the media types of adaptive streaming: `.m3u8` is
