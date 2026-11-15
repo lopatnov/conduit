@@ -202,7 +202,9 @@ The two system-allocator req/s figures are the baseline arms of the two comparis
 4-core machine and will differ on yours: measure with `scripts/bench/ab.sh` before relying on them. They were taken
 with the access log off and proxying only; a static-file server was not measured. Neither allocator changes a
 configuration key. Both add a small amount of C code to the build (a C compiler is needed, as `aws-lc-sys` already
-does). `--no-default-features` removes mimalloc, so the size budget of
+does). mimalloc is built without its `secure` option (guard pages, encoded free lists), which is what the numbers
+above measure; glibc's allocator has some checks of that kind. Turning the option on costs speed and was not measured here.
+`--no-default-features` removes mimalloc, so the size budget of
 [#516](https://github.com/lopatnov/conduit/issues/516) (`--no-default-features`, stripped) is not affected.
 
 ---

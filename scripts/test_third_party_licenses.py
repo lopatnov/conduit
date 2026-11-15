@@ -180,6 +180,12 @@ class Rendering(unittest.TestCase):
         self.assertIn("the C library", tpl.render([pkg], {**POLICY, **policy}))
         with self.assertRaises(SystemExit):
             tpl.license_files(pkg, {"bundled_notices": {"sys": ["c_src/gone/LICENSE"]}})
+        outside = os.path.join(tempfile.mkdtemp(), "secret.txt")
+        with open(outside, "w") as f:
+            f.write("do not publish this\n")
+        for escape in (outside, "../" + os.path.basename(os.path.dirname(outside)) + "/secret.txt"):
+            with self.assertRaises(SystemExit, msg=escape):
+                tpl.license_files(pkg, {"bundled_notices": {"sys": [escape]}})
 
     def test_a_crate_without_a_file_is_listed_with_the_standard_text(self):
         text = tpl.render([package("bare", license="MIT OR Apache-2.0")], POLICY)

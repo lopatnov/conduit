@@ -50,6 +50,7 @@ for pair in "system:$SYSTEM" "mimalloc:$MIMALLOC" "jemalloc:$JEMALLOC"; do
   name=${pair%%:*}; bin=${pair#*:}
   "$bin" -c "$WORK/conduit.yaml" >"$WORK/$name.log" 2>&1 &
   pid=$!
+  PIDS+=("$pid")
   up=""
   for _ in $(seq 1 60); do
     if curl -sf --max-time 2 http://127.0.0.1:18487/ -o "$WORK/$name.out" 2>/dev/null; then up=1; break; fi

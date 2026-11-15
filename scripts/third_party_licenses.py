@@ -161,7 +161,9 @@ def license_files(package, policy=None):
     if package.get("license_file"):
         names.add(package["license_file"])
     for name in ((policy or {}).get("bundled_notices", {}).get(package["name"], [])):
-        if not os.path.isfile(os.path.join(directory, name)):
+        path = os.path.join(directory, name)
+        inside = os.path.commonpath([os.path.realpath(directory), os.path.realpath(path)]) == os.path.realpath(directory)
+        if not inside or not os.path.isfile(path):
             raise SystemExit(f"{package['name']}: ci/license-policy.json bundled_notices names {name}, which the package does not contain")
         names.add(name)
     found = []
