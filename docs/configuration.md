@@ -4092,7 +4092,9 @@ Forward raw TCP connections without HTTP parsing. Useful for MySQL, PostgreSQL,
 Redis, SMTP, and any other non-HTTP protocol. What a TCP site does and does not do, and a working
 config for RTMP, MQTT, PostgreSQL, Redis, SMTP, FTP (passive ports) and SSH, are in the
 [protocol guide](protocols.md#what-a-tcp-site-does-and-does-not-do). HTTP-based protocols (SSE,
-WebSocket, gRPC, GraphQL, HLS) are not TCP sites: they are ordinary routes, also in that guide.
+WebSocket, gRPC, GraphQL, HLS) are best served by ordinary routes, also in that guide: only a route can apply
+access control, rate limits, routing by host or path, and the HTTP-aware handling those protocols need. A TCP site can still
+relay their bytes untouched (for example TLS that the upstream terminates itself), with none of that.
 
 ```yaml
 # conduit.yaml
