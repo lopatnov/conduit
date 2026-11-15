@@ -60,7 +60,7 @@ python3 scripts/third_party_licenses.py --write THIRD-PARTY-LICENSES.txt
 ```
 
 and commit the result. A crate with a licence the policy does not allow is a decision for the maintainer (change the
-dependency, or add the licence or a `clarify` entry to the policy with the reason).
+dependency, or add the licence to the policy, or a `clarify` entry that names the string the crate declares now (`"declared"`) and the licence read from its licence file, with the reason).
 
 Required repository secrets: `CARGO_REGISTRY_TOKEN` (crates.io) and `NPM_TOKEN` (npm). The image
 push uses the workflow's own token.

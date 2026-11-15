@@ -12,7 +12,8 @@ What it does, from `Cargo.lock` through `cargo metadata` (no extra tool to insta
   workspace's own crates (those are Conduit, Apache-2.0, `LICENSE`);
 * checks each crate's SPDX licence expression against the allow-list in `ci/license-policy.json`: an `OR` needs one
   allowed alternative, an `AND` needs all of them, `WITH <exception>` needs the exception to be allowed too. A crate
-  that fails, or has no licence expression, fails the check unless the policy has an entry for it under `clarify`;
+  that fails, or has no licence expression, fails the check unless the policy has an entry for it under `clarify` that names the exact
+  string the crate declares today (`"declared"`, left out when it declares nothing);
 * writes one file with the list of crates (name, version, licence, repository) and then the licence and notice files
   that each crate ships, every distinct text once with the crates it applies to. Licences such as MIT, BSD and ISC
   require the text and the copyright notice to travel with a binary distribution (Apache-2.0 section 4 asks for the
@@ -172,7 +173,7 @@ def license_files(package):
 
 
 def load_policy(path=POLICY):
-    """The allow-list: `allow`, `allow_exceptions` and `clarify` (a per-crate licence for a crate with no expression)."""
+    """The allow-list: `allow`, `allow_exceptions` and `clarify` (a per-crate licence for a crate whose own expression is missing or malformed, pinned to it)."""
     with open(path, encoding="utf-8") as f:
         policy = json.load(f)
     policy.setdefault("clarify", {})
@@ -182,12 +183,12 @@ def load_policy(path=POLICY):
 def effective_license(package, policy):
     """The licence expression to judge: the crate's own, or the policy's clarification for it."""
     declared = package.get("license")
-    if declared:
-        # a clarification fills a gap; it never overrides what a crate declares, so a licence change in a clarified
-        # crate cannot go unnoticed
-        return declared
     clarified = policy["clarify"].get(package["name"])
-    return clarified["license"] if clarified else None
+    # a clarification is pinned to what the crate declares now (`declared`, absent when it declares nothing): when the
+    # crate changes its licence the pin no longer matches, the clarification is ignored and the check fails again
+    if clarified and clarified.get("declared") == declared:
+        return clarified["license"]
+    return declared
 
 
 def violations(crates, policy):

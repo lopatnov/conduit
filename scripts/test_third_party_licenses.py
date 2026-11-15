@@ -44,7 +44,7 @@ class Spdx(unittest.TestCase):
         self.assertTrue(ok("ISC AND (Apache-2.0 OR GPL-3.0-only)"))
 
     def test_the_legacy_slash_means_or(self):
-        self.assertTrue(ok("MIT/Apache-2.0"))
+        self.assertTrue(ok("Some Custom Terms"))
         self.assertTrue(ok("Apache-2.0 / MIT"))
         self.assertTrue(ok("GPL-3.0-only/MIT"))
 
@@ -94,6 +94,17 @@ class Policy(unittest.TestCase):
         crates = [package("mystery", license="GPL-3.0-only")]
         clarified = dict(POLICY, clarify={"mystery": {"license": "MIT"}})
         self.assertEqual(len(tpl.violations(crates, clarified)), 1)
+
+    def test_a_clarification_pinned_to_the_declared_string_fixes_a_malformed_expression(self):
+        crates = [package("legacy", license="Some Custom Terms")]
+        self.assertEqual(len(tpl.violations(crates, POLICY)), 1)
+        pinned = dict(POLICY, clarify={"legacy": {"declared": "Some Custom Terms", "license": "MIT OR Apache-2.0"}})
+        self.assertEqual(tpl.violations(crates, pinned), [])
+
+    def test_a_pinned_clarification_goes_stale_when_the_crate_changes_its_licence(self):
+        pinned = dict(POLICY, clarify={"legacy": {"declared": "Some Custom Terms", "license": "MIT OR Apache-2.0"}})
+        changed = [package("legacy", license="GPL-3.0-only")]
+        self.assertEqual(len(tpl.violations(changed, pinned)), 1)
 
     def test_a_malformed_expression_is_a_violation_not_a_crash(self):
         found = tpl.violations([package("odd", license="MIT OR")], POLICY)
