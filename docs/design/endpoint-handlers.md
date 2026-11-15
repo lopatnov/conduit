@@ -289,11 +289,19 @@ fn handle(req) {
 - Return: `#{ status, headers, body }`; a bare string is `200 text/plain`; `()` is `204`.
 - Capabilities are Rhai modules registered only when granted: `kv::get/set/delete/exists/keys/increment`,
   `sql::query(db, sql, params)` and `sql::execute(...)`, `http::fetch(url, opts)`, `files::read(path)`,
-  `secrets::get(name)`, `json::parse/stringify`, `log::info/warn/...`. An ungranted module does not exist, so calling
-  it is a compile-time error the same way a typo is (`conduit validate` reports it).
+  `secrets::get(name)`, `json::parse/stringify`, `log::info/warn/...`. An ungranted module is not registered. Rhai
+  resolves calls at run time, so such a call (like a misspelled function) compiles and fails only when that line
+  runs: `500`, fail-closed. To report it earlier, `conduit validate` walks the compiled AST and checks every
+  namespaced call against the handler's grants, and the handler engine enables `Engine::set_strict_variables`
+  (today's middleware engine does neither); this check is part of phase 1.
 - Rhai is synchronous. A handler that uses no I/O capability runs inline like middleware does; one that is granted
   any I/O capability runs on a **bounded blocking pool** (`tokio::task::spawn_blocking` under a semaphore), so a slow
-  query does not hold a Pingora worker thread. The wall-clock deadline is enforced with `Engine::on_progress`.
+  query does not hold a Pingora worker thread. `Engine::on_progress` stops a script that computes past its deadline,
+  but it runs only between Rhai operations and cannot interrupt a blocking native call. Each I/O capability therefore
+  carries its own timeout (`outboundTimeoutMs`, a SQLite busy timeout and progress handler, `sqlTimeoutMs`), and the
+  caller answers `504` at the deadline with an outer `tokio::time::timeout`. A blocking task cannot be cancelled:
+  after a `504` it keeps its pool slot (and its `maxConcurrent` permit) until the I/O returns, which is why every I/O
+  call needs its own bound.
 - `import` of other `.rhai` files from the handler's own directory only (a `FileModuleResolver` rooted there), so a
   handler can be split into modules.
 
@@ -360,7 +368,8 @@ measured in phase 1.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `timeoutMs` | 10000 | Wall-clock deadline for the whole invocation, including I/O. WASM: epoch interruption (one ticker thread) with `epoch_deadline_async_yield_and_update`; Rhai: `on_progress`. → `504`. |
+| `timeoutMs` | 10000 | Wall-clock deadline for the whole invocation, including I/O, → `504`. Enforced by an outer `tokio::time::timeout` around the call. WASM: epoch interruption (one ticker thread) with `epoch_deadline_async_yield_and_update` makes a busy guest yield so the outer timeout can fire and drop the future; `epoch_deadline_trap` at a second, later epoch is the backstop. Rhai: `on_progress` for computation, per-call I/O timeouts for native calls (see [The Rhai interface](#the-rhai-interface)). |
+| `sqlTimeoutMs` | 5000 | Per SQL statement (SQLite busy timeout and progress handler). |
 | `fuel` | 100000000 | WASM CPU budget per invocation (10× middleware's: a handler does real work). |
 | `maxOperations` | 5000000 | Rhai CPU budget (10× middleware's). |
 | `memoryMiB` | 64 | WASM linear memory (and tables) per instance, through a `ResourceLimiter`. |
