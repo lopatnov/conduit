@@ -178,33 +178,37 @@ strip         = true   # strip debug symbols (ELF / Mach-O)
 ### Allocator
 
 A proxy allocates a little on every request (header maps, buffers, futures), so the allocator is a visible part of the
-cost of a request. The `conduit` binary uses **mimalloc** by default (feature `mimalloc`, in `default` and in every
-bundle). Two other choices exist, and each applies to the binary only: a program that embeds the `conduit` library keeps
-its own allocator.
+cost of a request. The `conduit` binary uses **mimalloc in its `secure` mode** by default (feature `mimalloc`, in
+`default` and in every bundle): guard pages around allocations, encoded free lists and randomised allocation, which make
+a heap overflow or a use-after-free much harder to turn into code execution. That matters because the process also holds
+C libraries (`aws-lc`, `wasmtime`, `rhai`'s dependencies) and some `unsafe`. Two other choices exist, and each applies to
+the binary only: a program that embeds the `conduit` library keeps its own allocator.
 
 ```bash
-cargo build --release                                        # mimalloc (default)
+cargo build --release                                        # mimalloc, secure mode (default)
 cargo build --release --features jemalloc                    # jemalloc instead; with both on, jemalloc is used
 cargo build --release --no-default-features \
   --features proxy,compression,static,hotreload              # the system allocator
 ```
 
-Measured on one machine (4 cores, `oha -c 50` for 10 s, `workers: 1`, access log off, 5 rounds in ABBA order with
-`scripts/bench/ab.sh`; instructions per request with `scripts/bench/cachegrind.sh`):
+Measured on one machine (4 cores, `oha -c 50` for 10 s, `workers: 1`, access log off, 5 ABBA rounds with
+`scripts/bench/ab.sh`, the arms of each comparison built from the same source):
 
-| Allocator | req/s | CPU per request | Instructions per request | Binary size |
-| --- | ---: | ---: | ---: | ---: |
-| system | 15 224 / 15 557 | 65.3 / 63.8 µs | 146 237 | 19 405 728 B |
-| `mimalloc` (default) | 17 981 (+18 %) | 55.2 µs (−15 %) | 126 440 (−13.5 %) | +217 KiB (+1.1 %) |
-| `jemalloc` | 16 880 (+8.5 %) | 58.9 µs (−7.7 %) | 130 045 (−11.1 %) | +527 KiB (+2.8 %) |
+| Comparison | req/s (A / B) | CPU per request (A / B) | Binary size |
+| --- | ---: | ---: | ---: |
+| system (A) against `mimalloc` secure, the default (B) | 14 404 / 14 951 (+3.8 %) | 69.1 / 66.4 µs (−3.9 %) | +225 KiB (+1.3 %) |
+| `mimalloc` secure (A) against `jemalloc` (B), 8 runs each | 14 646 / 14 954 (+2.1 %, within noise) | | `jemalloc` +527 KiB over system |
+| `mimalloc` without `secure` (A) against with it (B) | 16 462 / 14 559 (−11.6 %) | 60.5 / 68.3 µs (+13 %) | +6 KiB |
 
-The two system-allocator req/s figures are the baseline arms of the two comparisons. These are numbers from a shared
-4-core machine and will differ on yours: measure with `scripts/bench/ab.sh` before relying on them. They were taken
-with the access log off and proxying only; a static-file server was not measured. Neither allocator changes a
-configuration key. Both add a small amount of C code to the build (a C compiler is needed, as `aws-lc-sys` already
-does). mimalloc is built without its `secure` option (guard pages, encoded free lists), which is what the numbers
-above measure; glibc's allocator has some checks of that kind. Turning the option on costs speed and was not measured here.
-`--no-default-features` removes mimalloc, so the size budget of
+Without its `secure` mode mimalloc was 18 % faster than the system allocator (17 981 against 15 224 req/s, 55.2 against
+65.3 µs, 126 440 against 146 237 instructions per request by `scripts/bench/cachegrind.sh`; an earlier series), and
+jemalloc 8.5 % faster (16 880 against 15 557 req/s). The project chose the hardened mode: it keeps most of the advantage
+over the system allocator in CPU per request (the gain is smaller here, 3.9 %, than in the earlier series) and is as fast
+as jemalloc, which does not have this kind of hardening by default. The plain mode is not offered as a feature (less code to keep and test).
+These are numbers from a shared 4-core machine and will differ on yours: measure with `scripts/bench/ab.sh` before
+relying on them. They were taken with the access log off and proxying only; a static-file server was not measured. No
+allocator changes a configuration key. Each adds a small amount of C code to the build (a C compiler is needed, as
+`aws-lc-sys` already does). `--no-default-features` removes mimalloc, so the size budget of
 [#516](https://github.com/lopatnov/conduit/issues/516) (`--no-default-features`, stripped) is not affected.
 
 ---

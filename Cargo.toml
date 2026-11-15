@@ -277,8 +277,8 @@ pingora-proxy.workspace = true
 
 # --- Global allocator (issue #486) ---
 # One of the two replaces the system allocator of the `conduit` binary (not of the library crates); see the
-# `mimalloc` (default) and `jemalloc` features. `--no-default-features` builds with neither.
-mimalloc          = { version = "0.1", optional = true, default-features = false }
+# `mimalloc` (default, built in its `secure` mode: guard pages, encoded free lists) and `jemalloc` features. `--no-default-features` builds with neither.
+mimalloc          = { version = "0.1", optional = true, default-features = false, features = ["secure"] }
 tikv-jemallocator = { version = "0.6", optional = true }
 
 # --- Conduit workspace member crates ---
@@ -822,7 +822,7 @@ wasm = ["lopatnov-conduit-middleware/wasm"]
 ext-proc = ["lopatnov-conduit-middleware/ext-proc", "lopatnov-conduit-runtime/ext-proc"]
 
 # ── Global allocator (issue #486) ──────────────────────────────────────────────
-# `mimalloc` (on by default and in every bundle) or `jemalloc` replaces the system allocator in the `conduit` binary
+# `mimalloc` (secure mode; on by default and in every bundle) or `jemalloc` replaces the system allocator in the `conduit` binary
 # (`src/main.rs`). Not a configuration feature: nothing in a config file needs it, it is a build-time choice. With both
 # on, jemalloc is used (an explicit `--features jemalloc` must not be overridden by the default); `--no-default-features`
 # without either keeps the system allocator. See `docs/building.md` for what each costs in size and gains in speed.

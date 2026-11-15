@@ -72,7 +72,7 @@ conduit validate -c conduit.yaml   # prints a warning for every ignored section
 | `compression` | Response compression (brotli, gzip, deflate, zstd), negotiated with `Accept-Encoding`, for proxied responses, static files and the metrics page. | [`compression`](#compression) | Responses are sent uncompressed. |
 | `static` | Static file serving and the fallback responses (404 page, single-page-app shell). | [`static`](#static-files), `fallback` | `static` and `fallback` are ignored: every unmatched request gets a plain `404 Not Found`. |
 | `hotreload` | Browser live reload: a Server-Sent Events stream and a file watcher that tells open pages to refresh when a served file changes. | `hotReload` | `hotReload` is ignored and `/__hot-reload__` is an ordinary unmatched path. |
-| `mimalloc` | The mimalloc memory allocator in the `conduit` binary instead of the system one: about 15 % less CPU per proxied request (see [building](building.md#allocator)). A build-time choice; nothing to configure. | no config key | The system allocator is used (`--no-default-features`); everything works, a little slower. |
+| `mimalloc` | The mimalloc memory allocator, in its hardened `secure` mode, in the `conduit` binary instead of the system one: about 4 % less CPU per proxied request in our measurement (see [building](building.md#allocator)). A build-time choice; nothing to configure. | no config key | The system allocator is used (`--no-default-features`); everything works, a little slower. |
 
 Without these (`--no-default-features`) little is left: TLS, the always-on guards (IP
 filter, rate limits, CORS, security headers), redirects, the health endpoint, metrics and the

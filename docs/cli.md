@@ -679,7 +679,7 @@ extra crates each feature compiles in. `conduit features -c FILE` prints what a 
 | `otlp`            | OpenTelemetry OTLP tracing                          | `opentelemetry` stack   |
 | `tokio-metrics`   | `conduit_eventloop_lag_ms` Prometheus gauge          | —                       |
 | `kubernetes`      | Kubernetes CRD config provider                      | `kube`, `k8s-openapi`   |
-| `mimalloc`        | mimalloc allocator in the binary (on by default, in every bundle) | `mimalloc`, `libmimalloc-sys` (C) |
+| `mimalloc`        | mimalloc allocator (`secure` mode) in the binary (on by default, in every bundle) | `mimalloc`, `libmimalloc-sys` (C) |
 | `jemalloc`        | jemalloc allocator instead of mimalloc (not in a bundle) | `tikv-jemallocator` (C) |
 | `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) — used by the published "standard" binaries/images | bundle, no extra deps of its own |
 | `static-server`   | Bundle for `--no-default-features` builds: `static` + `compression` + `hotreload` + `mimalloc` (the default set minus `proxy`) | bundle, no extra deps of its own |
