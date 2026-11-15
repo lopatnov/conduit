@@ -48,6 +48,7 @@ class Processor(services.ExternalProcessorServicer):
         for request in request_iterator:
             kind = request.WhichOneof("request")
             if kind == "request_headers":
+                # a demonstration: real path rules must normalise the path first (//admin, %2e, dot segments)
                 if header_value(request.request_headers, ":path").startswith("/admin"):
                     yield refuse(403, "admin is not for you\n")
                     return

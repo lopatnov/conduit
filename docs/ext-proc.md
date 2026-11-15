@@ -4,7 +4,8 @@ An external processor is a separate gRPC service, written in any language, that 
 optionally, its body and the response). It can read the request, set or remove headers, rewrite the request body,
 change or replace the response, or answer the request itself. It speaks the
 [`envoy.service.ext_proc.v3.ExternalProcessor`](https://www.envoyproxy.io/docs/envoy/latest/api-v3/service/ext_proc/v3/external_processor.proto)
-protocol of Envoy, so a processor written for Envoy (an OPA or WAF filter, a DLP service) can serve Conduit unchanged.
+protocol of Envoy, so a processor written for Envoy (an OPA or WAF filter, a DLP service) can serve Conduit largely unchanged (what is not
+implemented is listed under [What is not there](#what-is-not-there)).
 
 New to middleware? [Middleware overview](middleware.md) says how the `middleware` list behaves and when to choose a
 built-in check, a Rhai script, a plugin or a processor.
@@ -70,6 +71,7 @@ class Processor(services.ExternalProcessorServicer):
     def Process(self, request_iterator, context):
         for request in request_iterator:                       # one message per phase, in order
             if request.WhichOneof("request") == "request_headers":
+                # a demonstration: real path rules must normalise the path first (//admin, %2e, dot segments)
                 if header_value(request.request_headers, ":path").startswith("/admin"):
                     yield refuse(403, "admin is not for you\n")  # ends the request with this answer
                     return
@@ -243,7 +245,10 @@ without a restart.
 ## Recipes
 
 **Deny by path.** Answer from the request headers phase with an immediate response: `refuse(403, "...")` above. The
-request never reaches the upstream, and the site's CORS and security headers are added to the answer.
+request never reaches the upstream, and the site's CORS and security headers are added to the answer. The sample compares the
+raw `:path`, which is a demonstration, not access control: `//admin`, percent-encoding and dot segments reach the same
+resource on many upstreams. A processor that decides by path must normalise it first, and anything that guards something
+belongs in the built-in checks (`consumers`, `jwtAuth`, `forwardAuth`, `ipFilter`) as well.
 
 **Scan or redact a body.** Set `requestBody: buffered` and look at the one `request_body` message (the whole body, up to
 `maxBodyBytes`). Answer with an empty `BodyResponse` to keep it, with a `body_mutation` to replace it
@@ -286,9 +291,9 @@ WARN conduit::ext_proc: external processing failed; the request is refused proce
 WARN conduit::ext_proc: external processing failed; the request continues unchanged (failOpen) processor=... reason=the processor closed the stream without answering
 ```
 
-Raise `timeoutMs` while you debug a processor under a breakpoint. A processor that answers with a mutation Conduit does not
-accept (a forbidden header, a bad value) is a failure with that reason in the log; one that answers with a mutation for a
-header in the forbidden list is ignored with a log line, not refused.
+Raise `timeoutMs` while you debug a processor under a breakpoint. A processor that answers with something Conduit does not
+accept (a bad header name or value, too many changes) is a failure with that reason in the log; a mutation of a header in
+the forbidden list is ignored with a log line, not refused.
 
 **Testing a processor.** Your processor is a plain gRPC server: call it with any gRPC client and the generated Envoy messages
 before you put Conduit in front of it. For the whole chain, `scripts/e2e/ext-proc.sh BINARY` in this repository runs Conduit,
