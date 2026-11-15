@@ -171,6 +171,23 @@ class Technologies(unittest.TestCase):
         self.assertEqual(len(tpl.technology_problems("/nonexistent/technologies.md", [], POLICY)), 1)
 
 
+class StandardTexts(unittest.TestCase):
+    def test_the_templates_do_not_name_a_copyright_holder(self):
+        """They are printed for third-party crates: a holder's name there would be a wrong notice (it once carried Conduit's
+        own author, copied from LICENSE)."""
+        folder = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ci", "license-texts")
+        files = sorted(os.listdir(folder))
+        self.assertTrue(files)
+        for name in files:
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                text = f.read()
+            for line in text.splitlines():
+                if line.startswith("Copyright "):
+                    self.assertTrue("[" in line or "<" in line, f"{name}: a copyright line must be a placeholder: {line!r}")
+            for word in ("lopatnov", "Oleksandr"):
+                self.assertNotIn(word, text, f"{name} names {word}")
+
+
 class Metadata(unittest.TestCase):
     def test_only_normal_dependencies_of_the_root_are_shipped(self):
         def pid(n):
