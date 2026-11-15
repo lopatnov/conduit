@@ -621,8 +621,7 @@ app-server   = [
 ```
 
 - **A new build profile next to `standard`, `static-server`, `gateway` and `full`** (decided by the owner,
-  2026-11-15). The name is `app-server` (the owner's pick between `app-server`, `edge`, `functions`, `runtime` is
-  pending; this text uses the recommendation): `static-server` serves files, `app-server` runs applications. It
+  2026-11-15). The name is `app-server` (the owner's pick, 2026-11-15, over `edge`, `functions` and `runtime`): `static-server` serves files, `app-server` runs applications. It
   carries static serving, handlers and their stores, compression, hot reload, ACME, and `proxy` because an
   application often sends `/api` to a backend and `upstream:` fetch targets need it.
 - `default`, `standard`, `static-server` and `gateway` do not change: a proxy build pays nothing (decision #31: only
@@ -688,7 +687,7 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
 | 4 | Path parameter syntax | `{id}`/`{*rest}` (Axum 0.8) · `:id`/`...` (Spin) | **`{id}`/`{*rest}` — decided by the owner, 2026-11-15** |
 | 5 | Route data to WASM | reserved headers · a WIT interface · both | **both — decided by the owner, 2026-11-15**: headers in phase 1, the WIT interface in phase 2 |
 | 6 | Where resources are declared | `global.resources` · per site · both | **both — decided by the owner, 2026-11-15**: global as defaults, a site overrides a label or adds its own ([Resource scopes](#resource-scopes)) |
-| 7 | A build for handlers | a separate profile and artifact · only a feature set in `full` | **a separate profile next to `standard`/`static-server`/`gateway`/`full`, never in `standard` — decided by the owner, 2026-11-15**; name `app-server` recommended, owner's pick pending |
+| 7 | A build for handlers | a separate profile and artifact · only a feature set in `full` | **a separate profile next to `standard`/`static-server`/`gateway`/`full`, never in `standard` — decided by the owner, 2026-11-15**; named `app-server` |
 | 8 | Phase-1 scope | stateless only (as above) · stateless plus KV | **stateless only — decided by the owner, 2026-11-15**: the routing and fail-closed plumbing is the part that touches the hot path |
 | 9 | JavaScript | J1: `jco` components (WASI HTTP) · J2: embedded engine (`rquickjs` or Boa) | **J1 — decided by the owner, 2026-11-15**; J2a (`rquickjs`) only as the fallback if J1 fails |
 
