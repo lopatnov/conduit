@@ -14,7 +14,9 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A PR run is superseded by its next push; a run on main is not, or each merge would cancel the previous
+  # commit's run and leave a red "cancelled" mark on a commit that never failed.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

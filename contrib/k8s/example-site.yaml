@@ -9,7 +9,7 @@
 
 ---
 # SPA with API proxy
-apiVersion: conduit.io/v1
+apiVersion: conduit.lopatnov.github.io/v1
 kind: ConduitSite
 metadata:
   name: my-app
@@ -42,7 +42,7 @@ spec:
 ---
 # Admin panel behind an IP allow-list (a ConduitSite is stored as written: `$VAR` is not expanded,
 # so keep credentials out of it; see docs/kubernetes.md)
-apiVersion: conduit.io/v1
+apiVersion: conduit.lopatnov.github.io/v1
 kind: ConduitSite
 metadata:
   name: admin-panel
@@ -113,10 +113,10 @@ metadata:
   name: conduit-crd-reader
   namespace: default
 rules:
-  - apiGroups: [conduit.io]
+  - apiGroups: [conduit.lopatnov.github.io]
     resources: [conduitsites]
     verbs: [get, list, watch]
-  - apiGroups: [conduit.io]
+  - apiGroups: [conduit.lopatnov.github.io]
     resources: [conduitsites/status]
     verbs: [patch]
 

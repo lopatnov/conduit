@@ -28,7 +28,7 @@
 //!
 //! Example resource:
 //! ```yaml
-//! apiVersion: conduit.io/v1
+//! apiVersion: conduit.lopatnov.github.io/v1
 //! kind: ConduitSite
 //! metadata:
 //!   name: my-app

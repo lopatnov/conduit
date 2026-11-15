@@ -17,7 +17,7 @@ use kube::CustomResource;
 /// `CrdConfigBuilder::site_from_spec` implementation.
 #[derive(CustomResource, Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[kube(
-    group = "conduit.io",
+    group = "conduit.lopatnov.github.io",
     version = "v1",
     kind = "ConduitSite",
     namespaced,
@@ -109,4 +109,29 @@ pub struct ConduitSiteStatus {
     pub message: Option<String>,
     /// Whether this site is currently active.
     pub ready: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConduitSite;
+    use kube::Resource;
+
+    /// The CRD manifest in `contrib/k8s` is written by hand, and the controller watches the group
+    /// named by the derive above. A mismatch makes the controller see no objects and say nothing.
+    #[test]
+    fn the_crd_manifest_names_the_group_the_controller_watches() {
+        let group = ConduitSite::group(&());
+        let manifest = include_str!("../../../contrib/k8s/conduitsite-crd.yaml");
+        assert!(
+            manifest
+                .lines()
+                .any(|l| l.trim() == format!("group: {group}")),
+            "contrib/k8s/conduitsite-crd.yaml must declare `group: {group}`"
+        );
+        let example = include_str!("../../../contrib/k8s/example-site.yaml");
+        assert!(
+            example.contains(&format!("apiVersion: {group}/v1")),
+            "contrib/k8s/example-site.yaml must use `apiVersion: {group}/v1`"
+        );
+    }
 }

@@ -57,7 +57,7 @@ text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; fil
   <g class="blue" transform="translate(36 36) scale(0.917)"><g class="ico"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/></g></g>
   <text x="66" y="53" class="b">site.yaml</text>
   <g class="blue"><text class="cap" x="276" y="53" text-anchor="end">ONE FILE PER SITE</text></g>
-  <text x="38" y="86" class="k" style="white-space:pre" xml:space="preserve">apiVersion: conduit.io/v1</text>
+  <text x="38" y="86" class="k" style="white-space:pre;font-size:9.5px" xml:space="preserve">apiVersion: conduit.lopatnov.github.io/v1</text>
   <text x="38" y="108" class="k" style="white-space:pre" xml:space="preserve">kind: ConduitSite</text>
   <text x="38" y="130" class="k" style="white-space:pre" xml:space="preserve">metadata: { name: my-app }</text>
   <text x="38" y="152" class="k" style="white-space:pre" xml:space="preserve">spec:</text>
