@@ -73,6 +73,7 @@ def main():
             same(f"{method}: {name}", seen["headers"].get(name.lower()), dav_headers[name])
         same(f"{method}: content-type", seen["headers"].get("content-type"), dav_headers["Content-Type"])
         same(f"{method}: Host is the client's", seen["headers"]["host"], authority)
+        same(f"{method}: Allow reaches the client", response_headers.get("allow"), "OPTIONS, GET, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK")
         if method == "OPTIONS":
             same("OPTIONS: DAV header reaches the client", response_headers.get("dav"), "1, 2")
         if method == "LOCK":
@@ -104,6 +105,17 @@ def main():
     same("/rw target", seen["target"], "/store/a.txt")
     same("/rw Destination", seen["headers"]["destination"], f"http://{authority}/rw/b.txt")
     print("ok: /keep keeps its prefix; /rw rewrites the request line only")
+
+    # 3b. The response side is passed on as the upstream wrote it: the hrefs of a multistatus body and the Location of a 201.
+    status, response_headers, data = request(proxied, "PROPFIND", "/dav/multistatus", {"Depth": "1"}, xml.encode())
+    same("multistatus status", status, 207)
+    same("multistatus content-type", response_headers.get("content-type"), 'application/xml; charset="utf-8"')
+    if b"<D:href>/dav/col/</D:href>" not in data or b"<D:href>/dav/col/a%20b.txt</D:href>" not in data:
+        fail(f"the multistatus hrefs were changed: {data!r}")
+    status, response_headers, _ = request(proxied, "MKCOL", "/dav/located")
+    same("MKCOL status", status, 201)
+    same("MKCOL Location", response_headers.get("location"), "http://app.test:8080/dav/created%20dir/")
+    print("ok: multistatus hrefs and the Location of a 201 come back exactly as the upstream wrote them")
 
     # 4. A large PUT body is relayed whole.
     payload = bytes(range(256)) * 4096

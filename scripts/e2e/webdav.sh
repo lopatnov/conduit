@@ -7,9 +7,10 @@
 # server gives and echoes what it received. Conduit proxies it under `/dav` (stripPrefix), `/keep` (the prefix stays) and
 # `/rw` (a rewrite rule), and serves a static directory on a second port. payload/webdav_checks.py then checks that
 # PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK, DELETE, PUT and OPTIONS reach the upstream with their bodies and
-# with Depth, Overwrite, Timeout, Lock-Token and Content-Type intact, that the response headers DAV and Lock-Token come back,
-# that the client's Host is kept, that `Destination` and the resource tags of `If` are mapped like the request path, and that
-# a static site answers every method but GET, HEAD and OPTIONS with 405 and Allow.
+# with Depth, Overwrite, Timeout, Lock-Token and Content-Type intact, that the response headers DAV, Allow, Lock-Token and
+# Location and the hrefs of a multistatus body come back as the upstream wrote them, that the client's Host is kept, that
+# `Destination` and the resource tags of `If` reach the upstream exactly as sent (not rewritten, whatever the route does to
+# the request line), and that a static site answers every method but GET, HEAD and OPTIONS with 405 and Allow.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
