@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLICY = os.path.join(REPO, "ci", "license-policy.json")
@@ -242,7 +243,15 @@ def standard_text(ident):
 
 def render(crates, policy):
     """The text of the third-party licence file for `crates`."""
-    out = [HEADER, f"\nCRATES ({len(crates)})\n{'-' * 60}\n"]
+    notices = sorted(
+        f"{p['name']} {p['version']}" for p in crates if any(n.lower().startswith("notice") for n, _ in license_files(p))
+    )
+    note = (
+        "NOTICE files (Apache-2.0 section 4(d)): the text of a crate's NOTICE file is reproduced below with its licence "
+        "files, in this file, which is the documentation that travels with the binary. "
+        + (f"Crates that ship one: {', '.join(notices)}." if notices else "No crate in this build ships a NOTICE file.")
+    )
+    out = [HEADER, "\n" + textwrap.fill(note, 118) + "\n", f"\nCRATES ({len(crates)})\n{'-' * 60}\n"]
     texts = {}  # sha256 -> (text, [crate labels], [file names])
     no_file = []
     for p in crates:

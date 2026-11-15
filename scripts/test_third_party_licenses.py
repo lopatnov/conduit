@@ -137,6 +137,14 @@ class Rendering(unittest.TestCase):
         self.assertIn("bare 1.0.0  [MIT OR Apache-2.0]", text)
         self.assertIn("Apache License", text, "the standard text of the first available licence is added")
 
+    def test_a_notice_file_is_reproduced_and_the_crate_is_named_up_front(self):
+        crates = [package("plain", license="MIT", files={"LICENSE": "m\n"}),
+                  package("noted", license="Apache-2.0", files={"LICENSE": "a\n", "NOTICE": "Attribution: the Foo project\n"})]
+        text = tpl.render(crates, POLICY)
+        self.assertIn("Crates that ship one: noted 1.0.0.", text)
+        self.assertIn("Attribution: the Foo project", text)
+        self.assertIn("No crate in this build ships a NOTICE file.", tpl.render(crates[:1], POLICY))
+
     def test_the_output_is_deterministic(self):
         crates = [package("a", license="MIT", files={"LICENSE": "a\n"}), package("z", license="MIT", files={"LICENSE": "z\n"})]
         self.assertEqual(tpl.render(crates, POLICY), tpl.render(crates, POLICY))

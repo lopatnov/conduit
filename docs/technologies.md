@@ -11,6 +11,12 @@ release. CI checks both: a
 dependency outside the allow-list in [`ci/license-policy.json`](../ci/license-policy.json) fails the build, and so does
 a row below whose licence differs from the one `Cargo.lock` says (`scripts/third_party_licenses.py --check`).
 
+Apache-2.0 section 4(d) asks a redistributor to carry the attribution notices of a dependency's `NOTICE` file. At the
+time of writing none of the dependencies ships one (`scripts/third_party_licenses.py` looks for them in every package and
+says so at the top of `THIRD-PARTY-LICENSES.txt`); if one does, its text is reproduced in that file, which travels with
+every artifact. Conduit itself has no `NOTICE` file: the licence does not require one, and a project that has one puts
+the duty to carry it on everyone who redistributes it.
+
 A licence written as `A OR B` lets the user of the crate pick one of the two; `A AND B` means both apply to different
 parts of it. The identifiers are [SPDX](https://spdx.org/licenses/) names.
 

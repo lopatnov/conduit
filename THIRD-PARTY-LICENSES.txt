@@ -13,6 +13,9 @@ THIRD-PARTY-LICENSES.txt`).
 Where a crate offers a choice (`MIT OR Apache-2.0`), Conduit uses it under either of the licences; the texts of all of
 the licence files that the crate ships are included.
 
+NOTICE files (Apache-2.0 section 4(d)): the text of a crate's NOTICE file is reproduced below with its licence files,
+in this file, which is the documentation that travels with the binary. No crate in this build ships a NOTICE file.
+
 CRATES (533)
 ------------------------------------------------------------
 addr2line 0.26.1  [Apache-2.0 OR MIT]  https://github.com/gimli-rs/addr2line
