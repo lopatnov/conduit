@@ -344,6 +344,22 @@ or `function handle(req)`, with capabilities registered as host objects.
 | Portability | the same `.wasm` runs on Spin, wasmCloud, `wasmtime serve` | Conduit only | Conduit only |
 | Familiar to users of | Cloudflare Workers, Fastly Compute (both use the `fetch`-handler shape) | Rhai users | — |
 
+**What J1 is known to run** (read from `bytecodealliance/jco`, `examples/components`, jco 1.31): `jco` is an npm
+package (`@bytecodealliance/jco`), not a Rust crate. Its examples include a plain `fetch`-event handler exporting
+`wasi:http/incoming-handler@0.2.3` (`http-server-fetch-handler`), a [Hono](https://hono.dev) application
+(`http-server-hono`, "Hono works with WASI without any major changes"), and a SvelteKit server with server-side
+rendering and form actions (`node-sveltekit-server`, through jco's Node.js API layer, which its README marks as
+experimental). So real frameworks run, not only hello world. None of this has been run *in Conduit* yet; phase 1's
+e2e test is what proves it here.
+
+**jco has a QuickJS backend too.** `jco componentize --backend quickjs` (alias `qjs`, built on `componentize-qjs`)
+puts QuickJS instead of SpiderMonkey into the component (`packages/jco/src/cmd/componentize.ts`; the backends are
+`starlingmonkey`, `quickjs` and `perry`). That is "QuickJS, but inside the WASM sandbox": a smaller engine in the
+component, the same host path in Conduit. The examples show the QuickJS backend on Preview 3 streams and script-only
+components, not on an HTTP handler, and with web globals injected by jco; whether it serves `wasi:http` as fully as
+StarlingMonkey is to be checked in phase 1. Since Conduit only sees a `wasi:http` component, the choice of backend is
+the handler author's, and Conduit supports both without extra code.
+
 **Recommendation: J1 for handlers.** It follows from the WASI HTTP decision at no extra cost in Conduit: JavaScript,
 Python, Rust, Go and C# handlers all go through one engine path, one capability layer and one sandbox, and a JS
 engine bug cannot reach the proxy. Its costs are on the developer's side (a build step with Node.js, 8 MB modules)
