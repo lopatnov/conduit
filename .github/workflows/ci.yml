@@ -1026,7 +1026,7 @@ jobs:
           cp target/debug/conduit /tmp/conduit-jemalloc
 
       - name: Each binary uses the allocator it was built with
-        run: scripts/e2e/allocator-check.sh /tmp/conduit-system /tmp/conduit-mimalloc /tmp/conduit-jemalloc
+        run: scripts/allocator-check.sh /tmp/conduit-system /tmp/conduit-mimalloc /tmp/conduit-jemalloc
 
   # ── Feature-OFF tests (issue #144) ──────────────────────────────────────────
   # `cargo hack --no-dev-deps` above only *compiles* each feature state — it

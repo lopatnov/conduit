@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scenario: the global allocators (issue #486).
 #
-#   scripts/e2e/allocator-check.sh SYSTEM_BINARY MIMALLOC_BINARY JEMALLOC_BINARY
+#   scripts/allocator-check.sh SYSTEM_BINARY MIMALLOC_BINARY JEMALLOC_BINARY
 #
 # Three builds of the same source: the system allocator (`--no-default-features --features proxy,compression,static,
 # hotreload`), the default build (mimalloc) and `--features jemalloc`. Each allocator prints its
