@@ -1216,6 +1216,15 @@ jobs:
       - name: Run it
         run: docker run --rm conduit:ci --version
 
+      # The image has no shell to `ls` with, so the notices are copied out of a stopped container and compared with
+      # the committed file (the `licenses` job checks that file is current).
+      - name: The image carries the third-party licence notices (#640)
+        run: |
+          id=$(docker create conduit:ci)
+          docker cp "$id:/licenses/THIRD-PARTY-LICENSES.txt" /tmp/image-licenses.txt
+          docker rm "$id" >/dev/null
+          cmp /tmp/image-licenses.txt THIRD-PARTY-LICENSES.txt
+
   # ── Cross-compile smoke tests for non-native architectures ──────────────────
   # Mirrors the `use_cross: true` targets in release.yml's build matrix, but
   # only exercises a release build (no test run / no artifact upload) — just

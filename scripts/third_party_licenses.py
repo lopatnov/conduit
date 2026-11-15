@@ -250,6 +250,25 @@ def standard_text(ident):
         return f.read().replace("\r\n", "\n").strip("\n")
 
 
+def missing_standard_texts(crates, policy):
+    """Crates that ship no licence file and whose licence has no standard text in ci/license-texts.
+
+    Without this the notices would list such a crate with no licence text at all (a crate licensed only `Zlib` or
+    `ISC`, say); the fix is a `<SPDX id>.txt` there and a line in `standard_text_id`.
+    """
+    problems = []
+    for p in crates:
+        if license_files(p):
+            continue
+        expr = effective_license(p, policy) or "unknown"
+        if not standard_text(standard_text_id(expr)):
+            problems.append(
+                f"{p['name']} {p['version']} [{expr}] ships no licence file and ci/license-texts has no standard text "
+                "for its licence (add one and name it in standard_text_id)"
+            )
+    return problems
+
+
 def render(crates, policy):
     """The text of the third-party licence file for `crates`."""
     notices = sorted(
@@ -343,7 +362,7 @@ def main(argv=None):
 
     policy = load_policy()
     crates = shipped_crates(load_metadata())
-    bad = violations(crates, policy)
+    bad = violations(crates, policy) + missing_standard_texts(crates, policy)
     for line in bad:
         print(f"licence policy: {line}", file=sys.stderr)
     if bad:

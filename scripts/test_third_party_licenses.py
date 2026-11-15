@@ -171,6 +171,15 @@ class Rendering(unittest.TestCase):
         self.assertIn("bare 1.0.0  [MIT OR Apache-2.0]", text)
         self.assertIn("Apache License", text, "the standard text of the first available licence is added")
 
+    def test_a_crate_without_a_file_and_without_a_standard_text_is_a_problem(self):
+        bare_zlib = package("bare-zlib", license="Zlib")
+        problems = tpl.missing_standard_texts([bare_zlib], POLICY)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("bare-zlib 1.0.0 [Zlib]", problems[0])
+        self.assertEqual(tpl.missing_standard_texts([package("bare", license="MIT OR Zlib")], POLICY), [])
+        with_file = package("filed", license="Zlib", files={"LICENSE": "zlib text\n"})
+        self.assertEqual(tpl.missing_standard_texts([with_file], POLICY), [], "a shipped licence file is enough")
+
     def test_a_notice_file_is_reproduced_and_the_crate_is_named_up_front(self):
         crates = [package("plain", license="MIT", files={"LICENSE": "m\n"}),
                   package("noted", license="Apache-2.0", files={"LICENSE": "a\n", "NOTICE": "Attribution: the Foo project\n"})]
