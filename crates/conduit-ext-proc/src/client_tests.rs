@@ -1,19 +1,20 @@
 //! The client against an in-process processor: a real gRPC server on a loopback port that answers with whatever the test
 //! says (port 0, no `protoc`; the messages are the crate's own, whose wire bytes `proto::tests` pin).
-#![cfg(feature = "ext-proc")]
-
-mod support;
+//!
+//! A unit-test module of the library (not `tests/`): the SonarCloud coverage run measures `cargo llvm-cov --lib` only, so
+//! a client exercised from `tests/` would count as uncovered.
 
 use std::time::Duration;
 
-use conduit_ext_proc::proto::{
+use crate::client::Failure;
+use crate::proto::{
     append_action, processing_request, processing_response, CommonResponse, HeaderMutation,
     HeaderValue as PbValue, HeaderValueOption, HttpStatus, ImmediateResponse, PhaseResponse,
     ProcessingResponse,
 };
-use conduit_ext_proc::{DirectResponse, ExtProcClient, ExtProcConfig, RequestInfo, Verdict};
+use crate::support::{dead_address, serve, Behaviour};
+use crate::{clear_channels, DirectResponse, ExtProcClient, ExtProcConfig, RequestInfo, Verdict};
 use http::{HeaderMap, HeaderValue};
-use support::{dead_address, serve, Behaviour};
 
 fn config(grpc: &str, extra: serde_json::Value) -> ExtProcConfig {
     let mut value = serde_json::json!({ "grpc": grpc });
@@ -350,4 +351,58 @@ async fn a_processor_that_cannot_even_be_configured_fails_every_exchange_under_t
     open["failOpen"] = serde_json::json!(true);
     let open = ExtProcClient::new(&config("grpcs://127.0.0.1:9", open));
     unchanged(&ask(&open).await);
+}
+
+#[tokio::test]
+async fn a_tls_processor_uses_the_public_roots_or_the_given_ca_file_and_fails_under_the_policy_when_down(
+) {
+    // grpcs:// with no caFile: the bundled public roots; nothing listens on the port, so the exchange fails
+    let public = ExtProcClient::new(&config(
+        "grpcs://127.0.0.1:9",
+        serde_json::json!({ "timeoutMs": 500 }),
+    ));
+    refused(&ask(&public).await, 503);
+    // with a caFile that is readable (its content is only used when a connection is made)
+    let ca = std::env::temp_dir().join(format!("conduit-ext-proc-ca-{}.pem", std::process::id()));
+    std::fs::write(
+        &ca,
+        "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+    let file = serde_json::json!({ "caFile": ca.to_str().unwrap(), "timeoutMs": 500 });
+    let with_file = ExtProcClient::new(&config("grpcs://127.0.0.1:9", file));
+    refused(&ask(&with_file).await, 503);
+    let _ = std::fs::remove_file(&ca);
+}
+
+#[test]
+fn a_reload_forgets_the_channels() {
+    // builds one channel (lazily: nothing connects), then forgets it; the next client builds it again
+    let c = config("http://127.0.0.1:9", serde_json::json!({}));
+    let _ = ExtProcClient::new(&c);
+    clear_channels();
+    let _ = ExtProcClient::new(&c);
+    clear_channels();
+}
+
+#[test]
+fn every_failure_says_what_went_wrong_in_one_line() {
+    let texts = [
+        Failure::Unreachable("refused".into()).to_string(),
+        Failure::TimedOut(Duration::from_millis(250)).to_string(),
+        Failure::Closed.to_string(),
+        Failure::Status("Unavailable".into()).to_string(),
+        Failure::Unexpected("a trailers answer").to_string(),
+        Failure::Rejected("bad\nname".into()).to_string(),
+    ];
+    assert!(texts[0].contains("cannot be reached: refused"), "{texts:?}");
+    assert!(texts[1].contains("250 ms"), "{texts:?}");
+    assert!(texts[2].contains("closed the stream"), "{texts:?}");
+    assert!(texts[3].contains("error: Unavailable"), "{texts:?}");
+    assert!(texts[4].contains("a trailers answer"), "{texts:?}");
+    assert!(texts[5].contains("not acceptable"), "{texts:?}");
+    assert!(
+        texts.iter().all(|t| !t.contains('\n')),
+        "a log line must stay one line: {texts:?}"
+    );
 }

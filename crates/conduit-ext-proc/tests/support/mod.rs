@@ -1,5 +1,5 @@
 //! An in-process `ext_proc` processor: a real gRPC server on a loopback port that answers with whatever the test says.
-//! Shared by `tests/client.rs` (async, the client alone) and the root crate's `tests/ext_proc.rs` (a whole Conduit in front
+//! Shared by the client unit tests (`src/client_tests.rs`, the client alone) and the root crate's `tests/ext_proc.rs` (a whole Conduit in front
 //! of it), the second one through a `#[path]` include.
 #![allow(dead_code)]
 

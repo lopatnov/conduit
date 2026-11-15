@@ -64,7 +64,7 @@ pub enum Verdict {
 
 /// Why an exchange did not produce a usable answer.
 #[derive(Debug)]
-enum Failure {
+pub(crate) enum Failure {
     Unreachable(String),
     TimedOut(Duration),
     Closed,

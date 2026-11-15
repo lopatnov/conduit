@@ -294,17 +294,7 @@ async fn apply_ext_proc_entry<'a>(
             Ok(false)
         }
         Verdict::Respond(answer) => {
-            // A value that is not text cannot be passed on as a response header here (the writer takes strings).
-            let extra = answer
-                .headers
-                .iter()
-                .filter_map(|(name, value)| {
-                    value
-                        .to_str()
-                        .ok()
-                        .map(|v| (name.as_str().to_owned(), v.to_owned()))
-                })
-                .collect();
+            let extra = text_headers(&answer);
             refuse(ctx, answer.status, answer.body, extra).await
         }
     }
@@ -323,11 +313,7 @@ async fn refuse<'a>(
     if matches!(status, 204 | 205 | 304) {
         // These have no body, and a server must not send `Content-Length` with a 204 (RFC 9110 sections 8.6, 15.3.5,
         // 15.3.6, 15.4.5), which `write_response` always does: the header is built here without it.
-        let mut resp = pingora_http::ResponseHeader::build(status, Some(all.len()))?;
-        for (name, value) in all {
-            // a header the writer cannot take is left out, as `write_response` does
-            let _ = resp.insert_header(name, value);
-        }
+        let resp = bodyless_response(status, all)?;
         ctx.session
             .write_response_header(Box::new(resp), true)
             .await?;
@@ -343,6 +329,36 @@ async fn refuse<'a>(
     }
     ctx.inflight.fetch_sub(1, Ordering::Relaxed);
     Ok(true)
+}
+
+/// The headers of a processor's immediate response as strings. A value that is not text cannot be passed on as a response
+/// header here (the writer takes strings), so it is left out.
+#[cfg(feature = "ext-proc")]
+fn text_headers(answer: &conduit_ext_proc::DirectResponse) -> Vec<(String, String)> {
+    answer
+        .headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.as_str().to_owned(), v.to_owned()))
+        })
+        .collect()
+}
+
+/// The header of a response that has no body (204, 205, 304): `headers` without a `Content-Length`, which `write_response`
+/// would add. A header the writer cannot take is left out, as `write_response` does.
+#[cfg(feature = "ext-proc")]
+fn bodyless_response(
+    status: u16,
+    headers: Vec<(String, String)>,
+) -> Result<pingora_http::ResponseHeader> {
+    let mut resp = pingora_http::ResponseHeader::build(status, Some(headers.len()))?;
+    for (name, value) in headers {
+        let _ = resp.insert_header(name, value);
+    }
+    Ok(resp)
 }
 
 /// Apply a processor's validated header changes to the request, and to the lower-cased view later entries read.
@@ -400,6 +416,51 @@ fn apply_header_changes(
 #[cfg(all(test, feature = "ext-proc"))]
 mod ext_proc_tests {
     use super::*;
+
+    #[test]
+    fn a_bodyless_response_has_the_given_headers_and_no_content_length() {
+        let headers = vec![
+            ("x-site".to_owned(), "a".to_owned()),
+            ("bad name".to_owned(), "dropped".to_owned()),
+        ];
+        let resp = bodyless_response(204, headers).unwrap();
+        assert_eq!(resp.status.as_u16(), 204);
+        assert_eq!(resp.headers.get("x-site").unwrap(), "a");
+        assert!(resp.headers.get("content-length").is_none());
+        assert_eq!(
+            resp.headers.len(),
+            1,
+            "a header the writer cannot take is left out"
+        );
+        assert!(
+            bodyless_response(99, Vec::new()).is_err(),
+            "a status outside 100 to 999 is an error, not a panic"
+        );
+    }
+
+    #[test]
+    fn only_text_values_of_an_immediate_response_become_response_headers() {
+        let headers = vec![
+            (
+                http::HeaderName::from_static("x-text"),
+                http::HeaderValue::from_static("yes"),
+            ),
+            (
+                http::HeaderName::from_static("x-binary"),
+                http::HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
+            ),
+        ];
+        let answer = conduit_ext_proc::DirectResponse {
+            status: 403,
+            headers,
+            body: Bytes::new(),
+        };
+        assert_eq!(
+            text_headers(&answer),
+            vec![("x-text".to_owned(), "yes".to_owned())]
+        );
+    }
+
     use conduit_ext_proc::{HeaderChanges, HeaderSet, SetMode};
     use http::{HeaderName, HeaderValue};
     use pingora_http::RequestHeader;

@@ -29,3 +29,14 @@ pub mod proto;
 pub use client::{clear_channels, DirectResponse, ExtProcClient, RequestInfo, Verdict};
 #[cfg(feature = "ext-proc")]
 pub use mutation::{HeaderChanges, HeaderSet, SetMode};
+
+// The in-process mock processor is shared with the root crate's `tests/ext_proc.rs` (a `#[path]` include there), so it
+// stays in `tests/support/`; the client tests below are unit tests so that the coverage run (`--lib`) counts them. The
+// mock names the crate as `conduit_ext_proc`, which `extern crate self` makes true inside the crate as well.
+#[cfg(all(test, feature = "ext-proc"))]
+extern crate self as conduit_ext_proc;
+#[cfg(all(test, feature = "ext-proc"))]
+mod client_tests;
+#[cfg(all(test, feature = "ext-proc"))]
+#[path = "../tests/support/mod.rs"]
+mod support;
