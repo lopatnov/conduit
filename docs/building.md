@@ -74,10 +74,12 @@ proxy. Add features with `--features`:
 | `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
 | `tokio-metrics` | `conduit_eventloop_lag_ms` Prometheus gauge (no config key)                |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
+| `mimalloc`      | mimalloc as the global allocator of the `conduit` binary (see [Allocator](#allocator)) |
+| `jemalloc`      | jemalloc as the global allocator of the `conduit` binary (alternative to `mimalloc`) |
 | `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `disk-cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
 | `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
 | `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `disk-cache` + `acme` + `compression` — the `standard` set without static files and hot-reload |
-| `full`          | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |
+| `full`          | Every optional feature above except the two allocators (`static-server` and `gateway` are shorthands, not extra capabilities) |
 
 `proxy`, `compression`, `static` and `hotreload` are on by default and are not
 listed above because there is nothing to add — `--no-default-features` turns
@@ -172,6 +174,32 @@ lto           = true   # link-time optimisation across all crates
 codegen-units = 1      # single codegen unit — slower to compile, faster binary
 strip         = true   # strip debug symbols (ELF / Mach-O)
 ```
+
+### Allocator
+
+A proxy allocates a little on every request (header maps, buffers, futures), so the allocator is a visible part of the
+cost of a request. The `conduit` binary uses the system allocator unless you ask for one of two alternatives. They are
+alternatives (with both on, as under `--all-features`, mimalloc is used), not part of `full`, and apply to the binary only: a program that
+embeds the `conduit` library keeps its own allocator.
+
+```bash
+cargo build --release --features mimalloc   # or: --features jemalloc
+```
+
+Measured on one machine (4 cores, `oha -c 50` for 10 s, `workers: 1`, access log off, default features, 5 rounds in
+ABBA order with `scripts/bench/ab.sh`; instructions per request with `scripts/bench/cachegrind.sh`):
+
+| Allocator | req/s | CPU per request | Instructions per request | Binary size |
+| --- | ---: | ---: | ---: | ---: |
+| system (default) | 15 224 / 15 557 | 65.3 / 63.8 µs | 146 237 | 19 405 728 B |
+| `mimalloc` | 17 981 (+18 %) | 55.2 µs (−15 %) | 126 440 (−13.5 %) | +217 KiB (+1.1 %) |
+| `jemalloc` | 16 880 (+8.5 %) | 58.9 µs (−7.7 %) | 130 045 (−11.1 %) | +527 KiB (+2.8 %) |
+
+The two req/s figures for the system allocator are the two baseline arms of the two comparisons. Numbers are from a
+shared 4-core machine and will differ on yours: measure with `scripts/bench/ab.sh` before relying on them. Neither
+allocator changes any behaviour or configuration key. Both add a small amount of C code to the build (they need a C
+compiler, like `aws-lc-sys` already does). The default build is unchanged, so the size budget of
+[#516](https://github.com/lopatnov/conduit/issues/516) is not touched unless you opt in.
 
 ---
 

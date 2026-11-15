@@ -15,6 +15,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and a release asset, and the npm package carries it gzipped. `scripts/third_party_licenses.py` generates it and the new
   `licenses` CI job checks the allow-list in `ci/license-policy.json` and that the file is current. The README has a
   "Technologies stack" section, and `docs/technologies.md` the longer list.
+- Opt-in global allocator (#486, #516): `--features mimalloc` or `--features jemalloc` (alternatives, mimalloc wins if both are on; not part of `full`)
+  replaces the system allocator in the `conduit` binary. On the passthrough benchmark (4 cores, `workers: 1`, 5 ABBA
+  rounds) `mimalloc` served 18 % more requests per second at 15 % less CPU per request for +217 KiB of binary, and
+  `jemalloc` 8.5 % more at 7.7 % less for +527 KiB. The default build is unchanged. See `docs/building.md`, "Allocator".
 - External processing filter (#27): a `middleware` entry `type: "ext_proc"` (feature `ext-proc`, part of `full`) talks to a
   gRPC processor that speaks Envoy's `ext_proc` protocol. Per entry, what is sent is chosen: the request headers (default,
   `requestPhase`), the request body (`requestBody: buffered` held up to `maxBodyBytes` and refused with 413 above it, or

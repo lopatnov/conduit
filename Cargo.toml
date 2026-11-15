@@ -275,6 +275,12 @@ path = "src/lib.rs"
 pingora-core.workspace  = true
 pingora-proxy.workspace = true
 
+# --- Global allocator (opt-in, issue #486) ---
+# One of the two replaces the system allocator of the `conduit` binary (not of the library crates); see the
+# `mimalloc` and `jemalloc` features. Both are optional so the default build, and its size, are unchanged.
+mimalloc          = { version = "0.1", optional = true, default-features = false }
+tikv-jemallocator = { version = "0.6", optional = true }
+
 # --- Conduit workspace member crates ---
 lopatnov-conduit-core.workspace        = true
 lopatnov-conduit-config-core.workspace = true
@@ -815,6 +821,13 @@ wasm = ["lopatnov-conduit-middleware/wasm"]
 # is refused at validation (it would let every request through unchecked); a `failOpen` one only warns.
 ext-proc = ["lopatnov-conduit-middleware/ext-proc", "lopatnov-conduit-runtime/ext-proc"]
 
+# ── Global allocator (issue #486) ──────────────────────────────────────────────
+# `mimalloc` or `jemalloc` replaces the system allocator in the `conduit` binary (`src/main.rs`). Not part of any
+# bundle and not a configuration feature: nothing in a config file needs it, it is a build-time choice. Turning on
+# both is a compile error. See `docs/building.md` for what each costs in size and gains in speed.
+mimalloc = ["dep:mimalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+
 # ── Protocol extensions ────────────────────────────────────────────────────────
 # TCP passthrough proxy (type: "tcp" site config). `TcpConfig` moved to
 # `crates/conduit-tcp` (#114/#131) and is always a dependency (see the
@@ -980,7 +993,7 @@ gateway = [
     "compression",
 ]
 
-# Full build: every optional feature enabled.
+# Full build: every optional feature enabled, except the two global-allocator alternatives (mimalloc, jemalloc: pick one; mimalloc wins if both are on).
 full = [
     "standard",
     "rhai", "wasm", "ext-proc",

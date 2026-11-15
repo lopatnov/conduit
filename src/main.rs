@@ -2,6 +2,16 @@ use clap::Parser;
 use conduit::cli::args::Cli;
 use conduit::cli::dispatch::dispatch_command;
 
+// Opt-in global allocator (issue #486): the binary only, so a library user keeps theirs. The two features are
+// alternatives; with both on (`--all-features`) mimalloc wins, so that flag still builds.
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 fn main() {
     // Initialise tracing with an env-filter so that RUST_LOG controls output.
     // Defaults to "warn" when RUST_LOG is unset; set RUST_LOG=conduit=info
