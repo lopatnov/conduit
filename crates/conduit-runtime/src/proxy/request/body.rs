@@ -131,11 +131,13 @@ pub(crate) async fn request_body_filter(
     #[cfg(feature = "ext-proc")]
     //
     // Not for an upgraded connection (WebSocket): the bytes that pass through this hook after the upgrade are the tunnel, not a
-    // request body; holding them back or rewriting them would break the protocol.
+    // request body; holding them back or rewriting them would break the protocol. The test is the state of the connection
+    // (`was_upgraded`: the upstream answered 101), not the request: any client can add an `Upgrade` header to a request that
+    // has a real body, and that must not switch the processor off.
     if let Some(sessions) = req_ctx
         .ext_proc
         .clone()
-        .filter(|s| s.rewrites_request_body() && !session.is_upgrade_req())
+        .filter(|s| s.rewrites_request_body() && !session.was_upgraded())
     {
         use conduit_ext_proc::BodyVerdict;
         match sessions.request_body(body.take(), end_of_stream).await {

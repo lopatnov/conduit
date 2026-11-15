@@ -4011,8 +4011,9 @@ processor changed it, and the cache key does not include headers a processor set
 upstream's response headers, `Set-Cookie` included. With `requestBody` and `responseBody: observe` together, a response
 that starts before the client has finished its upload is not observed (the stream is still in use for the upload).
 `buffered` holds the body, not the request headers: the upstream has already received them when a processor refuses the
-body, and sees the body end early. Upgraded connections (WebSocket) are not sent to the body phases: the bytes of the
-tunnel are not a request body.
+body, and sees the body end early. Once a connection has been upgraded (the upstream answered `101`, WebSocket) the bytes of the
+tunnel are not sent to the body phases: they are not a request body. A request that merely carries an `Upgrade`
+header is an ordinary request until then, and its body is processed.
 
 **What is not there.** Trailers (`request_trailers`/`response_trailers`) are not sent; a processor that answers with one
 is refused (a failure). `response_body` is observe-only: the response body cannot be rewritten through `ext_proc` (the

@@ -828,6 +828,35 @@ fn a_response_phase_failure_is_refused_or_ignored_by_the_policy() {
 
 #[cfg(feature = "proxy")]
 #[test]
+fn an_upgrade_header_does_not_switch_the_body_phases_off() {
+    // The upstream may ignore `Upgrade` (RFC 9110 section 7.8), so the request is an ordinary one with a body, and a
+    // fail-closed body processor must still see it (the security review of #749).
+    let (processor, seen) = support::serve_in_background(body_processor(|body| {
+        if body.contains("attack") {
+            deny(403, "blocked by policy\n")
+        } else {
+            replace_body(true, body)
+        }
+    }));
+    let server =
+        start_body_site(serde_json::json!({ "grpc": processor, "requestBody": "buffered" }));
+    let client = common::local_client();
+    let resp = client
+        .post(server.url("/echo"))
+        .header("upgrade", "websocket")
+        .body("an attack")
+        .send()
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "the body was not shown to the processor"
+    );
+    assert!(kinds(&seen).contains(&"request-body"));
+}
+
+#[cfg(feature = "proxy")]
+#[test]
 fn a_refusal_of_the_response_phase_is_not_undone_by_the_routes_retry_on_5xx() {
     // A fail-closed response phase refuses with 503; a route that retries on 5xx must not send the request upstream again
     // and let the next response go to the client unseen (the security review of #749).
