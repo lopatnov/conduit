@@ -119,6 +119,11 @@ pub(crate) async fn upstream_peer(
     if req_ctx.proxy.proxy_http2 {
         peer.options.alpn = pingora_core::upstreams::peer::ALPN::H2H1;
     }
+    // `http2: "h2c"`: a cleartext target has no ALPN, so HTTP/2 is only spoken when the connection starts with the
+    // HTTP/2 preface (prior knowledge); a TLS target keeps the ALPN negotiation above.
+    if req_ctx.proxy.proxy_h2c && !tls {
+        peer.options.alpn = pingora_core::upstreams::peer::ALPN::H2;
+    }
 
     // Apply upstream TLS settings (cert verification, custom server name).
     if let UpstreamTarget::Proxy {

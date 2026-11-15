@@ -19,6 +19,7 @@ use conduit_upstream::{LoadBalanceStrategy, UpstreamTlsConfig};
 #[cfg(feature = "proxy")]
 use crate::config::{
     ConnectionPoolConfig, ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, StickyConfig,
+    UpstreamHttp2,
 };
 
 /// Inputs that stay constant while resolving one request's upstream.
@@ -46,6 +47,7 @@ pub(crate) struct RouteOptions<'a> {
     pub(crate) pool: Option<&'a ConnectionPoolConfig>,
     pub(crate) strategy: Option<&'a LoadBalanceStrategy>,
     pub(crate) http2: bool,
+    pub(crate) h2c: bool,
     pub(crate) hash_key: &'a str,
     pub(crate) cache: Option<&'a CacheConfig>,
     pub(crate) rewrite: Option<&'a [RewriteRule]>,
@@ -80,7 +82,8 @@ impl<'a> RouteOptions<'a> {
             timeout: cfg.timeout.as_ref(),
             pool: cfg.pool.as_ref(),
             strategy: cfg.strategy.as_ref(),
-            http2: cfg.http2.unwrap_or(false),
+            http2: cfg.http2.is_some_and(UpstreamHttp2::enabled),
+            h2c: cfg.http2.is_some_and(UpstreamHttp2::h2c),
             hash_key: cfg.hash_key.as_deref().unwrap_or("ip"),
             cache: cfg.cache.as_ref(),
             rewrite: cfg.rewrite.as_deref(),
@@ -117,6 +120,7 @@ impl<'a> RouteOptions<'a> {
             pool: None,
             strategy: None,
             http2: false,
+            h2c: false,
             hash_key: "ip",
             cache: None,
             rewrite: None,
