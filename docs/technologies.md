@@ -1,7 +1,9 @@
 # Technologies and their licences
 
-Conduit is written in Rust and stands on the projects below. All of them are open source under permissive licences
-that are compatible with Conduit's own [Apache-2.0](../LICENSE) licence; none of them is copyleft.
+Conduit is written in Rust and stands on the projects below. All of them are open source under licences that are
+compatible with Conduit's own [Apache-2.0](../LICENSE) licence, and the ones listed here are permissive. Across the whole
+build, one crate carries a weak, file-level copyleft licence: `smartstring` (MPL-2.0, used unmodified, through Rhai); its
+terms are in the generated notices file below.
 
 This page lists the technologies that shape what Conduit does. It is written by hand. The complete list is generated
 from `Cargo.lock`: every crate that can end up in a Conduit binary, its licence, and the full licence and notice texts

@@ -89,6 +89,12 @@ class Policy(unittest.TestCase):
         clarified = dict(POLICY, clarify={"mystery": {"license": "MIT"}})
         self.assertEqual(tpl.violations(crates, clarified), [])
 
+    def test_a_clarification_never_overrides_the_licence_a_crate_declares(self):
+        # the crate says GPL-3.0-only; a clarification for its name must not turn that into MIT
+        crates = [package("mystery", license="GPL-3.0-only")]
+        clarified = dict(POLICY, clarify={"mystery": {"license": "MIT"}})
+        self.assertEqual(len(tpl.violations(crates, clarified)), 1)
+
     def test_a_malformed_expression_is_a_violation_not_a_crash(self):
         found = tpl.violations([package("odd", license="MIT OR")], POLICY)
         self.assertEqual(len(found), 1, found)
@@ -130,6 +136,23 @@ class Rendering(unittest.TestCase):
         })
         names = [n for n, _ in tpl.license_files(pkg)]
         self.assertEqual(names, ["COPYING.md", "NOTICE"])
+
+    def test_a_licence_file_outside_the_package_is_never_read(self):
+        with tempfile.TemporaryDirectory() as outer:
+            secret = os.path.join(outer, "secret.txt")
+            with open(secret, "w") as f:
+                f.write("do not publish this\n")
+            pkg_dir = os.path.join(outer, "crate")
+            os.mkdir(pkg_dir)
+            with open(os.path.join(pkg_dir, "LICENSE"), "w") as f:
+                f.write("MIT License\n")
+            os.symlink(secret, os.path.join(pkg_dir, "COPYING"))
+            for license_file in ("../secret.txt", secret):
+                pkg = {"name": "evil", "version": "1.0.0", "manifest_path": os.path.join(pkg_dir, "Cargo.toml"),
+                       "license": "MIT", "license_file": license_file}
+                found = tpl.license_files(pkg)
+                self.assertEqual([n for n, _ in found], ["LICENSE"], license_file)
+                self.assertNotIn("do not publish", repr(found))
 
     def test_a_crate_without_a_file_is_listed_with_the_standard_text(self):
         text = tpl.render([package("bare", license="MIT OR Apache-2.0")], POLICY)

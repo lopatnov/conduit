@@ -155,8 +155,13 @@ def license_files(package):
     if package.get("license_file"):
         names.add(package["license_file"])
     found = []
+    root = os.path.realpath(directory)
     for name in sorted(names):
         path = os.path.join(directory, name)
+        # `license-file` comes from the crate's own Cargo.toml: an absolute path, `..` or a symlink must not make the
+        # generator read (and publish) a file from outside the package
+        if os.path.commonpath([root, os.path.realpath(path)]) != root:
+            continue
         if not os.path.isfile(path) or os.path.getsize(path) > MAX_LICENSE_BYTES:
             continue
         with open(path, "rb") as f:
@@ -176,10 +181,13 @@ def load_policy(path=POLICY):
 
 def effective_license(package, policy):
     """The licence expression to judge: the crate's own, or the policy's clarification for it."""
+    declared = package.get("license")
+    if declared:
+        # a clarification fills a gap; it never overrides what a crate declares, so a licence change in a clarified
+        # crate cannot go unnoticed
+        return declared
     clarified = policy["clarify"].get(package["name"])
-    if clarified:
-        return clarified["license"]
-    return package.get("license")
+    return clarified["license"] if clarified else None
 
 
 def violations(crates, policy):

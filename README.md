@@ -835,7 +835,7 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before openin
 
 ## Technologies stack
 
-Conduit is written in Rust. The main building blocks, all under permissive open-source licences:
+Conduit is written in Rust. The main building blocks, all under permissive open-source licences (the complete list, including the one weak-copyleft crate, `smartstring` under MPL-2.0, is in [docs/technologies.md](docs/technologies.md)):
 
 | Technology | Role | Licence |
 |---|---|---|

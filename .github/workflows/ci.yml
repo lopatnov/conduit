@@ -1579,12 +1579,6 @@ jobs:
       - name: cargo publish --workspace --dry-run
         run: cargo publish --workspace --dry-run
 
-  # ── Config schema superset check (issue #496) ────────────────────────────────
-  # schema/conduit.schema.json is hand-maintained, not generated from serde —
-  # nothing else catches a config field added/renamed in Rust without a matching
-  # schema update. scripts/check_schema_superset.py is a best-effort net, not a
-  # guarantee (see its own docstring for exactly what it can't check — untagged
-  # enums, #[serde(flatten)] fields, defs inlined into a parent instead of named).
   # ── Third-party licences (issue #640) ────────────────────────────────────────
   # Every crate that can end up in a binary must be inside the allow-list in ci/license-policy.json, and
   # THIRD-PARTY-LICENSES.txt (shipped with every release artifact) must be what the generator writes for the current
@@ -1612,6 +1606,12 @@ jobs:
       - name: Licence policy, and THIRD-PARTY-LICENSES.txt is current
         run: python3 scripts/third_party_licenses.py --check THIRD-PARTY-LICENSES.txt
 
+  # ── Config schema superset check (issue #496) ────────────────────────────────
+  # schema/conduit.schema.json is hand-maintained, not generated from serde —
+  # nothing else catches a config field added/renamed in Rust without a matching
+  # schema update. scripts/check_schema_superset.py is a best-effort net, not a
+  # guarantee (see its own docstring for exactly what it can't check — untagged
+  # enums, #[serde(flatten)] fields, defs inlined into a parent instead of named).
   schema-superset-check:
     name: Config schema superset check
     runs-on: ubuntu-latest
