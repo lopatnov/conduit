@@ -358,7 +358,8 @@ puts QuickJS instead of SpiderMonkey into the component (`packages/jco/src/cmd/c
 component, the same host path in Conduit. The examples show the QuickJS backend on Preview 3 streams and script-only
 components, not on an HTTP handler, and with web globals injected by jco; whether it serves `wasi:http` as fully as
 StarlingMonkey is to be checked in phase 1. Since Conduit only sees a `wasi:http` component, the choice of backend is
-the handler author's, and Conduit supports both without extra code.
+the handler author's: any backend that produces a `wasi:http/incoming-handler` component of a version Conduit's host
+supports (0.2 in phase 1) needs no extra Conduit code; that the QuickJS backend does is what phase 1 verifies.
 
 **Recommendation: J1 for handlers.** It follows from the WASI HTTP decision at no extra cost in Conduit: JavaScript,
 Python, Rust, Go and C# handlers all go through one engine path, one capability layer and one sandbox, and a JS
