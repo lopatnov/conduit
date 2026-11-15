@@ -54,7 +54,7 @@ ok() {
 # e2e_build_client: the client image. It needs the Internet, so it is built before the network exists.
 e2e_build_client() {
   # E2E_SKIP_CLIENT_BUILD=1: the image `conduit-e2e-client` was built by hand (a sandbox whose build containers cannot
-  # reach the Debian mirror); it needs curl, nghttp, jq, openssl and nc.
+  # reach the Debian mirror); it needs curl, nghttp, jq, openssl, nc, python3 and python3-grpcio.
   if [ -n "${E2E_SKIP_CLIENT_BUILD:-}" ]; then
     docker image inspect conduit-e2e-client >/dev/null || fail "E2E_SKIP_CLIENT_BUILD is set but there is no conduit-e2e-client image"
     docker pull -q "$E2E_HTTPBIN" >/dev/null
@@ -63,7 +63,7 @@ e2e_build_client() {
   docker build -q -t conduit-e2e-client - >/dev/null <<EOF
 FROM $E2E_DEBIAN
 RUN apt-get update -qq \\
- && apt-get install -y -qq --no-install-recommends curl ca-certificates nghttp2-client jq openssl netcat-openbsd python3 >/dev/null \\
+ && apt-get install -y -qq --no-install-recommends curl ca-certificates nghttp2-client jq openssl netcat-openbsd python3 python3-grpcio >/dev/null \\
  && rm -rf /var/lib/apt/lists/*
 EOF
   docker pull -q "$E2E_HTTPBIN" >/dev/null
