@@ -61,6 +61,7 @@ lopatnov-conduit-redirects           = { path = "crates/conduit-redirects", vers
 lopatnov-conduit-script-rhai         = { path = "crates/conduit-script-rhai", version = "2.3.1" }
 lopatnov-conduit-plugin-wasm         = { path = "crates/conduit-plugin-wasm", version = "2.3.1" }
 lopatnov-conduit-middleware          = { path = "crates/conduit-middleware", version = "2.3.1" }
+lopatnov-conduit-ext-proc            = { path = "crates/conduit-ext-proc", version = "2.3.1" }
 lopatnov-conduit-k8s                 = { path = "crates/conduit-k8s", version = "2.3.1" }
 lopatnov-conduit-upstream            = { path = "crates/conduit-upstream", version = "2.3.1" }
 lopatnov-conduit-proxy-http          = { path = "crates/conduit-proxy-http", version = "2.3.1" }
@@ -202,6 +203,15 @@ k8s-openapi = { version = "0.29" }
 schemars    = { version = "1.2" }
 futures     = { version = "0.3" }
 
+# --- External processing filter (optional feature `ext-proc`, issue #27) ---
+# A gRPC client for the Envoy ext_proc protocol. `channel` is tonic's client half (no server, no router): the proxy only
+# calls out. `tls-ring` + `tls-webpki-roots` give `grpcs://` with the same ring provider as the rest of the binary and
+# bundled roots (no system trust store, which a static musl binary does not have). The messages are written by hand with
+# prost derives (no protoc in CI), pinned by a byte-level test against the field numbers of the Envoy proto.
+tonic       = { version = "0.14", default-features = false, features = ["channel", "tls-ring", "tls-webpki-roots"] }
+tonic-prost = { version = "0.14" }
+prost       = { version = "0.14" }
+
 # --- WASM plugin middleware (optional feature) ---
 # Enable with: cargo build --features wasm
 # Cranelift JIT: fast compilation; no WASI by default (sandboxed). Default features are off, except the ones that
@@ -230,6 +240,7 @@ opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic"] }
 # --- Dev/test-only ---
 criterion   = { version = "0.8", features = ["html_reports"] }
 tempfile    = "3"
+tokio-stream = { version = "0.1", features = ["net"] }
 serial_test = "4"
 time        = { version = "0.3", features = ["std"] }
 # wat: parse WebAssembly Text Format in tests (compile inline WAT → wasm bytes)
@@ -798,6 +809,11 @@ rhai = ["lopatnov-conduit-middleware/rhai"]
 # `crates/conduit-plugin-wasm` as an optional path-dependency and gates the
 # real WASM dispatch arm.
 wasm = ["lopatnov-conduit-middleware/wasm"]
+# External processing filter (type: "ext_proc" in middleware[], Envoy's ext_proc protocol over gRPC, issue #27). Forwards
+# into `crates/conduit-middleware`'s own `ext-proc` feature, which switches on the gRPC client of
+# `crates/conduit-ext-proc` (tonic + prost) and gates the real dispatch arm. Without it a fail-closed `ext_proc` entry
+# is refused at validation (it would let every request through unchecked); a `failOpen` one only warns.
+ext-proc = ["lopatnov-conduit-middleware/ext-proc"]
 
 # ── Protocol extensions ────────────────────────────────────────────────────────
 # TCP passthrough proxy (type: "tcp" site config). `TcpConfig` moved to
@@ -967,7 +983,7 @@ gateway = [
 # Full build: every optional feature enabled.
 full = [
     "standard",
-    "rhai", "wasm",
+    "rhai", "wasm", "ext-proc",
     "tcp", "upload",
     "redis", "disk-cache",
     "fault-injection",
@@ -1005,6 +1021,18 @@ p256.workspace          = true
 # tokens, issue #164) — added via feature union on top of the workspace base
 # set (same pattern as reqwest above).
 jsonwebtoken = { workspace = true, features = ["use_pem"] }
+# tests/ext_proc.rs runs a whole Conduit in front of an in-process gRPC processor. The crate is listed WITHOUT its
+# `ext-proc` feature on purpose: a dev-dependency feature is unified into every `cargo test` build, and the root's
+# `ext-proc` feature must be the only switch (the parity assert in `src/config/validate/mod.rs`); the test has
+# `required-features = ["ext-proc"]`, which turns the crate's feature on through `lopatnov-conduit-middleware`.
+lopatnov-conduit-ext-proc = { workspace = true }
+tonic                     = { workspace = true, features = ["server", "router", "codegen"] }
+tonic-prost               = { workspace = true }
+tokio-stream              = { workspace = true }
+
+[[test]]
+name = "ext_proc"
+required-features = ["ext-proc"]
 
 [[test]]
 name = "acme"

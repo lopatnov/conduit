@@ -38,7 +38,7 @@ every name below is described in the tables that follow:
 
 1. **Baseline features**, on by default: `proxy`, `compression`, `static`, `hotreload`.
 2. **Optional features**, off unless you ask for them: `jwt`, `consumers`, `forward-auth`,
-   `rhai`, `wasm`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`,
+   `rhai`, `wasm`, `ext-proc`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`,
    `otlp`, `tokio-metrics`, `kubernetes`.
 3. **Bundles**, which are only a short name for a set of the above: `standard`, `gateway`,
    `static-server`, `full`. A bundle adds no code of its own.
@@ -54,7 +54,9 @@ parsed, **ignored**, and a warning is printed at start-up and by `conduit valida
 matters most for the security features and for middleware that can reject a request,
 where "ignored" means the check is not applied (`jwtAuth` without `jwt`, `consumers`
 without `consumers`, `forwardAuth` without `forward-auth`, a `rhai` or `wasm` entry that
-was a gate: every request goes through unchecked). To see what a config needs, and whether the
+was a gate: every request goes through unchecked). The one exception is an `ext_proc` entry
+that is not `failOpen`: a build without `ext-proc` **refuses to start** with it, because
+skipping it would switch the check off silently. To see what a config needs, and whether the
 binary you run has it:
 
 ```bash
@@ -84,6 +86,7 @@ Admin API.
 | `forward-auth` | Asks an external HTTP service whether each request may pass (like nginx `auth_request` or Traefik ForwardAuth) and copies chosen headers from its answer. | [`forwardAuth`](#forward-auth) | `forwardAuth` is ignored: **the external check does not run**. |
 | `rhai` | Small scripts as middleware: read or change headers, reject a request, answer it directly. | [`middleware[].type: "script"`](#rhai-script-middleware) | The entry is ignored: a script that was a gate **no longer runs**. |
 | `wasm` | WebAssembly plugins (any language that compiles to WASM) run in a Wasmtime sandbox as middleware; a plugin that fails lets the request through (fail-open). Adds the Wasmtime runtime to the binary. | [`middleware[].type: "wasm"`](#wasm-middleware) | The entry is ignored: a plugin that was a gate **no longer runs**. |
+| `ext-proc` | Sends the request headers to an external processor over gRPC (Envoy's `ext_proc` protocol), which can change them or answer the request itself, and fails closed when the processor does not answer. Adds the gRPC client (`tonic`, `prost`) to the binary. | [`middleware[].type: "ext_proc"`](#external-processing-ext_proc) | A fail-closed entry (the default) is **refused at validation**: the binary will not start with it. A `failOpen: true` entry is ignored with a warning: requests are not sent to the processor. |
 | `tcp` | A raw TCP proxy site, for protocols that are not HTTP (databases, message brokers, anything else on a TCP port). | [`type: "tcp"` site](#tcp-proxy) | The site is ignored. |
 | `upload` | An endpoint that accepts multipart file uploads and writes them to a directory. | [`upload`](#upload) | `upload` is ignored. |
 | `redis` | Keeps rate-limit counters and cached responses in Redis, so several Conduit instances share them. | `rateLimit.store: "redis://..."`, `cache.store: "redis://..."` | A rate limit falls back to the in-memory store, **per instance**: with three instances each limit effectively triples. A route with a `redis://` cache store is not cached. |
@@ -106,7 +109,7 @@ A bundle is a name for several features. `✓` means the bundle includes the fea
 | `static` | ✓ | | ✓ | ✓ |
 | `hotreload` | ✓ | | ✓ | ✓ |
 | `jwt`, `consumers`, `forward-auth`, `cache`, `disk-cache`, `acme` | ✓ | ✓ | | ✓ |
-| `rhai`, `wasm`, `tcp`, `upload`, `redis`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` | | | | ✓ |
+| `rhai`, `wasm`, `ext-proc`, `tcp`, `upload`, `redis`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` | | | | ✓ |
 
 - **`standard`**: the default set plus the authentication, cache and automatic-TLS stack most
   self-hosted reverse proxies and API gateways need. This is what the published "standard"
@@ -213,6 +216,7 @@ or build from source: `cargo build --release --features full`.
 
 - [Rhai script middleware](#rhai-script-middleware) / [Full guide](rhai.md) ↗
 - [WASM middleware](#wasm-middleware) / [Full guide](wasm.md) ↗
+- [External processing (ext_proc)](#external-processing-ext_proc)
 
 **Advanced**
 
@@ -3886,6 +3890,82 @@ host functions (read/set/remove response headers and status, replace the
 response body, read plugin config). See [wasm.md](wasm.md) for the complete,
 authoritative ABI reference (request- and response-phase) — this table only
 covers the request phase and isn't meant to be exhaustive.
+
+---
+
+## External processing (ext_proc)
+
+> **Requires** the `ext-proc` feature, part of `full`. A build without it **refuses to start** with a fail-closed
+> entry (the default); a `failOpen: true` entry is ignored with a warning.
+
+An `ext_proc` entry sends the headers of each request to an **external processor**, a gRPC service that speaks the
+`envoy.service.ext_proc.v3.ExternalProcessor/Process` protocol of Envoy, and applies the answer: set or remove request
+headers, or answer the request itself.
+
+```yaml
+# YAML
+middleware:
+  - type: ext_proc
+    config:
+      grpc: "grpc://127.0.0.1:50051"   # or grpcs://host:port (TLS)
+      timeoutMs: 200
+      failOpen: false
+```
+
+```json
+// JSON
+{ "middleware": [{ "type": "ext_proc", "config": { "grpc": "grpc://127.0.0.1:50051", "timeoutMs": 200, "failOpen": false } }] }
+```
+
+| `config` key | Default | Meaning |
+| --- | --- | --- |
+| `grpc` | required | The processor: `grpc://host:port` (plain text) or `grpcs://host:port` (TLS). The port is mandatory (gRPC has no default one). `grpc://` is plain text: keep it on loopback or a private network. |
+| `timeoutMs` | `200` | How long one exchange may take, 1 to 60000. A processor that is late counts as failed. |
+| `failOpen` | `false` | `true`: when the processor fails the request continues unchanged. `false`: it is refused with `statusOnError`. |
+| `statusOnError` | `503` | The status of that refusal, 400 to 599. |
+| `caFile` | bundled public roots | PEM file with the certificate authority that signed the processor's certificate (`grpcs://` only). Read when the first request connects, and again after a reload. |
+| `maxHeaderMutations` | `64` | The most header sets plus removals in one answer, up to 1024. |
+| `maxHeaderValueBytes` | `8192` | The longest header value the processor may set, up to 65536. |
+
+Unknown keys are an error: options that this version does not implement are not accepted and then ignored.
+
+**What is sent.** One `request_headers` message per request with the pseudo-headers `:method`, `:scheme`, `:authority`
+(the `Host`) and `:path` (path and query) followed by every request header, values as `raw_value`, and `end_of_stream`
+set when the request has no body. `:scheme` is `https` when the client connected over TLS to Conduit.
+
+**What is applied.**
+
+- *A header mutation* (`request_headers` answer): each `set_headers` entry by its `append_action`
+  (`APPEND_IF_EXISTS_OR_ADD`, `ADD_IF_ABSENT`, `OVERWRITE_IF_EXISTS_OR_ADD`, `OVERWRITE_IF_EXISTS`; the older `append`
+  boolean still works: `false` means overwrite), then each `remove_headers` name. A set with an empty value is skipped
+  unless `keep_empty_value` is set; for an overwrite that means the header is **removed** (Envoy's rule). Later middleware
+  entries see the changed headers.
+- *An immediate response*: the request ends there with the processor's status (200 to 599), headers and body; the
+  site's CORS and security headers are added.
+- *Headers the processor may not touch*: pseudo-headers, `host`, `content-length`, `transfer-encoding`, `connection`,
+  `keep-alive`, `proxy-connection`, `te`, `trailer` and `upgrade`. They frame or route the request, and changing them is
+  the ingredient of request smuggling. A mutation of one is ignored and logged, as Envoy does by default.
+- *An answer that is not well formed* (a bad header name, a value with a control character, an unknown action, more
+  mutations than `maxHeaderMutations`, a value over `maxHeaderValueBytes`, an immediate response status outside 200 to
+  599, an answer for a phase that was not asked about) is refused **as a whole**: half of a mutation is not applied. It
+  counts as a failure of the processor.
+
+**When the processor fails** (it cannot be reached, closes the stream without answering, answers with a gRPC error, is
+later than `timeoutMs`, or sends an answer that is not accepted) the entry's policy decides: refused with
+`statusOnError`, or, with `failOpen: true`, the request continues unchanged. Each failure is logged at `warn` level on the
+`conduit::ext_proc` target with the reason.
+
+**Where it runs.** `ext_proc` entries run in `middleware` order, after the built-in guards (IP filter, rate limit,
+authentication, `forwardAuth`, redirects, fault injection), so the processor only sees requests that already passed
+them. The processor is trusted: it can set any header that is not in the list above, including headers that the upstream
+treats as identity. Do not point `grpc` at a service you do not control.
+
+**Not implemented yet** (the rest of issue #27): request and response bodies, the response-headers phase, trailers,
+streamed bodies and a per-route override. A `phase` on the entry has no effect (validation warns).
+
+**Connections.** One HTTP/2 channel per processor address is shared by all requests; it connects on the first request and
+reconnects on its own. A configuration reload drops the channels, so a moved processor or an edited `caFile` takes effect
+without a restart.
 
 ---
 

@@ -9,6 +9,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- External processing filter, slice 1 of #27: a `middleware` entry `type: "ext_proc"` (feature `ext-proc`, part of `full`)
+  sends the request headers to a gRPC processor that speaks Envoy's `ext_proc` protocol and applies its answer: header
+  sets and removals (Envoy's append actions, a fixed list of headers it may not touch, caps on count and value size) or an
+  immediate response that ends the request. Fail-closed by default: a processor that is unreachable, later than `timeoutMs`
+  (200 ms) or answers with something not accepted refuses the request with `statusOnError` (503); `failOpen: true` lets it
+  continue. A build without the feature refuses to start with a fail-closed entry. Request/response bodies, the response
+  phase and a per-route override are not implemented yet. Tested against an in-process gRPC processor; not yet against an
+  Envoy-based one (#27).
 - `sticky.secure` and `sticky.maxAgeSecs`: the `Secure` and `Max-Age` of the cookie Conduit sets in `secret` mode. `secure`
   unset means "when the site has `tls`"; `maxAgeSecs` unset is a session cookie, `0` is rejected (#644).
 - `sticky.sameSite` (`lax`, the default, `strict` or `none`): the `SameSite` of that cookie. `none` always adds `Secure`

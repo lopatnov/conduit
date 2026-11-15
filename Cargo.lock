@@ -2766,6 +2766,7 @@ dependencies = [
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
  "lopatnov-conduit-cors",
+ "lopatnov-conduit-ext-proc",
  "lopatnov-conduit-faults",
  "lopatnov-conduit-hotreload",
  "lopatnov-conduit-ipfilter",
@@ -2797,6 +2798,9 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -3043,6 +3047,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "lopatnov-conduit-ext-proc"
+version = "2.3.1"
+dependencies = [
+ "bytes",
+ "http",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+ "tracing",
+]
+
+[[package]]
 name = "lopatnov-conduit-faults"
 version = "2.3.1"
 dependencies = [
@@ -3144,6 +3164,7 @@ dependencies = [
  "http",
  "lopatnov-conduit-config-core",
  "lopatnov-conduit-core",
+ "lopatnov-conduit-ext-proc",
  "lopatnov-conduit-plugin-wasm",
  "lopatnov-conduit-script-rhai",
  "pingora-core",
@@ -5947,8 +5968,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac2a5518c70fa84342385732db33fb3f44bc4cc748936eb5833d2df34d6445ef"
 dependencies = [
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "bytes",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -5957,13 +5980,16 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
+ "socket2",
  "sync_wrapper",
  "tokio",
+ "tokio-rustls",
  "tokio-stream",
  "tower",
  "tower-layer",
  "tower-service",
  "tracing",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -6595,6 +6621,15 @@ name = "webpki-root-certs"
 version = "1.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e49d0e65abc00c142e8f9428da991da9f1a250c39be97459901eb12b9b49f62a"
+dependencies = [
+ "rustls-pki-types",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7265c9301c16a8711c992c2d8da90ee77ef54b1ed51482d6dfeb00dc756b1297"
 dependencies = [
  "rustls-pki-types",
 ]

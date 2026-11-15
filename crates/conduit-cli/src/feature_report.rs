@@ -54,6 +54,7 @@ const BUNDLES: &[(&str, &[&str])] = &[
             "hotreload",
             "rhai",
             "wasm",
+            "ext-proc",
             "tcp",
             "upload",
             "redis",

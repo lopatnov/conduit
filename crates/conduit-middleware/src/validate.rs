@@ -24,6 +24,7 @@ pub fn validate_middleware(
                 }
                 check_runnable(entry, &entry_prefix, errors);
             }
+            "ext_proc" => validate_ext_proc(entry, &entry_prefix, errors),
             "ipFilter" | "rateLimit" | "auth" | "headers" => {
                 // Built-in types — currently executed via top-level config fields;
                 // listed here so the validator accepts them without error.
@@ -46,6 +47,13 @@ pub fn validate_middleware(
                     format!("{entry_prefix}.phase"),
                     format!("invalid phase \"{phase}\" — must be \"request\" or \"response\""),
                 ));
+            } else if entry.r#type == "ext_proc" {
+                errors.push(ValidationError::warning(
+                    format!("{entry_prefix}.phase"),
+                    format!(
+                        "phase \"{phase}\" has no effect on an ext_proc entry: it runs in the request phase (the response phase of the processor protocol is not implemented yet)"
+                    ),
+                ));
             } else if entry.r#type == "wasm" {
                 // A plugin is not placed in one phase: `on_request` runs in the request phase and, if the module
                 // exports it, `on_response` in the response phase, whatever `phase` says (issue #660).
@@ -56,6 +64,48 @@ pub fn validate_middleware(
                     ),
                 ));
             }
+        }
+    }
+}
+
+/// An `ext_proc` entry: its `config` must parse and be in range, and a build without the `ext-proc` feature must not be
+/// asked to run a fail-closed one (it would skip the processor and let every request through unchecked).
+fn validate_ext_proc(
+    entry: &MiddlewareEntry,
+    entry_prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let config = match conduit_ext_proc::ExtProcConfig::from_value(entry.config.as_ref()) {
+        Ok(config) => config,
+        Err(message) => {
+            errors.push(ValidationError::new(
+                format!("{entry_prefix}.config"),
+                message,
+            ));
+            return;
+        }
+    };
+    for (field, message) in config.problems() {
+        errors.push(ValidationError::new(
+            format!("{entry_prefix}.config.{field}"),
+            message,
+        ));
+    }
+    if !crate::warnings::EXT_PROC_COMPILED && !config.fail_open() {
+        errors.push(ValidationError::new(
+            format!("{entry_prefix}.type"),
+            conduit_ext_proc::warnings::feature_error_text(),
+        ));
+    }
+    // Every request would be refused (fail-closed) or pass unchecked (failOpen) until a CA file that cannot be read is fixed.
+    // The file is read when the first request connects, but a reload that would break the processor is better refused.
+    #[cfg(feature = "ext-proc")]
+    if let Some(file) = config.ca_file.as_deref() {
+        if let Err(e) = std::fs::read(file) {
+            errors.push(ValidationError::new(
+                format!("{entry_prefix}.config.caFile"),
+                format!("cannot read caFile {file:?}: {e}"),
+            ));
         }
     }
 }
@@ -319,5 +369,110 @@ mod phase_tests {
         let problems = phase_problems("wasm", "resposne");
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(matches!(problems[0].severity, Severity::Error));
+    }
+}
+
+#[cfg(test)]
+mod ext_proc_tests {
+    use super::*;
+    use conduit_config_core::validation::Severity;
+
+    fn check(entry: serde_json::Value) -> Vec<ValidationError> {
+        let entry: MiddlewareEntry = serde_json::from_value(entry).unwrap();
+        let mut errors = Vec::new();
+        validate_middleware(&[entry], "sites[0]", &mut errors);
+        errors
+    }
+
+    fn hard(errors: &[ValidationError]) -> Vec<&ValidationError> {
+        errors
+            .iter()
+            .filter(|e| matches!(e.severity, Severity::Error))
+            .collect()
+    }
+
+    #[test]
+    fn a_fail_open_entry_needs_no_path_and_is_valid_in_every_build() {
+        let errors = check(serde_json::json!({
+            "type": "ext_proc",
+            "config": { "grpc": "grpc://127.0.0.1:50051", "failOpen": true }
+        }));
+        assert!(hard(&errors).is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_missing_or_unparsable_config_is_an_error_on_config() {
+        for entry in [
+            serde_json::json!({ "type": "ext_proc" }),
+            serde_json::json!({ "type": "ext_proc", "config": { "grpc": "grpc://h:1", "typo": 1 } }),
+            serde_json::json!({ "type": "ext_proc", "config": { "timeoutMs": 5 } }),
+        ] {
+            let errors = check(entry);
+            let hard = hard(&errors);
+            assert_eq!(hard.len(), 1, "{errors:?}");
+            assert_eq!(hard[0].path, "sites[0].middleware[0].config");
+        }
+    }
+
+    #[test]
+    fn out_of_range_values_are_errors_on_their_field() {
+        let errors = check(serde_json::json!({
+            "type": "ext_proc",
+            "config": { "grpc": "http://no-scheme-we-know", "timeoutMs": 0, "statusOnError": 200, "failOpen": true }
+        }));
+        let paths: Vec<&str> = hard(&errors).iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "sites[0].middleware[0].config.grpc",
+                "sites[0].middleware[0].config.timeoutMs",
+                "sites[0].middleware[0].config.statusOnError",
+            ]
+        );
+    }
+
+    /// A build without the feature cannot ask the processor, so a fail-closed entry (the default) must not start: it
+    /// would let every request through unchecked. With the feature the same entry is valid.
+    #[test]
+    fn a_fail_closed_entry_is_refused_only_in_a_build_without_the_feature() {
+        let errors = check(serde_json::json!({
+            "type": "ext_proc",
+            "config": { "grpc": "grpc://127.0.0.1:50051" }
+        }));
+        let hard = hard(&errors);
+        if crate::warnings::EXT_PROC_COMPILED {
+            assert!(hard.is_empty(), "{errors:?}");
+        } else {
+            assert_eq!(hard.len(), 1, "{errors:?}");
+            assert_eq!(hard[0].path, "sites[0].middleware[0].type");
+            assert!(hard[0].message.contains("--features ext-proc"));
+        }
+    }
+
+    #[test]
+    fn a_phase_on_an_ext_proc_entry_is_a_warning_that_it_has_no_effect() {
+        let errors = check(serde_json::json!({
+            "type": "ext_proc", "phase": "response",
+            "config": { "grpc": "grpc://127.0.0.1:50051", "failOpen": true }
+        }));
+        let phase: Vec<_> = errors
+            .iter()
+            .filter(|e| e.path.ends_with(".phase"))
+            .collect();
+        assert_eq!(phase.len(), 1, "{errors:?}");
+        assert!(matches!(phase[0].severity, Severity::Warning));
+        assert!(phase[0].message.contains("no effect"));
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn an_unreadable_ca_file_is_an_error_on_ca_file() {
+        let errors = check(serde_json::json!({
+            "type": "ext_proc",
+            "config": { "grpc": "grpcs://127.0.0.1:50051", "caFile": "/nonexistent/ca.pem" }
+        }));
+        let hard = hard(&errors);
+        assert_eq!(hard.len(), 1, "{errors:?}");
+        assert_eq!(hard[0].path, "sites[0].middleware[0].config.caFile");
     }
 }

@@ -541,6 +541,16 @@ the root `Cargo.toml` via `<field>.workspace = true`.
     is a direct root-crate dependency anymore — `conduit-middleware` is the
     only crate that calls into either.
 
+- **`conduit-ext-proc`** ([#27](https://github.com/lopatnov/conduit/issues/27), slice 1)
+  — the external processing filter: Envoy's `ext_proc` protocol (a bidirectional gRPC stream per request) as
+  `type: "ext_proc"` in `sites[].middleware[]`. `ExtProcConfig` and the feature-off texts (`warnings.rs`) are always
+  compiled (serde only), so a config that names the filter parses and validates in every build; the gRPC client
+  (`client.rs`, tonic), the hand-written prost messages (`proto.rs`, pinned by wire-byte tests, there is no `protoc` in
+  the build) and the header-mutation rules (`mutation.rs`) are behind the crate's own `ext-proc` feature.
+  `conduit-middleware`'s `ext-proc` feature switches it on and `MiddlewareGuard` dispatches the entry; the root
+  `ext-proc` feature (in `full`) forwards into it, with the usual parity assert in `src/config/validate/mod.rs`. Slice 1
+  covers the request-headers phase only; bodies, the response phase and a per-route override stay on #27.
+
 - **`conduit-k8s`** (Phase 4.5, [#249](https://github.com/lopatnov/conduit/issues/249))
   — the `KubernetesProvider`/`ConduitSite` CRD list+watch mechanism moved from
   `src/config/kubernetes.rs`. **No `[features]` table at all** — unlike most

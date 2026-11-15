@@ -1,0 +1,36 @@
+# ── External processing (Envoy ext_proc over gRPC) ────────────────────────────
+#
+# Send the request headers of every request to an external processor — a gRPC
+# service that speaks Envoy's ext_proc protocol — and apply what it answers:
+#   • set or remove request headers before the request goes upstream, or
+#   • answer the request itself (an "immediate response": 403, a redirect, ...).
+#
+# It runs AFTER the built-in guards (IP filter, rate limit, auth, forwardAuth)
+# and before the request reaches the upstream. Only the request headers are
+# sent for now: no body, no response phase.
+#
+# Failure is closed by default: a processor that is down, late (timeoutMs) or
+# answers with something Conduit does not accept refuses the request with
+# statusOnError (503). Set `failOpen: true` to let the request through instead.
+#
+# Needs a build with `--features ext-proc` (part of `full`). A fail-closed entry
+# is refused by `conduit validate` in a build without it; a failOpen one warns.
+#
+# Run: conduit -c examples/ext-proc.yaml
+
+port: 8080
+
+proxy: "http://localhost:4000"
+
+middleware:
+  - type: ext_proc
+    config:
+      # `grpc://` is plain text: keep it on loopback or a private network.
+      # Use `grpcs://` (TLS) for anything else, with `caFile` for a private CA.
+      grpc: "grpc://127.0.0.1:50051"
+      timeoutMs: 200          # how long one exchange may take (1 - 60000)
+      failOpen: false         # true: continue unchanged when the processor fails
+      statusOnError: 503      # the refusal when it fails and failOpen is false
+      # caFile: /etc/conduit/processor-ca.pem   # grpcs:// only
+      maxHeaderMutations: 64      # the most sets + removals in one answer
+      maxHeaderValueBytes: 8192   # the longest header value it may set

@@ -27,7 +27,8 @@ impl ResponseFilter for MiddlewareResponseFilter<'_> {
     /// Runs a Rhai script or a WASM plugin, which can block (a module read from disk on first load, a slow script), so
     /// the chain holding this filter runs through `block_in_place`. The one thing `apply` provably skips is a
     /// request-phase script; anything else — a response-phase script, a WASM plugin, a type this filter does not know —
-    /// counts as blocking, so an entry kind added to `apply` later without touching this stays on the safe side.
+    /// counts as blocking, so an entry kind added to `apply` later without touching this stays on the safe side. (An
+    /// `ext_proc` entry is skipped too: it has no response phase yet.)
     fn may_block(&self) -> bool {
         self.middleware
             .iter()
@@ -111,10 +112,12 @@ impl ResponseFilter for MiddlewareResponseFilter<'_> {
     }
 }
 
-/// A `script` entry whose phase is not `"response"` (the default is `"request"`) is skipped by
-/// [`MiddlewareResponseFilter::apply`], so it never runs — and never blocks — in the response phase.
+/// A `script` entry whose phase is not `"response"` (the default is `"request"`) and every `ext_proc` entry (its
+/// response phase is not implemented) are skipped by [`MiddlewareResponseFilter::apply`], so they never run — and never
+/// block — in the response phase.
 fn skipped_in_response_phase(entry: &MiddlewareEntry) -> bool {
-    entry.r#type == "script" && entry.phase.as_deref().unwrap_or("request") != "response"
+    entry.r#type == "ext_proc"
+        || (entry.r#type == "script" && entry.phase.as_deref().unwrap_or("request") != "response")
 }
 
 /// Apply header mutations to a Pingora response header.
@@ -268,6 +271,13 @@ mod tests {
         ]));
 
         assert!(may_block_for(vec![entry("script", Some("response"))]));
+        assert!(
+            !may_block_for(vec![
+                entry("ext_proc", None),
+                entry("ext_proc", Some("response"))
+            ]),
+            "an ext_proc entry has no response phase yet"
+        );
         assert!(
             may_block_for(vec![entry("wasm", None)]),
             "a WASM plugin runs whatever the phase says"
