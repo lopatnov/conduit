@@ -210,9 +210,9 @@ in declaration order wins".
   `conduit-route`, `conduit-param-<name>`, `conduit-path-rest`, `conduit-client-ip`, `conduit-request-id`. Works with
   any `wasi:http` guest and any framework, no extra WIT. The removal is mandatory: without it a client could forge a
   parameter or a client IP. `conduit-param-<name>` and `conduit-path-rest` carry the capture **percent-encoded**, as
-  it appeared in the request path: a header value must be visible ASCII (RFC 9110 §5.5), and a decoded capture can
-  hold any byte, CR and LF included. The guest decodes it; the Rhai `req.params` map and the phase 2
-  `request-context` interface hand over the decoded string.
+  it appeared in the request path: a decoded capture can hold any byte, and RFC 9110 §5.5 forbids CR, LF and NUL in
+  a field value (non-ASCII bytes are only `obs-text`, which senders should avoid). The guest decodes it; the Rhai
+  `req.params` map and the phase 2 `request-context` interface hand over the decoded string.
 - *An import interface* `conduit:handler/request-context` (`route()`, `params()`, `client-ip()`, …). Typed and
   unforgeable, but every language needs bindings for it.
 
