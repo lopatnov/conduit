@@ -990,6 +990,44 @@ jobs:
       - name: cargo hack check --workspace --each-feature --no-dev-deps
         run: cargo hack check --workspace --each-feature --no-dev-deps
 
+  # ── Global allocators (issue #486) ──────────────────────────────────────────
+  # `cargo hack` above only compiles each feature. What nothing else shows is that the allocator is really the one in
+  # use: each allocator prints its statistics at exit when asked through its own environment variable (mimalloc:
+  # MIMALLOC_SHOW_STATS, jemalloc with tikv's symbol prefix: _RJEM_MALLOC_CONF), and the build with neither (the system
+  # allocator) must print none. Each binary then proxies requests, so a broken allocator hook cannot hide behind
+  # `--version`. mimalloc is the default build, jemalloc is `--features jemalloc`.
+  allocators:
+    name: Opt-in allocators (mimalloc, jemalloc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          key: allocators
+        continue-on-error: true
+
+      - name: Build the system-allocator, default (mimalloc) and jemalloc binaries
+        run: |
+          set -eu
+          cargo build --locked --no-default-features --features proxy,compression,static,hotreload
+          cp target/debug/conduit /tmp/conduit-system
+          cargo build --locked
+          cp target/debug/conduit /tmp/conduit-mimalloc
+          cargo build --locked --features jemalloc
+          cp target/debug/conduit /tmp/conduit-jemalloc
+
+      - name: Each binary uses the allocator it was built with
+        run: scripts/allocator-check.sh /tmp/conduit-system /tmp/conduit-mimalloc /tmp/conduit-jemalloc
+
   # ── Feature-OFF tests (issue #144) ──────────────────────────────────────────
   # `cargo hack --no-dev-deps` above only *compiles* each feature state — it
   # never runs a test — so what a build WITHOUT `proxy` actually does (the

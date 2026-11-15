@@ -252,7 +252,7 @@ mod tests {
     /// needs (a marker, a metrics gauge, a start-up flag) are the only ones `BUNDLES` leaves out.
     #[test]
     fn bundles_agree_with_the_root_cargo_toml() {
-        const NOT_REPORTED: &[&str] = &["tokio-metrics", "kubernetes"];
+        const NOT_REPORTED: &[&str] = &["tokio-metrics", "kubernetes", "mimalloc"];
         let table = root_features();
         for (name, members) in BUNDLES {
             let mut cargo: Vec<String> = expanded(&table, name)
