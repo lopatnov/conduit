@@ -1135,3 +1135,33 @@ harness = false
 lto           = true
 codegen-units = 1
 strip         = true
+
+# Size over speed for the crates that run once per start, per CLI call or per Admin API request, never per proxied
+# request (#516): the config schema and its parsing, the CLI, the Admin API, ACME, Kubernetes, the file watcher and the
+# parsers and generators behind the CLI. The request path (runtime, proxy-http, upstream, core, the guards, Pingora)
+# keeps `opt-level = 3`. `lopatnov-conduit-server` is NOT in this list although it looks cold: it instantiates Pingora's
+# generic `HttpProxy<ConduitProxy>` code, which would be compiled for size too (measured: +4.6 % instructions per request).
+[profile.release.package.lopatnov-conduit-config]
+opt-level = "s"
+[profile.release.package.lopatnov-conduit-config-core]
+opt-level = "s"
+[profile.release.package.lopatnov-conduit-cli]
+opt-level = "s"
+[profile.release.package.lopatnov-conduit-admin]
+opt-level = "s"
+[profile.release.package.lopatnov-conduit-acme]
+opt-level = "s"
+[profile.release.package.lopatnov-conduit-k8s]
+opt-level = "s"
+[profile.release.package.lopatnov-conduit-hotreload]
+opt-level = "s"
+[profile.release.package.clap_builder]
+opt-level = "s"
+[profile.release.package.clap_complete]
+opt-level = "s"
+[profile.release.package.clap_mangen]
+opt-level = "s"
+[profile.release.package.serde_yaml]
+opt-level = "s"
+[profile.release.package.dialoguer]
+opt-level = "s"

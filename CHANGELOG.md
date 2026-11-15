@@ -74,6 +74,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Smaller binaries, same speed (#516): the crates that never run per proxied request (config schema and parsing, CLI, Admin
+  API, ACME, Kubernetes, the file watcher, and `clap`, `serde_yaml` and `dialoguer` behind the CLI) are compiled with
+  `opt-level = "s"` through `[profile.release.package.*]`. The release binary with `--no-default-features` goes from
+  13.56 MiB to 12.96 MiB (−4.5 %, two local builds); the default build is 18.13 MiB here against the 19.01 MiB of the
+  Footprint report on `main` (the Footprint report of the PR is the check). The
+  instructions per request measured with `scripts/bench/cachegrind.sh` stay at 152 478 against 152 537. `conduit-server` is
+  left out on purpose: it instantiates Pingora's generic proxy code, and compiling that for size cost +4.6 %.
 - A static site answers `POST`, `PUT`, `DELETE`, `PATCH` and WebDAV's methods for a file that exists with 405 and
   `Allow: GET, HEAD, OPTIONS` (RFC 9110 section 15.5.6); it used to answer them with the file as if they were `GET`. A path
   with no file keeps its answer (404 or the fallback), and `OPTIONS` is unchanged.
