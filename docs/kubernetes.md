@@ -77,7 +77,8 @@ roleRef:
 ```
 
 Conduit reads the objects and writes only their `status` (the `patch` rule on `conduitsites/status`): `READY` and a
-message in `kubectl get conduitsites`, `true` and `Active` for a site that is in the config. Without that rule
+message in `kubectl get conduitsites`, `true` and `Valid` for a site whose spec Conduit accepted. The server can still refuse the whole update (two sites
+with one `host` and `port`, a change that needs a restart); that is in its log, not in the `status`. Without that rule
 Conduit works as before and says once in the log that it cannot write the status.
 
 **3. A Deployment and a Service.** A site listens on the `port` of its spec; the Service forwards to the same port.
@@ -277,9 +278,11 @@ whole config from them. The result is checked like a config file and swapped in 
 | Swap                          | none                                                                         | the new config is in use, without a restart                                                             |
 
 An invalid `ConduitSite` does not hold back the others. If it worked before, the **last good version of that site stays**
-in the config (`keeping its previous version` in the log), so a bad edit does not take a working site down. If it never
-worked, for example a new object, it is left out (`left out of the config`). The same holds at start: the pod starts with
-the sites that are valid. What no single site can show is checked on the whole config, and there the whole previous
+in the config (`keeping the last version that was valid` in the log), so a bad edit does not take a working site down. If
+it never worked, for example a new object, it is not active (`not active` in the log). Its `host` is not passed on to
+another site: where other sites listen on the same port, requests for that host get a `503`, so that they do not reach
+the upstream of someone else. (A site without a `host`, or alone on its port, has no such answer: on its own port the
+connection is refused.) The same holds at start: the pod starts with the sites that are valid. What no single site can show is checked on the whole config, and there the whole previous
 config stays: two sites with the same `host` and `port` are refused as a whole, and so is a change in the table's third
 row. Warnings, such as a certificate close to expiry, are logged and do not stop an update. At start, a failure of the
 whole config (or of the API call) stops the process, because there is no previous config to keep.
@@ -321,11 +324,11 @@ has a token that a writer does not know. In practice:
 | You see                                                              | Why                                                                                                   |
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | The pod exits at start with `kubernetes provider error: ...`         | The API call failed: no RBAC for `list`/`watch` `conduitsites`, the CRD is not installed, or the wrong namespace |
-| `ConduitSite <name> is invalid` in the log                            | That site was left out, or kept at its previous version; the message names the cause, for example `host file paths cannot be set from a ConduitSite` (the message lists them: remove them, or use a file config) |
+| `ConduitSite <name> is invalid` in the log                            | That site is not active (its host answers `503`), or is kept at the last version that was valid; the message names the cause, for example `host file paths cannot be set from a ConduitSite` (the message lists them: remove them, or use a file config) |
 | `kubectl apply` works, the site never changes                        | Look for `ConduitSite <name> is invalid` and `live config update rejected` in `kubectl logs`: this site is invalid, or two sites collide |
 | A field of the spec has no effect                                    | `unknown key` warning in the log: the field name is misspelled (field names are camelCase, as in a config file) |
 | `cold field changed — restart required`                              | See [what does not apply live](#what-does-not-apply-live)                                              |
-| `READY` is `false`, or empty                                         | `false`: the spec is invalid, and `kubectl get conduitsites -o jsonpath='{.status.message}'` says why and whether the previous version still serves. Empty: Conduit may not write the status (see the RBAC above); the log says so once |
+| `READY` is `false`, or empty                                         | `false`: the spec is invalid, and `kubectl get conduitsites -o jsonpath='{.status.message}'` says why and whether the last valid version still serves. Empty: Conduit may not write the status (see the RBAC above); the log says so once |
 | `ConduitSite watch error` in the log                                 | The watch on the API server failed; Conduit keeps the config it has                                   |
 
 The effective config is not printed. To see what Conduit built, look at the log lines above and at the objects

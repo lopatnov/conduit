@@ -231,13 +231,21 @@ impl<B: CrdConfigBuilder> SiteSet<B> {
         crds: impl Iterator<Item = &'a ConduitSite>,
         admin_bind: &str,
     ) -> (B::Config, Vec<SiteReport>) {
-        let mut sites: Vec<B::Site> = Vec::new();
+        // One slot per object that is in the config; a `None` is an object that has no version at all yet and
+        // may get a placeholder once every other site is known.
+        let mut slots: Vec<Option<B::Site>> = Vec::new();
         let mut reports: Vec<SiteReport> = Vec::new();
+        let mut pending: Vec<(usize, &ConduitSite, String)> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for crd in crds {
             let name = crd.metadata.name.as_deref().unwrap_or("<unnamed>");
             let namespace = crd.metadata.namespace.as_deref().unwrap_or("");
-            let key = format!("{namespace}/{name}");
+            // The uid is part of the key: an object deleted and created again under the same name is another object
+            // and must not inherit the version of the first.
+            let key = format!(
+                "{namespace}/{name}/{}",
+                crd.metadata.uid.as_deref().unwrap_or("")
+            );
             let report = |ready: bool, message: String| SiteReport {
                 namespace: namespace.to_owned(),
                 name: name.to_owned(),
@@ -247,29 +255,31 @@ impl<B: CrdConfigBuilder> SiteSet<B> {
             match B::site_from_spec(&crd.spec) {
                 Ok(site) => {
                     self.last_good.insert(key.clone(), site.clone());
-                    sites.push(site);
-                    reports.push(report(true, "Active".to_owned()));
+                    slots.push(Some(site));
+                    reports.push(report(true, "Valid".to_owned()));
                 }
                 Err(e) => match self.last_good.get(&key) {
                     Some(previous) => {
                         tracing::error!(
-                            site = %key,
+                            site = %format!("{namespace}/{name}"),
                             error = %e,
-                            "ConduitSite {name} is invalid — keeping its previous version"
+                            "ConduitSite is invalid — keeping the last version that was valid"
                         );
-                        sites.push(previous.clone());
+                        slots.push(Some(previous.clone()));
                         reports.push(report(
                             false,
-                            format!("Invalid, still serving the previous version: {e}"),
+                            format!("Invalid, still using the last version that was valid: {e}"),
                         ));
                     }
                     None => {
                         tracing::error!(
-                            site = %key,
+                            site = %format!("{namespace}/{name}"),
                             error = %e,
-                            "ConduitSite {name} is invalid — left out of the config"
+                            "ConduitSite is invalid — not active"
                         );
-                        reports.push(report(false, format!("Invalid, not active: {e}")));
+                        pending.push((slots.len(), crd, format!("{e}")));
+                        slots.push(None);
+                        reports.push(report(false, String::new()));
                     }
                 },
             }
@@ -277,6 +287,23 @@ impl<B: CrdConfigBuilder> SiteSet<B> {
         }
         // An object that is gone from the list takes its last good version with it.
         self.last_good.retain(|key, _| seen.contains(key));
+
+        // An object with no version at all is not served. Its host must not fall through to another site of the
+        // same port (a request for it would reach someone else's upstream, with its credentials), so where that
+        // could happen it is answered by a placeholder that serves nothing.
+        let others: Vec<B::Site> = slots.iter().flatten().cloned().collect();
+        for (slot, crd, error) in pending {
+            let placeholder = B::placeholder(&crd.spec, &others);
+            let answered = placeholder.is_some();
+            slots[slot] = placeholder;
+            let message = if answered {
+                format!("Invalid, not active; its host is answered with 503: {error}")
+            } else {
+                format!("Invalid, not active: {error}")
+            };
+            reports[slot].message = message.chars().take(500).collect();
+        }
+        let sites: Vec<B::Site> = slots.into_iter().flatten().collect();
         (B::build_config(sites, admin_bind), reports)
     }
 }
@@ -288,9 +315,10 @@ pub struct SiteReport {
     pub namespace: String,
     /// The name of the object.
     pub name: String,
-    /// `true` when the object's own spec is the one in the config.
+    /// `true` when the object's own spec is the one handed to the server. The server may still refuse the whole
+    /// update (two sites with one host and port, a change to a restart-only field); only its log says so.
     pub ready: bool,
-    /// `Active`, or why the spec is not in the config. It holds no time, so that an unchanged state is an unchanged status.
+    /// `Valid`, or why the spec is not in the config. It holds no time, so that an unchanged state is an unchanged status.
     pub message: String,
 }
 
@@ -328,11 +356,12 @@ impl StatusWriter {
                 .patch_status(&report.name, &PatchParams::default(), &Patch::Merge(&patch))
                 .await
             {
-                if matches!(&e, kube::Error::Api(r) if r.code == 403 || r.code == 404) {
+                // Only a refusal is for good. A 404 is an object deleted since the list: skip it, the next
+                // round of the watch does not hold it any more.
+                if matches!(&e, kube::Error::Api(r) if r.code == 403) {
                     tracing::warn!(
                         "cannot write the status of ConduitSite objects: grant `patch` on `conduitsites/status` \
-                         to the service account and apply the current contrib/k8s/conduitsite-crd.yaml, to see the \
-                         state of each site in `kubectl get conduitsites`"
+                         to the service account, to see the state of each site in `kubectl get conduitsites`"
                     );
                     self.denied = true;
                     return;
@@ -540,7 +569,7 @@ mod tests {
         assert_eq!(ports(&built), [Some(8080), Some(8081)]);
         let state: Vec<(&str, bool)> = reports.iter().map(|r| (r.name.as_str(), r.ready)).collect();
         assert_eq!(state, [("a", true), ("bad", false), ("b", true)]);
-        assert_eq!(reports[0].message, "Active");
+        assert_eq!(reports[0].message, "Valid");
         assert!(reports[1].message.contains("not active") && reports[1].message.contains("port 0"));
     }
 
@@ -563,7 +592,7 @@ mod tests {
             [Some(8080), Some(8082)],
             "a keeps 8080, b takes its new value"
         );
-        assert!(!reports[0].ready && reports[0].message.contains("previous version"));
+        assert!(!reports[0].ready && reports[0].message.contains("last version"));
         assert!(reports[1].ready);
     }
 
@@ -578,5 +607,17 @@ mod tests {
             set.build(bad_again.iter(), "x").0.is_empty(),
             "a new object named a must not inherit the deleted one's version"
         );
+    }
+
+    #[test]
+    fn an_object_created_again_under_the_same_name_does_not_inherit_the_old_version() {
+        let mut set = SiteSet::<PickySchema>::new();
+        let mut first = make_crd("a", make_spec(8080));
+        first.metadata.uid = Some("uid-1".to_owned());
+        set.build([first].iter(), "x");
+        // deleted and created again before the next list; the new spec does not convert
+        let mut second = make_crd("a", make_spec(0));
+        second.metadata.uid = Some("uid-2".to_owned());
+        assert!(set.build([second].iter(), "x").0.is_empty());
     }
 }

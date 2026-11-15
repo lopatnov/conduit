@@ -69,4 +69,10 @@ pub trait CrdConfigBuilder: Send + Sync + 'static {
     /// Combine every site value plus the Admin API bind address into the
     /// full config value sent on the channel.
     fn build_config(sites: Vec<Self::Site>, admin_bind: &str) -> Self::Config;
+
+    /// A site that stands in for an object that has no valid version at all (see [`SiteSet`]), given the sites that
+    /// are in the config. It must serve nothing, only refuse; `None` (the default) leaves the object out.
+    fn placeholder(_spec: &ConduitSiteSpec, _others: &[Self::Site]) -> Option<Self::Site> {
+        None
+    }
 }

@@ -89,6 +89,40 @@ impl CrdConfigBuilder for ConduitSchema {
         Ok(site)
     }
 
+    fn placeholder(spec: &ConduitSiteSpec, others: &[SiteConfig]) -> Option<SiteConfig> {
+        // Without a host the site is a catch-all and the others cannot be told from it by name.
+        let host = spec
+            .host
+            .as_deref()
+            .filter(|h| !h.is_empty() && *h != "*")?;
+        let port = spec
+            .port
+            .unwrap_or(if spec.tls.is_some() { 443 } else { 80 });
+        // On a port of its own nothing falls through to another site: the listener is not bound and the
+        // connection is refused. (A new port would also be a restart-only change that refuses the whole update.)
+        let port_in_use = others
+            .iter()
+            .any(|o| o.port.unwrap_or(if o.tls.is_some() { 443 } else { 80 }) == port);
+        if !port_in_use {
+            return None;
+        }
+        let site: SiteConfig = serde_json::from_value(serde_json::json!({
+            "host": host,
+            "port": port,
+            "fallback": { "status": 503, "body": "ConduitSite is not valid" },
+        }))
+        .ok()?;
+        // Whatever stops it standing alone leaves the object out as before.
+        let alone = AppConfig {
+            sites: vec![site.clone()],
+            ..Default::default()
+        };
+        let (_, hard) = crate::config::validate::partition_by_severity(
+            crate::config::validate::validate(&alone),
+        );
+        hard.is_empty().then_some(site)
+    }
+
     fn build_config(sites: Vec<SiteConfig>, admin_bind: &str) -> AppConfig {
         AppConfig {
             global: Some(GlobalConfig {
@@ -744,6 +778,41 @@ mod tests {
             conduit_k8s::SiteSet::<ConduitSchema>::new().build(all.iter(), "127.0.0.1:2019");
         assert_eq!(cfg.sites.len(), 1);
         assert_eq!(cfg.sites[0].port, Some(8080));
+    }
+
+    /// A site that is left out must not hand its host to another site of the same port: `find_site_idx` falls back
+    /// to the first site for an unknown host, and that is somebody else's upstream.
+    #[test]
+    fn a_dropped_site_does_not_hand_its_host_to_another_site() {
+        let all = crds_in(
+            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: other}\nspec: {host: other.example.com, port: 8080, proxy: 'http://secret-upstream:1'}\n---\n\
+             apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: bad}\nspec: {host: bad.example.com, port: 8080, proxy: 'not-a-url'}\n---\n\
+             apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: alone}\nspec: {host: alone.example.com, port: 9090, proxy: 'not-a-url'}\n",
+        );
+        let (cfg, reports) =
+            conduit_k8s::SiteSet::<ConduitSchema>::new().build(all.iter(), "127.0.0.1:2019");
+        // `bad` shares port 8080 with `other`: a placeholder answers for it. `alone` has a port of its own: left out.
+        assert_eq!(cfg.sites.len(), 2);
+        // The first pass of `find_site_idx` is an exact host match on the port, so this site is the one chosen.
+        let site = cfg
+            .sites
+            .iter()
+            .find(|s| s.host.as_deref() == Some("bad.example.com") && s.port == Some(8080))
+            .expect("a site answers for the host");
+        assert!(site.proxy.is_none(), "the placeholder proxies nothing");
+        assert_eq!(site.fallback.as_ref().and_then(|f| f.status), Some(503));
+        assert!(reports[1].message.contains("503"), "{}", reports[1].message);
+        assert!(
+            !reports[2].message.contains("503"),
+            "{}",
+            reports[2].message
+        );
+        // a conflict-free config: the placeholder passes validation next to the others
+        assert!(
+            crate::config::validate::partition_by_severity(crate::config::validate::validate(&cfg))
+                .1
+                .is_empty()
+        );
     }
 
     // ── build_app_config ──────────────────────────────────────────────────────

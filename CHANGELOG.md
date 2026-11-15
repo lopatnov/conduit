@@ -117,8 +117,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `disk:<path>` (reachable before, a directory of the host) is now refused too (behaviour change).
 - **One invalid `ConduitSite` no longer holds back the others** (#573; behaviour change). A spec that did not convert (a
   host path, a wrong type) or that has a hard validation error of its own rejected the whole update, and at start it
-  stopped the pod. The site is now left out and logged, or, when it worked before, keeps its last good version, and the
-  other sites apply. A conflict between sites (one `host` and `port` twice) still rejects the update as a whole. Conduit
+  stopped the pod. The site is now logged and not active, or, when it worked before, keeps its last good version, and the
+  other sites apply. A site that has no valid version at all answers `503` for its `host` where other sites share its
+  port, so that its requests do not fall through to the upstream of another site. A conflict between sites (one `host` and `port` twice) still rejects the update as a whole. Conduit
   now writes `status.ready` and `status.message` of each object (the `READY` column of `kubectl get conduitsites`); that
   needs `patch` on `conduitsites/status`, and without it Conduit says so once and carries on.
 - **The Admin API of a pod that reads `ConduitSite` objects now always has a token** (#573). It was on loopback with
