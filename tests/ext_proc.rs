@@ -182,6 +182,43 @@ fn an_immediate_response_of_the_processor_ends_the_request() {
     assert_eq!(resp.text().unwrap(), "denied by policy\n");
 }
 
+/// 204, 205 and 304 have no body and no `Content-Length` (RFC 9110 sections 8.6, 15.3.5, 15.3.6, 15.4.5), whatever the
+/// processor put in the answer.
+#[cfg(feature = "proxy")]
+#[test]
+fn a_bodyless_status_is_sent_without_a_body_or_a_content_length() {
+    for status in [204, 304] {
+        let (processor, _) = support::serve_in_background(Behaviour::Answer(ProcessingResponse {
+            response: Some(processing_response::Response::ImmediateResponse(
+                ImmediateResponse {
+                    status: Some(HttpStatus { code: status }),
+                    headers: Some(HeaderMutation {
+                        set_headers: vec![option(
+                            "x-tag",
+                            "kept",
+                            append_action::OVERWRITE_IF_EXISTS_OR_ADD,
+                        )],
+                        remove_headers: Vec::new(),
+                    }),
+                    body: b"must not be sent".to_vec(),
+                    grpc_status: None,
+                    details: String::new(),
+                },
+            )),
+        }));
+        let server = start(serde_json::json!({ "grpc": processor }));
+        let resp = common::get(server.url("/")).unwrap();
+        assert_eq!(i32::from(resp.status().as_u16()), status);
+        assert_eq!(resp.headers().get("x-tag").unwrap(), "kept");
+        assert!(
+            resp.headers().get("content-length").is_none(),
+            "{status}: {:?}",
+            resp.headers()
+        );
+        assert_eq!(resp.text().unwrap(), "", "{status}");
+    }
+}
+
 /// Fail-closed is the default: a processor that is not there refuses the request, with `statusOnError` when set.
 #[cfg(feature = "proxy")]
 #[test]

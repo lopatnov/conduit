@@ -3941,7 +3941,8 @@ set when the request has no body. `:scheme` is `https` when the client connected
   unless `keep_empty_value` is set; for an overwrite that means the header is **removed** (Envoy's rule). Later middleware
   entries see the changed headers.
 - *An immediate response*: the request ends there with the processor's status (200 to 599), headers and body; the
-  site's CORS and security headers are added.
+  site's CORS and security headers are added. One value per header name (a second `Set-Cookie`, even with an append
+  action, replaces the first). 204, 205 and 304 are sent without a body and without `Content-Length`.
 - *Headers the processor may not touch*: pseudo-headers, `host`, `content-length`, `transfer-encoding`, `connection`,
   `keep-alive`, `proxy-connection`, `te`, `trailer` and `upgrade`. They frame or route the request, and changing them is
   the ingredient of request smuggling. A mutation of one is ignored and logged, as Envoy does by default.
@@ -3958,7 +3959,9 @@ later than `timeoutMs`, or sends an answer that is not accepted) the entry's pol
 **Where it runs.** `ext_proc` entries run in `middleware` order, after the built-in guards (IP filter, rate limit,
 authentication, `forwardAuth`, redirects, fault injection), so the processor only sees requests that already passed
 them. The processor is trusted: it can set any header that is not in the list above, including headers that the upstream
-treats as identity. Do not point `grpc` at a service you do not control.
+treats as identity, and a token it sets in `Authorization` is read, unverified, by features that run after the guards
+(the `{{ jwt.<claim> }}` header templates). It receives every request header, `Authorization` and cookies included, so
+`grpc://` (plain text) belongs on loopback or a private network only. Do not point `grpc` at a service you do not control.
 
 **Not implemented yet** (the rest of issue #27): request and response bodies, the response-headers phase, trailers,
 streamed bodies and a per-route override. A `phase` on the entry has no effect (validation warns).

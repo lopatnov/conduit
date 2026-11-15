@@ -294,12 +294,6 @@ async fn apply_ext_proc_entry<'a>(
             Ok(false)
         }
         Verdict::Respond(answer) => {
-            // 204, 205 and 304 have no body (RFC 9110 sections 15.3.5, 15.3.6, 15.4.5)
-            let body = if matches!(answer.status, 204 | 205 | 304) {
-                bytes::Bytes::new()
-            } else {
-                answer.body
-            };
             // A value that is not text cannot be passed on as a response header here (the writer takes strings).
             let extra = answer
                 .headers
@@ -311,7 +305,7 @@ async fn apply_ext_proc_entry<'a>(
                         .map(|v| (name.as_str().to_owned(), v.to_owned()))
                 })
                 .collect();
-            refuse(ctx, answer.status, body, extra).await
+            refuse(ctx, answer.status, answer.body, extra).await
         }
     }
 }
@@ -326,8 +320,27 @@ async fn refuse<'a>(
 ) -> Result<bool> {
     let mut all = ctx.extra_headers.to_vec();
     all.extend(extra);
-    conduit_core::handler::response::write_response(ctx.session, status, "text/plain", body, &all)
+    if matches!(status, 204 | 205 | 304) {
+        // These have no body, and a server must not send `Content-Length` with a 204 (RFC 9110 sections 8.6, 15.3.5,
+        // 15.3.6, 15.4.5), which `write_response` always does: the header is built here without it.
+        let mut resp = pingora_http::ResponseHeader::build(status, Some(all.len()))?;
+        for (name, value) in all {
+            // a header the writer cannot take is left out, as `write_response` does
+            let _ = resp.insert_header(name, value);
+        }
+        ctx.session
+            .write_response_header(Box::new(resp), true)
+            .await?;
+    } else {
+        conduit_core::handler::response::write_response(
+            ctx.session,
+            status,
+            "text/plain",
+            body,
+            &all,
+        )
         .await?;
+    }
     ctx.inflight.fetch_sub(1, Ordering::Relaxed);
     Ok(true)
 }
@@ -361,8 +374,8 @@ fn apply_header_changes(
         if applied.is_err() {
             continue;
         }
+        let key = set.name.as_str().to_owned();
         if let Ok(value) = set.value.to_str() {
-            let key = set.name.as_str().to_owned();
             match (set.mode, view.get_mut(&key)) {
                 (SetMode::Append, Some(existing)) => {
                     existing.push_str(", ");
@@ -372,6 +385,10 @@ fn apply_header_changes(
                     view.insert(key, value.to_owned());
                 }
             }
+        } else {
+            // A value that is not text cannot be put in the view, and the old one is no longer true: later entries must
+            // not decide on a stale header, so the header is left out of the view (it is not there for them).
+            view.remove(&key);
         }
     }
     for name in &changes.remove {
@@ -465,5 +482,27 @@ mod ext_proc_tests {
         assert!(req.headers.get("x-multi").is_none());
         assert!(view.is_empty());
         assert_eq!(values(&req, "x-keep"), ["1"]);
+    }
+
+    #[test]
+    fn a_header_overwritten_with_a_non_text_value_leaves_the_view_so_later_entries_do_not_read_a_stale_one(
+    ) {
+        let mut req = request();
+        let mut view = HashMap::from([("x-user".to_owned(), "ann".to_owned())]);
+        let binary = HeaderSet {
+            name: HeaderName::from_static("x-user"),
+            value: HeaderValue::from_bytes(b"\xff\xfe").unwrap(),
+            mode: SetMode::Overwrite,
+        };
+        let changes = HeaderChanges {
+            set: vec![binary],
+            remove: Vec::new(),
+        };
+        apply_header_changes(&mut req, &mut view, &changes);
+        assert_eq!(req.headers.get("x-user").unwrap().as_bytes(), b"\xff\xfe");
+        assert!(
+            !view.contains_key("x-user"),
+            "the view must not keep the old value: {view:?}"
+        );
     }
 }

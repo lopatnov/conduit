@@ -279,25 +279,39 @@ async fn an_answer_the_proxy_did_not_ask_for_or_may_not_accept_follows_the_polic
         )),
     };
     let empty = ProcessingResponse { response: None };
-    // `content-length` frames the request: a processor may not change it, and one bad entry refuses the whole answer
-    let forbidden = headers_answer(HeaderMutation {
+    // one entry that is not a header at all refuses the whole answer, the valid one beside it is not applied
+    let malformed = headers_answer(HeaderMutation {
         set_headers: vec![
-            option(
-                "content-length",
-                "0",
-                append_action::OVERWRITE_IF_EXISTS_OR_ADD,
-            ),
+            option("x-fine", "1", append_action::OVERWRITE_IF_EXISTS_OR_ADD),
             option("bad name", "x", 0),
         ],
         remove_headers: Vec::new(),
     });
-    for answer in [wrong_phase, empty, forbidden] {
+    for answer in [wrong_phase, empty, malformed] {
         let (address, _) = serve(Behaviour::Answer(answer)).await;
         let closed = ExtProcClient::new(&config(&address, serde_json::json!({})));
         refused(&ask(&closed).await, 503);
         let open = ExtProcClient::new(&config(&address, serde_json::json!({ "failOpen": true })));
         unchanged(&ask(&open).await);
     }
+}
+
+/// `content-length` frames the request: a processor may not change it. That is not a failure of the processor: the change
+/// is dropped and the request continues, with nothing else changed.
+#[tokio::test]
+async fn a_change_to_a_framing_header_is_dropped_and_is_not_a_failure() {
+    let (address, _) = serve(Behaviour::Answer(headers_answer(HeaderMutation {
+        set_headers: vec![option(
+            "content-length",
+            "0",
+            append_action::OVERWRITE_IF_EXISTS_OR_ADD,
+        )],
+        remove_headers: vec!["transfer-encoding".into()],
+    })))
+    .await;
+    // fail-closed: if the answer were counted as a failure this would be a refusal
+    let client = ExtProcClient::new(&config(&address, serde_json::json!({})));
+    unchanged(&ask(&client).await);
 }
 
 #[tokio::test]

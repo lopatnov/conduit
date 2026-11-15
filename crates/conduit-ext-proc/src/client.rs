@@ -87,7 +87,9 @@ impl std::fmt::Display for Failure {
             Self::Unexpected(what) => {
                 write!(f, "the processor sent {what}, which was not asked for")
             }
-            Self::Rejected(why) => write!(f, "the processor's answer is not acceptable: {why}"),
+            Self::Rejected(why) => {
+                write!(f, "the processor's answer is not acceptable: {}", tidy(why))
+            }
         }
     }
 }
@@ -102,7 +104,10 @@ pub struct ExtProcClient {
 }
 
 /// The channels of the process, by `grpc` address and CA file.
-static CHANNELS: OnceLock<Mutex<HashMap<String, Channel>>> = OnceLock::new();
+///
+/// A channel that could not be built (an unreadable `caFile`) is cached as the error too, until the next reload: the file
+/// is read once, not once per request under the lock.
+static CHANNELS: OnceLock<Mutex<HashMap<String, Result<Channel, String>>>> = OnceLock::new();
 
 /// Forget the shared channels, so that the next request connects again and reads `caFile` again. A configuration reload
 /// calls this (a CA file edited in place, or a processor moved, takes effect without a restart).
@@ -126,9 +131,18 @@ fn channel_for(config: &ExtProcConfig) -> Result<Channel, String> {
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(channel) = channels.get(&key) {
-        return Ok(channel.clone());
+    if let Some(built) = channels.get(&key) {
+        return built.clone();
     }
+    let built = build_channel(config, &address);
+    channels.insert(key, built.clone());
+    built
+}
+
+fn build_channel(
+    config: &ExtProcConfig,
+    address: &crate::config::Endpoint,
+) -> Result<Channel, String> {
     let scheme = if address.tls { "https" } else { "http" };
     let mut endpoint = Endpoint::from_shared(format!("{scheme}://{}", address.authority))
         .map_err(|e| format!("bad processor address {:?}: {e}", config.grpc))?
@@ -147,9 +161,7 @@ fn channel_for(config: &ExtProcConfig) -> Result<Channel, String> {
             .tls_config(tls)
             .map_err(|e| format!("bad TLS settings for {:?}: {e}", config.grpc))?;
     }
-    let channel = endpoint.connect_lazy();
-    channels.insert(key, channel.clone());
-    Ok(channel)
+    Ok(endpoint.connect_lazy())
 }
 
 impl ExtProcClient {
@@ -254,7 +266,7 @@ impl ExtProcClient {
                     tracing::debug!(
                         target: "conduit::ext_proc",
                         status,
-                        details = %immediate.details,
+                        details = %tidy(&immediate.details),
                         "the external processor ended the request"
                     );
                 }
@@ -308,15 +320,28 @@ impl ExtProcClient {
     }
 }
 
+/// Text that came from the processor, made safe for a log line: escaped (no line breaks or control characters reach the
+/// log) and cut at 200 characters (a compromised processor could otherwise send megabytes on every request).
+fn tidy(text: &str) -> String {
+    const MAX: usize = 200;
+    let escaped: String = text.escape_debug().take(MAX + 1).collect();
+    if escaped.chars().count() > MAX {
+        let cut: String = escaped.chars().take(MAX).collect();
+        format!("{cut}...")
+    } else {
+        escaped
+    }
+}
+
 fn describe(status: &tonic::Status) -> String {
-    format!("{:?}: {}", status.code(), status.message())
+    format!("{:?}: {}", status.code(), tidy(status.message()))
 }
 
 fn note_ignored(ignored: &[String]) {
     if !ignored.is_empty() {
         tracing::warn!(
             target: "conduit::ext_proc",
-            headers = %ignored.join(", "),
+            headers = %tidy(&ignored.join(", ")),
             "the processor tried to change headers it may not change; ignored"
         );
     }
@@ -355,6 +380,16 @@ fn request_message(info: &RequestInfo<'_>) -> ProcessingRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_from_the_processor_is_escaped_and_cut_before_it_reaches_a_log() {
+        assert_eq!(tidy("a\r\nFAKE: line"), "a\\r\\nFAKE: line");
+        let long = "x".repeat(10_000);
+        let cut = tidy(&long);
+        assert_eq!(cut.chars().count(), 203);
+        assert!(cut.ends_with("..."));
+        assert_eq!(tidy("short"), "short");
+    }
 
     #[test]
     fn the_processor_is_told_the_pseudo_headers_and_every_header_value() {
