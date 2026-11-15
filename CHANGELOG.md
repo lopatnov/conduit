@@ -14,9 +14,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it could have claimed it; the new group is a subdomain of the project's own address. The version stays `v1`. Objects of the
   old group are not read: keep the manifests you applied (or export the objects, see `docs/kubernetes.md`), delete the old
   CRD (`kubectl delete crd conduitsites.conduit.io`, which deletes its objects), apply the new
-  `contrib/k8s/conduitsite-crd.yaml`, change `apiVersion` to `conduit.lopatnov.github.io/v1` in the manifests, and in the RBAC
-  `Role` change `apiGroups` to `conduit.lopatnov.github.io`. Without the new `apiGroups`, the pod gets a 403 on the list and
-  says so in its log.
+  `contrib/k8s/conduitsite-crd.yaml`, change `apiVersion` to `conduit.lopatnov.github.io/v1` in the manifests, change the RBAC
+  `Role`'s `apiGroups` to `conduit.lopatnov.github.io`, and apply the manifests again (the sites are gone until you do).
+  Without the new `apiGroups`, the pod gets a 403 on the list and says so in its log.
 
 ### Added
 
