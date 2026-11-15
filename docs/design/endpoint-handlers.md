@@ -19,6 +19,7 @@
   - [Routing and route parameters](#routing-and-route-parameters)
   - [The WASM interface: three options](#the-wasm-interface-three-options)
   - [The Rhai interface](#the-rhai-interface)
+  - [JavaScript](#javascript)
   - [Host capabilities](#host-capabilities)
   - [Security model](#security-model)
   - [Limits and timeouts](#limits-and-timeouts)
@@ -305,6 +306,58 @@ fn handle(req) {
 - `import` of other `.rhai` files from the handler's own directory only (a `FileModuleResolver` rooted there), so a
   handler can be split into modules.
 
+### JavaScript
+
+The owner wants JavaScript handlers. There are two ways to run JS, and they differ in where the JS engine lives.
+
+**Option J1: JS compiled to a WASI HTTP component (ComponentizeJS / `jco componentize`, StarlingMonkey).** The
+developer writes an ordinary ES module with a `fetch` handler; the tool embeds the SpiderMonkey engine
+(StarlingMonkey) and the script into one component, pre-initialised with Wizer so the engine start-up and the
+top-level of the script are already done in the snapshot. Conduit runs it like any other `wasi:http` component.
+
+<!-- docs-check: skip (JavaScript, not a config) -->
+```js
+// handler.js  →  npx @bytecodealliance/jco componentize handler.js --wit wit/ -o handler.wasm
+addEventListener("fetch", (event) => event.respondWith(handle(event.request)));
+
+async function handle(request) {
+  const id = request.headers.get("conduit-param-id");          // from /api/users/{id}
+  const upstream = await fetch(`https://api.example.com/users/${id}`); // needs allow.fetch
+  return new Response(await upstream.text(), { headers: { "content-type": "application/json" } });
+}
+```
+
+**Option J2: a JS engine embedded in Conduit.** `rquickjs` (QuickJS, C, interpreter; its README gives 210 KiB of x86
+code for hello world, ES2020, async Rust integration) or Boa (pure Rust, interpreter, "more than 90%" of the latest
+ECMAScript per its README). The script is a plain `.js` file, like a Rhai script today: `export default { fetch(req) }`
+or `function handle(req)`, with capabilities registered as host objects.
+
+| | J1: component (StarlingMonkey) | J2a: `rquickjs` embed | J2b: Boa embed |
+| --- | --- | --- | --- |
+| Conduit code needed | **none beyond option C**: it is a `wasi:http` component | a third engine: request/response objects, every capability bound again, limits, cache, reload | as J2a |
+| Size cost | nothing in the binary; each **component** is about 8 MB (ComponentizeJS README: "the total embedding size is around 8MB") | small, hundreds of KiB (not measured here) | larger than QuickJS (not measured here) |
+| Build step | yes: `jco componentize` (Node.js on the developer's machine) | none: edit and reload | none |
+| JS standard | SpiderMonkey: current ECMAScript, plus `fetch`, `Request`/`Response`, WHATWG streams, `TextEncoder` | ES2020, no web APIs unless Conduit writes them | partial, conformance still moving |
+| Speed | SpiderMonkey interpreter inside WASM (no JIT in WASM); start-up made cheap by the Wizer snapshot, per-request cost to be measured | fast start-up, slower execution than SpiderMonkey | slowest of the three |
+| Isolation | **WASM sandbox**: an engine bug stays inside the instance's linear memory | QuickJS is C in Conduit's process: an engine memory-safety bug is a bug in the proxy | Rust, memory-safe, but in-process: a hang or panic is Conduit's |
+| Limits | the same fuel, epoch deadline and memory limit as every component | interrupt handler and `set_memory_limit`, separate code | its own, separate code |
+| Portability | the same `.wasm` runs on Spin, wasmCloud, `wasmtime serve` | Conduit only | Conduit only |
+| Familiar to users of | Cloudflare Workers, Fastly Compute (both use the `fetch`-handler shape) | Rhai users | — |
+
+**Recommendation: J1 for handlers.** It follows from the WASI HTTP decision at no extra cost in Conduit: JavaScript,
+Python, Rust, Go and C# handlers all go through one engine path, one capability layer and one sandbox, and a JS
+engine bug cannot reach the proxy. Its costs are on the developer's side (a build step with Node.js, 8 MB modules)
+and in per-request time, which phase 1 measures. JS is a first-class language of the handler docs from phase 1, with
+a worked example and an e2e test, not a side note.
+
+**J2 stays possible, through #187.** If "edit a `.js` file and reload, no build" turns out to matter, #187 (QuickJS
+*middleware*, already decided) brings `rquickjs` into Conduit, and a `handler: { js: ./x.js }` on top of the same
+handler plumbing is then a small addition (phase 4, on demand). Boa is not proposed: slower than QuickJS, larger, and
+its conformance is still moving.
+
+A Conduit `jco` template (a `wit/` folder with `wasi:http` plus the `conduit:*` interfaces, and an npm script) would
+make J1's build step one command; it belongs to phase 1's docs.
+
 ### Host capabilities
 
 All capabilities are **denied unless the handler's `allow:` grants them**, and each grant names a resource declared by
@@ -515,14 +568,15 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
    with request/response plumbing, limits, fail-closed errors, metrics; Rhai handlers with no capabilities except
    `config`, `log`, `json`, `time`; WASM `wasi:http` 0.2 components with clocks, random, stdout/stderr, `wasi:config`.
    Measure: binary size of `handler-wasm` (Footprint report), latency and instructions per request of a hello-world
-   handler against a static file (the cachegrind harness from #636). Acceptance: a Rust, a Python
-   (`componentize-py`) and a JavaScript (`jco`) hello-world component pass the same e2e test.
+   handler against a static file (the cachegrind harness from #636), and the same for an 8 MB JavaScript
+   (StarlingMonkey) component. Acceptance: a Rust, a Python (`componentize-py`) and a JavaScript (`jco componentize`)
+   hello-world component pass the same e2e test; the handler guide has a JavaScript example and a `jco` template.
 2. **State.** `global.resources`; KV (`memory`, `redb`, `redis`) through `wasi:keyvalue` and `kv::*`; read-only files;
    secrets; `identity` grant. `lawyer` review of `redb`.
 3. **Outbound and SQL.** `fetch` with the allowlist, SSRF checks and `upstream:` targets; SQLite through
    `conduit:sqlite` and `sql::*`; the `webapp` bundle and, if the size allows, the `conduit-webapp` artifact.
    `lawyer` review of `rusqlite`/SQLite.
-4. **Later, on demand.** WASI 0.3 components and instance reuse; Postgres; a `conduit:handler/request-context` WIT;
+4. **Later, on demand.** WASI 0.3 components and instance reuse; a `handler: { js: ... }` on `rquickjs` if #187 has landed and a no-build JS path is wanted; Postgres; a `conduit:handler/request-context` WIT;
    streaming request bodies to Rhai; a `conduit new handler` scaffold command.
 
 ---
@@ -538,6 +592,7 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
 | 5 | Route data to WASM | reserved headers · a WIT interface · both | **headers first, WIT later** |
 | 6 | Where resources are declared | `global.resources` · per site · both | **`global.resources`** (a store shared by two sites is common) |
 | 7 | `conduit-webapp` | separate release artifact · only a feature set in `full` | **decide after the phase-1 size measurement** |
+| 9 | JavaScript | J1: `jco` components (WASI HTTP) · J2: embedded engine (`rquickjs` or Boa) | **J1**; J2 later through #187 if a no-build path is wanted |
 | 8 | Phase-1 scope | stateless only (as above) · stateless plus KV | **stateless only**: the routing and fail-closed plumbing is the part that touches the hot path |
 
 ## What is not known yet
@@ -551,5 +606,5 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
 - Which language toolchains emit `wasi:http` 0.3 components today, which decides when 0.3 support is worth adding.
 - Whether `jco`/ComponentizeJS components (which embed a JS engine, several MiB) fit the default `memoryMiB` and
   `timeoutMs`; phase 1's three-language test answers it.
-- How this relates to #187 (QuickJS middleware): a JS developer may prefer a QuickJS *handler* to a `jco` component.
-  If #187 is implemented, adding `handler: { js: ... }` on the same plumbing is cheap.
+- The per-request cost and memory of an 8 MB StarlingMonkey component instantiated from a Wizer snapshot in
+  Wasmtime 50; phase 1 measures it before the JavaScript defaults are fixed.
