@@ -51,7 +51,7 @@ pub struct Mock {
 }
 
 impl NamedService for Mock {
-    const NAME: &'static str = "envoy.service.ext_proc.v3.ExternalProcessor";
+    const NAME: &str = "envoy.service.ext_proc.v3.ExternalProcessor";
 }
 
 struct Process(Mock);

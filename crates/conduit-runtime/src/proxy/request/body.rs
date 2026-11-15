@@ -151,6 +151,10 @@ pub(crate) async fn request_body_filter(
                 // The upstream may already have started its response (it answered before the body was complete): a second
                 // response cannot be written over it, so the connection is dropped instead.
                 if session.response_written().is_none() {
+                    // The connection is closed right after: say so, or a client that reuses it for its next request
+                    // finds it gone (a reset, `IncompleteMessage`) instead of being told to open a new one.
+                    // (Pingora writes `Connection: close` itself once keep-alive is off.)
+                    session.set_keepalive(None);
                     conduit_middleware::ext_proc::write_direct(
                         session,
                         &answer,

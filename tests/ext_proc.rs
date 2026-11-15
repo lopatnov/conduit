@@ -288,84 +288,114 @@ fn validate_names_the_field_of_a_bad_ext_proc_config() {
 
 // ── Bodies and the response phase (issue #27, the rest of the protocol) ────────────────────────────────────────────
 
+/// The request line and headers of one request: `(method, path, headers by lower-case name)`.
+fn read_request_head(
+    reader: &mut impl std::io::BufRead,
+) -> Option<(String, String, serde_json::Map<String, serde_json::Value>)> {
+    let mut first = String::new();
+    if reader.read_line(&mut first).unwrap_or(0) == 0 {
+        return None;
+    }
+    let mut parts = first.split_whitespace();
+    let method = parts.next().unwrap_or("").to_owned();
+    let path = parts.next().unwrap_or("").to_owned();
+    let mut headers = serde_json::Map::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+            break;
+        }
+        if let Some((k, v)) = line.trim_end().split_once(": ") {
+            headers.insert(
+                k.to_ascii_lowercase(),
+                serde_json::Value::String(v.to_owned()),
+            );
+        }
+    }
+    Some((method, path, headers))
+}
+
+/// The body of a request: by `Content-Length`, or chunked.
+fn read_request_body(
+    reader: &mut impl std::io::BufRead,
+    headers: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<u8> {
+    let header = |name: &str| headers.get(name).and_then(|v| v.as_str());
+    let mut body = Vec::new();
+    if let Some(len) = header("content-length") {
+        body.resize(len.parse().unwrap_or(0), 0);
+        let _ = reader.read_exact(&mut body);
+    } else if header("transfer-encoding") == Some("chunked") {
+        loop {
+            let mut size = String::new();
+            if reader.read_line(&mut size).unwrap_or(0) == 0 {
+                break;
+            }
+            let n = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
+            let mut chunk = vec![0u8; n];
+            let _ = reader.read_exact(&mut chunk);
+            let mut crlf = String::new();
+            let _ = reader.read_line(&mut crlf);
+            if n == 0 {
+                break;
+            }
+            body.extend(chunk);
+        }
+    }
+    body
+}
+
+/// The upstream's answer to a path: `/static` and `/fail` are fixed, anything else echoes the request as JSON.
+fn upstream_answer(
+    method: &str,
+    path: &str,
+    headers: &serde_json::Map<String, serde_json::Value>,
+    body: &[u8],
+) -> (&'static str, &'static str, String) {
+    match path {
+        "/static" => (
+            "200 OK",
+            "X-Secret: s3\r\nX-Keep: 1\r\n",
+            "upstream says hi".to_owned(),
+        ),
+        "/fail" => ("500 Internal Server Error", "", "boom".to_owned()),
+        _ => (
+            "200 OK",
+            "",
+            serde_json::json!({
+                "method": method, "path": path, "headers": headers,
+                "body": String::from_utf8_lossy(body),
+            })
+            .to_string(),
+        ),
+    }
+}
+
+/// One connection of the upstream: read a request, answer it, close.
+fn serve_upstream_connection(mut stream: std::net::TcpStream) {
+    use std::io::{BufReader, Write};
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let Some((method, path, headers)) = read_request_head(&mut reader) else {
+        return;
+    };
+    let body = read_request_body(&mut reader, &headers);
+    let (status, extra, payload) = upstream_answer(&method, &path, &headers, &body);
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+        payload.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
 /// What a body-aware upstream saw, as JSON: `{ method, path, headers, body }`; `/static` answers with a fixed body and a
 /// secret header instead, `/fail` with a 500.
 #[cfg(feature = "proxy")]
 fn start_body_upstream() -> u16 {
-    use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            std::thread::spawn(move || {
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut first = String::new();
-                if reader.read_line(&mut first).unwrap_or(0) == 0 {
-                    return;
-                }
-                let mut parts = first.split_whitespace();
-                let method = parts.next().unwrap_or("").to_owned();
-                let path = parts.next().unwrap_or("").to_owned();
-                let mut headers = serde_json::Map::new();
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
-                        break;
-                    }
-                    if let Some((k, v)) = line.trim_end().split_once(": ") {
-                        headers.insert(
-                            k.to_ascii_lowercase(),
-                            serde_json::Value::String(v.to_owned()),
-                        );
-                    }
-                }
-                let mut body = Vec::new();
-                if let Some(len) = headers.get("content-length").and_then(|v| v.as_str()) {
-                    body.resize(len.parse().unwrap_or(0), 0);
-                    let _ = reader.read_exact(&mut body);
-                } else if headers.get("transfer-encoding").and_then(|v| v.as_str())
-                    == Some("chunked")
-                {
-                    loop {
-                        let mut size = String::new();
-                        if reader.read_line(&mut size).unwrap_or(0) == 0 {
-                            break;
-                        }
-                        let n = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
-                        let mut chunk = vec![0u8; n];
-                        let _ = reader.read_exact(&mut chunk);
-                        let mut crlf = String::new();
-                        let _ = reader.read_line(&mut crlf);
-                        if n == 0 {
-                            break;
-                        }
-                        body.extend(chunk);
-                    }
-                }
-                let (status, extra, payload) = match path.as_str() {
-                    "/static" => (
-                        "200 OK",
-                        "X-Secret: s3\r\nX-Keep: 1\r\n",
-                        "upstream says hi".to_owned(),
-                    ),
-                    "/fail" => ("500 Internal Server Error", "", "boom".to_owned()),
-                    _ => (
-                        "200 OK",
-                        "",
-                        serde_json::json!({
-                            "method": method, "path": path, "headers": headers,
-                            "body": String::from_utf8_lossy(&body),
-                        })
-                        .to_string(),
-                    ),
-                };
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = stream.write_all(response.as_bytes());
-            });
+        for stream in listener.incoming().flatten() {
+            std::thread::spawn(move || serve_upstream_connection(stream));
         }
     });
     port
@@ -545,6 +575,11 @@ fn a_processor_that_denies_a_body_ends_the_request_with_its_own_answer() {
         .unwrap();
     assert_eq!(resp.status(), 403);
     assert_eq!(resp.headers().get("x-by").unwrap(), "processor");
+    assert_eq!(
+        resp.headers().get("connection").map(|v| v.as_bytes()),
+        Some(&b"close"[..]),
+        "the connection is closed after the answer and the client is told so"
+    );
     assert_eq!(resp.text().unwrap(), "blocked by policy\n");
 
     // the next request on the same server is unaffected

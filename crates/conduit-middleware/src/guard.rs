@@ -256,7 +256,7 @@ async fn apply_ext_proc_entry<'a>(
     let config = match ExtProcConfig::from_value(entry.config.as_ref()) {
         Ok(config) => config,
         Err(message) => {
-            tracing::warn!(target: "conduit::ext_proc", %message, "invalid ext_proc config; the request is refused");
+            tracing::warn!(target: "conduit::ext_proc", error = %message, "invalid ext_proc config; the request is refused");
             return refuse(
                 ctx,
                 503,
