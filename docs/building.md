@@ -179,7 +179,7 @@ strip         = true   # strip debug symbols (ELF / Mach-O)
 
 A proxy allocates a little on every request (header maps, buffers, futures), so the allocator is a visible part of the
 cost of a request. The `conduit` binary uses **mimalloc in its `secure` mode** by default (feature `mimalloc`, in
-`default` and in every bundle): guard pages around allocations, encoded free lists and randomised allocation, which make
+`default` and in every bundle): guard pages around allocator metadata, encoded free lists, randomised allocation addresses and double-free detection, which make
 a heap overflow or a use-after-free much harder to turn into code execution. That matters because the process also holds
 C libraries (`aws-lc`, `wasmtime`, `rhai`'s dependencies) and some `unsafe`. Two other choices exist, and each applies to
 the binary only: a program that embeds the `conduit` library keeps its own allocator.

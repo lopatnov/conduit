@@ -277,7 +277,7 @@ pingora-proxy.workspace = true
 
 # --- Global allocator (issue #486) ---
 # One of the two replaces the system allocator of the `conduit` binary (not of the library crates); see the
-# `mimalloc` (default, built in its `secure` mode: guard pages, encoded free lists) and `jemalloc` features. `--no-default-features` builds with neither.
+# `mimalloc` (default, built in its `secure` mode: encoded free lists, randomised addresses, double-free checks) and `jemalloc` features. `--no-default-features` builds with neither.
 mimalloc          = { version = "0.1", optional = true, default-features = false, features = ["secure"] }
 tikv-jemallocator = { version = "0.6", optional = true }
 

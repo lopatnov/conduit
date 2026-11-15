@@ -15,7 +15,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and a release asset, and the npm package carries it gzipped. `scripts/third_party_licenses.py` generates it and the new
   `licenses` CI job checks the allow-list in `ci/license-policy.json` and that the file is current. The README has a
   "Technologies stack" section, and `docs/technologies.md` the longer list.
-- mimalloc, in its hardened `secure` mode (guard pages, encoded free lists, randomised allocation), is the global allocator
+- mimalloc, in its hardened `secure` mode (guard pages around allocator metadata, encoded free lists, randomised allocation addresses, double-free detection), is the global allocator
   of the `conduit` binary (#486, #516): feature `mimalloc`, in `default` and in every bundle (`standard`, `gateway`,
   `static-server`, `full`); `--features jemalloc` uses jemalloc instead (with both on, jemalloc is used);
   `--no-default-features` keeps the system allocator. On the passthrough benchmark (4 cores, `workers: 1`, 5 ABBA rounds)
