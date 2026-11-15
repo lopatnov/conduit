@@ -394,3 +394,9 @@ Found it useful? A star on GitHub helps others discover the project.
 
 [Apache 2.0](https://github.com/lopatnov/conduit/blob/main/LICENSE) ©
 2024–2026 [Oleksandr Lopatnov](https://github.com/lopatnov)
+
+The binary this package downloads contains third-party crates. Their licences are in
+[THIRD-PARTY-LICENSES.txt](https://github.com/lopatnov/conduit/releases/latest/download/THIRD-PARTY-LICENSES.txt),
+a file of every release (the archives, the Debian package and the Docker image carry it too). This package itself
+does not ship it, because the registry limits the size of a package (issue #712). Technologies and their licences:
+[docs/technologies.md](https://github.com/lopatnov/conduit/blob/main/docs/technologies.md).

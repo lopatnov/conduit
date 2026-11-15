@@ -388,6 +388,10 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`
 
 ## Dependencies
 
+Adding or upgrading a crate changes `Cargo.lock`: run `python3 scripts/third_party_licenses.py --write THIRD-PARTY-LICENSES.txt`
+and commit the result (the `licenses` CI job checks the licence of every crate against `ci/license-policy.json` and that the file is
+current). The notable technologies and their licences are in [docs/technologies.md](docs/technologies.md).
+
 ### Core runtime
 
 | Crate                                                           | Role                       |

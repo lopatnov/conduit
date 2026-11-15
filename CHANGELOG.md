@@ -9,6 +9,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Third-party licence notices (#640). `THIRD-PARTY-LICENSES.txt` lists every crate that can end up in a binary with its
+  licence and the licence and notice texts it ships (including the CDLA-Permissive-2.0 text of the bundled root
+  certificates); it is inside every release archive (with `LICENSE`), the Debian package, the Docker image (`/licenses/`)
+  and a release asset, and the npm package links to it. `scripts/third_party_licenses.py` generates it and the new
+  `licenses` CI job checks the allow-list in `ci/license-policy.json` and that the file is current. The README has a
+  "Technologies stack" section, and `docs/technologies.md` the longer list.
+
 - The ACME time limits are configurable under `tls.acme`, with today's values as the defaults: `orderTimeoutSecs` (60),
   `validationTimeoutSecs` (180), `ariTimeoutSecs` (30), `retryAfterMinSecs` (300), `retryAfterMaxSecs` (86400) and
   `checkIntervalSecs` (43200). Each must be 1 to 86400 seconds (60 to 86400 for `retryAfterMinSecs`, 300 to 86400 for `checkIntervalSecs`, so that a CA that limits failed orders is not polled every few seconds) and the minimum must not exceed the maximum, otherwise
