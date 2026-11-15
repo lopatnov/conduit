@@ -169,10 +169,14 @@ pub(crate) async fn request_body_filter(
             }
             BodyVerdict::Respond(answer) => {
                 // The upstream may already have started its response (it answered before the body was complete): a second
-                // response cannot be written over it, so the connection is dropped instead. `response_written` holds only a
-                // final response (status >= 200, or 101): the `100 Continue` that answers `Expect: 100-continue` does not
-                // count (pingora-core 0.9.1 `Session::response_written`; `a_refusal_after_100_continue_...` pins it).
-                if session.response_written().is_none() {
+                // final response cannot be written over it, so the connection is dropped instead. An interim response does not
+                // count: pingora-core 0.9.1's HTTP/1 session records the `100 Continue` it forwards for `Expect: 100-continue`
+                // as the written response (its doc says "final", its code stores any), and the refusal must still follow it
+                // (`a_refusal_after_100_continue_...` sends a real 100). Only a final response (not 1xx) or a `101` blocks it.
+                if !session
+                    .response_written()
+                    .is_some_and(|h| !h.status.is_informational() || h.status.as_u16() == 101)
+                {
                     // The connection is closed right after: say so, or a client that reuses it for its next request
                     // finds it gone (a reset, `IncompleteMessage`) instead of being told to open a new one.
                     // (Pingora writes `Connection: close` itself once keep-alive is off.)

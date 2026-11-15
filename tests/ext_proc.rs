@@ -964,8 +964,26 @@ fn a_get_without_a_body_is_not_shown_to_the_body_phase() {
 #[test]
 fn a_refusal_after_100_continue_still_delivers_the_final_answer() {
     use std::io::{Read, Write};
-    // `Expect: 100-continue`: Pingora answers `100 Continue` when the body is first read, and that interim response is not
-    // an answer yet: the processor's refusal of the body must still arrive as the final response.
+    // `Expect: 100-continue`: the upstream answers `100 Continue` to the headers and Pingora forwards it, which Pingora's
+    // HTTP/1 session records as the written response (`Session::response_written`; its doc says "final" but its code stores
+    // the 100). That interim response is not an answer: the processor's refusal of the body must still arrive as the final
+    // response, after it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                    head.push(byte[0]);
+                }
+                let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+                let mut sink = [0u8; 64];
+                while stream.read(&mut sink).unwrap_or(0) > 0 {}
+            });
+        }
+    });
     let (processor, _) = support::serve_in_background(body_processor(|body| {
         if body.contains("attack") {
             deny(403, "blocked by policy\n")
@@ -973,21 +991,44 @@ fn a_refusal_after_100_continue_still_delivers_the_final_answer() {
             replace_body(true, body)
         }
     }));
-    let server =
-        start_body_site(serde_json::json!({ "grpc": processor, "requestBody": "buffered" }));
-    let mut client = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let _server = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": format!("http://127.0.0.1:{upstream}"),
+                "middleware": [{
+                    "type": "ext_proc",
+                    "config": { "grpc": processor, "requestBody": "buffered" }
+                }]
+            }]
+        }),
+    );
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     client
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
     client
         .write_all(
-            b"POST /echo HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 9\r\nConnection: close\r\n\r\nan attack",
+            b"POST /echo HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 9\r\nConnection: close\r\n\r\n",
         )
         .unwrap();
-    let mut answer = String::new();
-    let _ = client.read_to_string(&mut answer);
-    assert!(answer.contains("403"), "no final answer: {answer:?}");
-    assert!(answer.contains("blocked by policy"), "{answer:?}");
+    // wait for the interim response before the body is sent, as a client that sends `Expect` does
+    let mut received = String::new();
+    let mut buf = [0u8; 256];
+    while !received.contains("100 Continue\r\n\r\n") {
+        let n = client.read(&mut buf).unwrap();
+        assert!(n > 0, "closed before the 100: {received:?}");
+        received.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    client.write_all(b"an attack").unwrap();
+    let _ = client.read_to_string(&mut received);
+    assert!(received.contains("403"), "no final answer: {received:?}");
+    assert!(received.contains("blocked by policy"), "{received:?}");
 }
 
 #[cfg(feature = "proxy")]
