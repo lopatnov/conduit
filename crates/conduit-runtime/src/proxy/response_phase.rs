@@ -66,6 +66,7 @@ fn record_retry_failure(
 /// the upstream response headers.  The chain encapsulates all header-level
 /// concerns in six discrete phases:
 ///
+/// 0. (feature `ext-proc`) the `ext_proc` response-headers exchange, the chain's one async stage
 /// 1. CRLF injection protection
 /// 2. Inject CORS + security + custom site headers
 /// 3. Apply `responseTransform` (set / remove headers)
@@ -149,19 +150,11 @@ pub(super) async fn upstream_response_filter(
         ));
     }
 
-    // External processing (#27): an `ext_proc` entry with `responsePhase` is told the upstream's response headers before
-    // anything of the site's is added (so a processor can neither see nor strip the site's CORS and security headers),
-    // and may change them or replace the response. An entry with `responseBody: observe` starts being sent the body once
-    // the response is known to be final (below).
+    // External processing (#27): the entries that handle the response are a stage of the chain (`ExtProcResponseFilter`,
+    // run first by `run_async`). Here only the body observation is kept: it starts once the response is known to be final
+    // (below).
     #[cfg(feature = "ext-proc")]
     let ext_proc_sessions = req_ctx.ext_proc.clone().filter(|s| s.handles_response());
-    #[cfg(feature = "ext-proc")]
-    let (ext_proc_replaced, ext_proc_body) = match &ext_proc_sessions {
-        Some(sessions) => ext_proc_response(sessions, upstream_response).await,
-        None => (false, None),
-    };
-    #[cfg(not(feature = "ext-proc"))]
-    let ext_proc_replaced = false;
 
     let config = proxy.state.config.load();
     let chain = ResponseFilterChain::build(req_ctx, &config);
@@ -174,19 +167,22 @@ pub(super) async fn upstream_response_filter(
     // The response chain may execute WASM plugins whose .wasm file is read from disk on first load, so a chain that
     // has one runs through `block_in_place`; a chain that only edits headers runs in place (issue #475: the
     // unconditional `block_in_place` cost ~30 us of CPU and a thread hand-off per response).
-    // Decide whether a body replacement could be delivered on the response as the upstream sent it: a
-    // `responseTransform` or plugin may drop `Content-Length` later and must not defeat the check (#561).
-    let upstream_has_body = body_can_be_replaced(upstream_response);
-    let run_result = chain.run_offloading(upstream_response, req_ctx);
+    // `run_async` also decides whether a body replacement could be delivered on the response as it stood before the
+    // synchronous filters (`body_replaceable`: a `responseTransform` or plugin may drop `Content-Length` later and must
+    // not defeat the check, #561), and drops a retry that a replaced `ext_proc` response made pointless (#27).
+    let run_result = chain.run_async(upstream_response, req_ctx).await;
     // The chain borrows `req_ctx` and `config`; end that borrow here so the match below can take `ctx` mutably.
     drop(chain);
 
-    match run_result? {
-        ResponseFilterOutcome::Continue => {}
+    let run = run_result?;
+    let upstream_has_body = run.body_replaceable;
+    #[cfg(feature = "ext-proc")]
+    let ext_proc_replaced = run.state.replaced;
+    #[cfg(feature = "ext-proc")]
+    let ext_proc_body = run.state.replacement_body;
 
-        // A response that an `ext_proc` answer replaced is final: a retry would send the request to the upstream again
-        // for a response the processor never sees (#27), and the processor's refusal is not the upstream's failure.
-        ResponseFilterOutcome::RetryUpstream if ext_proc_replaced => {}
+    match run.outcome {
+        ResponseFilterOutcome::Continue => {}
 
         ResponseFilterOutcome::RetryUpstream => {
             let status = upstream_response.status.as_u16();
@@ -278,29 +274,6 @@ pub(super) async fn upstream_response_filter(
     Ok(())
 }
 
-/// The response-headers phase of the `ext_proc` entries (issue #27). Returns whether a processor's answer replaced the
-/// response, and the body to send in place of the upstream's when it did (and one can be sent).
-#[cfg(feature = "ext-proc")]
-async fn ext_proc_response(
-    sessions: &conduit_ext_proc::ExtProcSessions,
-    resp: &mut ResponseHeader,
-) -> (bool, Option<Bytes>) {
-    // Whether a body follows is not known here; one that can be replaced is treated as one that exists.
-    let body_allowed = body_can_be_replaced(resp);
-    match conduit_middleware::ext_proc::response_headers(sessions, resp, !body_allowed).await {
-        Some(answer) => {
-            if !body_allowed && !answer.body.is_empty() {
-                warn_body_not_replaceable(answer.status);
-            }
-            (
-                true,
-                conduit_middleware::ext_proc::replace_response(resp, &answer, body_allowed),
-            )
-        }
-        None => (false, None),
-    }
-}
-
 /// `true` when the body that follows is an HTTP response body a `responseBody: observe` entry may be sent: not the answer a
 /// processor replaced (its own text, already seen) and not the tunnel after `101 Switching Protocols`, whose bytes pass
 /// through the body hooks too (WebSocket frames are not a response body).
@@ -331,7 +304,7 @@ fn place_ext_proc_body(req_ctx: &mut RequestCtx, bytes: Bytes) {
 /// (`Content-Length: 0`). Advertising a `Content-Length` there would promise bytes that never come, so the
 /// response is left as the upstream sent it. (An HTTP/2 upstream that ends the stream on the HEADERS frame
 /// without a `Content-Length` cannot be told apart here and is a known limitation.)
-fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
+pub(crate) fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
     let status = resp.status.as_u16();
     if status < 200 || status == 204 || status == 205 || status == 304 {
         return false;
@@ -344,7 +317,7 @@ fn body_can_be_replaced(resp: &pingora_http::ResponseHeader) -> bool {
 }
 
 /// Log, once per process, that a WASM plugin's body replacement was skipped because the response has no body.
-fn warn_body_not_replaceable(status: u16) {
+pub(crate) fn warn_body_not_replaceable(status: u16) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static WARNED: AtomicBool = AtomicBool::new(false);
     if !WARNED.swap(true, Ordering::Relaxed) {

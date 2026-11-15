@@ -4,7 +4,7 @@ pub mod ctx;
 mod dispatch;
 mod logging_phase;
 pub(crate) mod request;
-mod response_phase;
+pub(crate) mod response_phase;
 pub mod router;
 pub mod service;
 
