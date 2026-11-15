@@ -281,8 +281,9 @@ An invalid `ConduitSite` does not hold back the others. If it worked before, the
 in the config (`keeping the last version that was valid` in the log), so a bad edit does not take a working site down. If
 it never worked, for example a new object, it is not active (`not active` in the log). Its `host` is not passed on to
 another site: where other sites listen on the same port, requests for that host get a `503`, so that they do not reach
-the upstream of someone else. (A site without a `host`, or alone on its port, has no such answer: on its own port the
-connection is refused.) The same holds at start: the pod starts with the sites that are valid. What no single site can show is checked on the whole config, and there the whole previous
+the upstream of someone else. A site without a `host` is answered the same way, as a catch-all. (Alone on its port there is
+nothing to answer with: the connection is refused. No answer is added either where it would clash with another site: a
+`tcp` site on the port, or another site with the same `host`.) The same holds at start: the pod starts with the sites that are valid. What no single site can show is checked on the whole config, and there the whole previous
 config stays: two sites with the same `host` and `port` are refused as a whole, and so is a change in the table's third
 row. Warnings, such as a certificate close to expiry, are logged and do not stop an update. At start, a failure of the
 whole config (or of the API call) stops the process, because there is no previous config to keep.

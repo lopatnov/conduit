@@ -291,9 +291,13 @@ impl<B: CrdConfigBuilder> SiteSet<B> {
         // An object with no version at all is not served. Its host must not fall through to another site of the
         // same port (a request for it would reach someone else's upstream, with its credentials), so where that
         // could happen it is answered by a placeholder that serves nothing.
-        let others: Vec<B::Site> = slots.iter().flatten().cloned().collect();
+        let mut others: Vec<B::Site> = slots.iter().flatten().cloned().collect();
         for (slot, crd, error) in pending {
             let placeholder = B::placeholder(&crd.spec, &others);
+            // the next object is checked against this one too (two dropped sites with one host and port)
+            if let Some(p) = &placeholder {
+                others.push(p.clone());
+            }
             let answered = placeholder.is_some();
             slots[slot] = placeholder;
             let message = if answered {

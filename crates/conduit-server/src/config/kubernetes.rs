@@ -90,20 +90,32 @@ impl CrdConfigBuilder for ConduitSchema {
     }
 
     fn placeholder(spec: &ConduitSiteSpec, others: &[SiteConfig]) -> Option<SiteConfig> {
-        // Without a host the site is a catch-all and the others cannot be told from it by name.
-        let host = spec
-            .host
-            .as_deref()
-            .filter(|h| !h.is_empty() && *h != "*")?;
+        // No host (or `*`): the site was a catch-all, and without an answer of its own its requests would go to
+        // the first site of the port.
+        let host = spec.host.as_deref().filter(|h| !h.is_empty() && *h != "*");
         let port = spec
             .port
             .unwrap_or(if spec.tls.is_some() { 443 } else { 80 });
+        let same_port: Vec<&SiteConfig> = others
+            .iter()
+            .filter(|o| o.port.unwrap_or(if o.tls.is_some() { 443 } else { 80 }) == port)
+            .collect();
         // On a port of its own nothing falls through to another site: the listener is not bound and the
         // connection is refused. (A new port would also be a restart-only change that refuses the whole update.)
-        let port_in_use = others
-            .iter()
-            .any(|o| o.port.unwrap_or(if o.tls.is_some() { 443 } else { 80 }) == port);
-        if !port_in_use {
+        if same_port.is_empty() {
+            return None;
+        }
+        // A port of a `tcp` site, or a host and port that another site already has, would make the whole config
+        // invalid (`validate_no_duplicate_host_port`): that site is left out as before.
+        let taken = same_port.iter().any(|o| {
+            o.tcp.is_some()
+                || match (host, o.host.as_deref()) {
+                    (Some(h), Some(oh)) => h.eq_ignore_ascii_case(oh),
+                    (None, None | Some("*")) => true,
+                    _ => false,
+                }
+        });
+        if taken {
             return None;
         }
         let site: SiteConfig = serde_json::from_value(serde_json::json!({
@@ -813,6 +825,40 @@ mod tests {
                 .1
                 .is_empty()
         );
+    }
+
+    /// The placeholder of a dropped site must never make the whole config invalid, or one bad object would hold back
+    /// every other site again: no placeholder on a `tcp` port, next to a site with its host, or twice for one host;
+    /// and a dropped catch-all is answered too.
+    #[test]
+    fn a_placeholder_never_makes_the_whole_config_invalid() {
+        let hdr = "apiVersion: conduit.io/v1\nkind: ConduitSite\n";
+        let yaml = format!(
+            "{hdr}metadata: {{name: web}}\nspec: {{host: web.example.com, port: 8080, proxy: 'http://a:1'}}\n---\n\
+             {hdr}metadata: {{name: db}}\nspec: {{port: 5432, tcp: {{targets: ['db:5432']}}}}\n---\n\
+             {hdr}metadata: {{name: copy-of-web}}\nspec: {{host: WEB.example.com, port: 8080, proxy: 'not-a-url'}}\n---\n\
+             {hdr}metadata: {{name: on-the-tcp-port}}\nspec: {{host: x.example.com, port: 5432, proxy: 'not-a-url'}}\n---\n\
+             {hdr}metadata: {{name: bad-1}}\nspec: {{host: twice.example.com, port: 8080, proxy: 'not-a-url'}}\n---\n\
+             {hdr}metadata: {{name: bad-2}}\nspec: {{host: twice.example.com, port: 8080, proxy: 'not-a-url'}}\n---\n\
+             {hdr}metadata: {{name: bad-catch-all}}\nspec: {{port: 8080, proxy: 'not-a-url'}}\n"
+        );
+        let all = crds_in(&yaml);
+        let (cfg, reports) =
+            conduit_k8s::SiteSet::<ConduitSchema>::new().build(all.iter(), "127.0.0.1:2019");
+        let (_, hard) =
+            crate::config::validate::partition_by_severity(crate::config::validate::validate(&cfg));
+        assert!(hard.is_empty(), "{hard:?}");
+        let answered: Vec<&str> = reports
+            .iter()
+            .filter(|r| r.message.contains("503"))
+            .map(|r| r.name.as_str())
+            .collect();
+        // one of the two bad objects of one host, and the catch-all; nothing for the copy or the tcp port
+        assert_eq!(answered, ["bad-1", "bad-catch-all"]);
+        // the catch-all has no host, so an unknown host on 8080 reaches it and not the first site
+        assert!(cfg.sites.iter().any(|s| s.host.is_none()
+            && s.port == Some(8080)
+            && s.fallback.as_ref().and_then(|f| f.status) == Some(503)));
     }
 
     // ── build_app_config ──────────────────────────────────────────────────────
