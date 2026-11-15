@@ -209,7 +209,10 @@ in declaration order wins".
 - *Headers*, Spin-style: the host **removes** every incoming header with the reserved prefix `conduit-` and then sets
   `conduit-route`, `conduit-param-<name>`, `conduit-path-rest`, `conduit-client-ip`, `conduit-request-id`. Works with
   any `wasi:http` guest and any framework, no extra WIT. The removal is mandatory: without it a client could forge a
-  parameter or a client IP.
+  parameter or a client IP. `conduit-param-<name>` and `conduit-path-rest` carry the capture **percent-encoded**, as
+  it appeared in the request path: a header value must be visible ASCII (RFC 9110 §5.5), and a decoded capture can
+  hold any byte, CR and LF included. The guest decodes it; the Rhai `req.params` map and the phase 2
+  `request-context` interface hand over the decoded string.
 - *An import interface* `conduit:handler/request-context` (`route()`, `params()`, `client-ip()`, …). Typed and
   unforgeable, but every language needs bindings for it.
 
@@ -266,8 +269,10 @@ use wstd::http::{Body, Request, Response, StatusCode};
 
 #[wstd::http_server]
 async fn main(req: Request<Body>) -> Result<Response<Body>, wstd::http::Error> {
-    // set by Conduit from the route `/api/users/{id}`; a client cannot forge it
-    let id = req.headers().get("conduit-param-id").and_then(|v| v.to_str().ok()).unwrap_or("");
+    // set by Conduit from the route `/api/users/{id}`; a client cannot forge it. The value is
+    // percent-encoded ASCII (`/api/users/%C3%A9` gives `%C3%A9`), so decode it to get `é`.
+    let raw = req.headers().get("conduit-param-id").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let id = percent_encoding::percent_decode_str(raw).decode_utf8_lossy();
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
@@ -312,8 +317,9 @@ fn handle(req) {
   call needs its own bound.
 - `import` of other `.rhai` files, so a handler can be split into modules. The stock `FileModuleResolver` does not
   confine imports (`..` segments and absolute paths resolve outside its base path), so handlers use a custom resolver
-  that rejects absolute paths and `..` components, canonicalises the resolved path (following symlinks) and requires
-  the result to stay under the handler's directory.
+  that rejects absolute paths and `..` components and opens the file beneath a handle on the handler's directory,
+  refusing symlinks on the way (the `conduit-static` `open_beneath` contract, `O_NOFOLLOW` per component on Unix).
+  Check and open are one step, so no path component can be swapped for a symlink between them.
 
 ### JavaScript
 
@@ -330,8 +336,9 @@ top-level of the script are already done in the snapshot. Conduit runs it like a
 addEventListener("fetch", (event) => event.respondWith(handle(event.request)));
 
 async function handle(request) {
-  const id = request.headers.get("conduit-param-id");          // from /api/users/{id}
-  const upstream = await fetch(`https://api.example.com/users/${id}`); // needs allow.fetch
+  // from /api/users/{id}; percent-encoded, so decode it, and encode it again for the outgoing URL
+  const id = decodeURIComponent(request.headers.get("conduit-param-id") ?? "");
+  const upstream = await fetch(`https://api.example.com/users/${encodeURIComponent(id)}`); // needs allow.fetch
   return new Response(await upstream.text(), { headers: { "content-type": "application/json" } });
 }
 ```
@@ -439,7 +446,8 @@ Notes:
   fails with `access-denied` for an ungranted label.
 - **Outbound HTTP:** an allowlist of origins (`scheme://host[:port]`), matched after normalisation; redirects are not
   followed unless the target passes the same allowlist and address checks; after DNS resolution, loopback,
-  link-local, private (RFC 1918, RFC 4193) and the Admin API address are refused unless the grant names them
+  link-local, private (RFC 1918, RFC 4193), shared address space (RFC 6598, `100.64.0.0/10`, which holds the cloud
+  metadata address `100.100.100.200`) and the Admin API address are refused unless the grant names them
   explicitly (SSRF). The connection goes to the address that passed the check, with no second resolution at connect
   time (a custom resolver/connector that pins the validated address), and the same holds for every redirect hop:
   otherwise a DNS rebinding answer between check and connect reaches a private address. The
@@ -451,9 +459,10 @@ Notes:
   process environment is never exposed wholesale, and secret values are not logged.
 - **Reserved headers:** incoming `conduit-*` headers are removed before the host sets its own.
 - **SQL is parameterised at the host boundary.** `sql::query` / `sql::execute` and `conduit:sqlite` take the
-  statement and its parameters separately and bind them; there is no API that takes a pre-built string with values
-  in it, and a statement with more than one command is rejected. A handler bug can still build a bad query string
-  from its own text, but request data reaches SQLite only as bound values when the handler uses the API as offered.
+  statement and its parameters separately and bind them, and a statement with more than one command is rejected.
+  Binding protects only the values the handler passes as parameters: nothing stops a handler from building the
+  statement text itself with request data in it and an empty parameter list, and neither binding nor the
+  single-statement check makes that safe (see the last bullet of this list).
 - **Failure is closed.** A handler that cannot load, traps, exceeds a limit or returns an invalid response gets
   `500` (or `503` when the cause is the concurrency limit, `504` on the deadline) with a generic body; details go to
   the log, never to the client. The last module or script that loaded stays in use after a reload whose new file is
