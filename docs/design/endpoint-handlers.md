@@ -361,7 +361,7 @@ StarlingMonkey is to be checked in phase 1. Since Conduit only sees a `wasi:http
 the handler author's: any backend that produces a `wasi:http/incoming-handler` component of a version Conduit's host
 supports (0.2 in phase 1) needs no extra Conduit code; that the QuickJS backend does is what phase 1 verifies.
 
-**Recommendation: J1 for handlers.** It follows from the WASI HTTP decision at no extra cost in Conduit: JavaScript,
+**Decided (owner, 2026-11-15): J1 for handlers.** It follows from the WASI HTTP decision at no extra cost in Conduit: JavaScript,
 Python, Rust, Go and C# handlers all go through one engine path, one capability layer and one sandbox, and a JS
 engine bug cannot reach the proxy. Its costs are on the developer's side (a build step with Node.js, 8 MB modules)
 and in per-request time, which phase 1 measures. JS is a first-class language of the handler docs from phase 1, with
@@ -381,9 +381,11 @@ backend contains:
 So whichever path is taken, the QuickJS underneath is `rquickjs` over quickjs-ng: inside a component (J1 with
 `--backend quickjs`) or inside Conduit (J2).
 
-**J2 stays possible, through #187.** If "edit a `.js` file and reload, no build" turns out to matter, #187 (QuickJS
-*middleware*, already decided) brings `rquickjs` into Conduit, and a `handler: { js: ./x.js }` on top of the same
-handler plumbing is then a small addition (phase 4, on demand). Boa is not proposed: slower than QuickJS, larger, and
+**J2a (`rquickjs` embed) is the fallback, not a second path (owner, 2026-11-15).** Only one JS path is built. If J1
+fails before the work is finished (a JS component cannot be made to pass phase 1's e2e test, or its per-request cost
+or memory is unacceptable and cannot be tuned), the JavaScript part switches to a `handler: { js: ./x.js }` on
+`rquickjs` over the same capability layer, and this document is updated with the measurement that caused it. A
+`rquickjs` embed for *middleware* stays #187's own question. Boa is not proposed: slower than QuickJS, larger, and
 its conformance is still moving.
 
 A Conduit `jco` template (a `wit/` folder with `wasi:http` plus the `conduit:*` interfaces, and an npm script) would
@@ -607,7 +609,7 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
 3. **Outbound and SQL.** `fetch` with the allowlist, SSRF checks and `upstream:` targets; SQLite through
    `conduit:sqlite` and `sql::*`; the `webapp` bundle and, if the size allows, the `conduit-webapp` artifact.
    `lawyer` review of `rusqlite`/SQLite.
-4. **Later, on demand.** WASI 0.3 components and instance reuse; a `handler: { js: ... }` on `rquickjs` if #187 has landed and a no-build JS path is wanted; Postgres; a `conduit:handler/request-context` WIT;
+4. **Later, on demand.** WASI 0.3 components and instance reuse; Postgres; a `conduit:handler/request-context` WIT;
    streaming request bodies to Rhai; a `conduit new handler` scaffold command.
 
 ---
@@ -624,7 +626,7 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
 | 6 | Where resources are declared | `global.resources` · per site · both | **`global.resources`** (a store shared by two sites is common) |
 | 7 | `conduit-webapp` | separate release artifact · only a feature set in `full` | **decide after the phase-1 size measurement** |
 | 8 | Phase-1 scope | stateless only (as above) · stateless plus KV | **stateless only**: the routing and fail-closed plumbing is the part that touches the hot path |
-| 9 | JavaScript | J1: `jco` components (WASI HTTP) · J2: embedded engine (`rquickjs` or Boa) | **J1**; J2 later through #187 if a no-build path is wanted |
+| 9 | JavaScript | J1: `jco` components (WASI HTTP) · J2: embedded engine (`rquickjs` or Boa) | **J1 — decided by the owner, 2026-11-15**; J2a (`rquickjs`) only as the fallback if J1 fails |
 
 ## What is not known yet
 
