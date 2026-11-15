@@ -102,7 +102,7 @@ fn loopback_port(url: &str) -> Option<u16> {
         || host.starts_with("127.");
     if is_loopback {
         parsed.port().or_else(|| match parsed.scheme() {
-            "https" => Some(443),
+            "https" | "wss" => Some(443),
             _ => Some(80),
         })
     } else {

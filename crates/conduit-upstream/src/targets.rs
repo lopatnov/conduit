@@ -18,24 +18,37 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dashmap::DashMap;
 
-/// Parse "http://host:port/path" or "https://host:port/path" → "host:port".
+/// Split an upstream URL into `(is_tls, rest)`, where `rest` is everything after the scheme.
+///
+/// `http://` and `ws://` are plaintext, `https://` and `wss://` are TLS: a WebSocket connection starts as an HTTP
+/// request with `Upgrade: websocket` (RFC 6455 section 4.1), so `ws://host` and `http://host` name the same
+/// upstream. A URL with no known scheme is returned whole and plaintext.
+pub fn split_scheme(url: &str) -> (bool, &str) {
+    for (prefix, tls) in [
+        ("https://", true),
+        ("wss://", true),
+        ("http://", false),
+        ("ws://", false),
+    ] {
+        if let Some(rest) = url.strip_prefix(prefix) {
+            return (tls, rest);
+        }
+    }
+    (false, url)
+}
+
+/// Parse "http://host:port/path", "https://host:port/path" (or the `ws://` and `wss://` spellings) → "host:port".
 ///
 /// Handles IPv6 literals correctly:
 /// - `http://[::1]:8080/` → `[::1]:8080`
 /// - `http://[::1]/`      → `[::1]:80`
 pub fn url_to_host_port(url: &str) -> Option<String> {
-    let without_scheme = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
+    let (is_tls, without_scheme) = split_scheme(url);
     let host_port = without_scheme.split(['/', '?', '#']).next()?;
     if host_port.is_empty() {
         return None;
     }
-    let default_port = if url.starts_with("https://") {
-        "443"
-    } else {
-        "80"
-    };
+    let default_port = if is_tls { "443" } else { "80" };
     if host_port.starts_with('[') {
         // IPv6 literal: [::1]:8080 (has port) or [::1] (no port).
         if host_port.contains("]:") {
@@ -52,7 +65,7 @@ pub fn url_to_host_port(url: &str) -> Option<String> {
 }
 
 pub fn url_is_tls(url: &str) -> bool {
-    url.starts_with("https://")
+    split_scheme(url).0
 }
 
 /// Extract the bare hostname for SNI (no brackets, no port).
@@ -60,9 +73,7 @@ pub fn url_is_tls(url: &str) -> bool {
 /// `https://[::1]:8443/` → `::1`
 /// `https://example.com:443/` → `example.com`
 pub fn url_host(url: &str) -> String {
-    let without_scheme = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
+    let without_scheme = split_scheme(url).1;
     let host_port = without_scheme.split(['/', '?', '#']).next().unwrap_or("");
     if host_port.starts_with('[') {
         // IPv6 literal: strip brackets, ignore port.
@@ -441,6 +452,32 @@ mod tests {
     }
 
     // ── url_is_tls ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn ws_and_wss_are_the_same_upstreams_as_http_and_https() {
+        // A WebSocket handshake is an HTTP request (RFC 6455 section 4.1): ws:// is http://, wss:// is https://.
+        assert_eq!(
+            url_to_host_port("ws://example.com:9001/socket"),
+            Some("example.com:9001".to_string())
+        );
+        assert_eq!(
+            url_to_host_port("ws://example.com"),
+            Some("example.com:80".to_string())
+        );
+        assert_eq!(
+            url_to_host_port("wss://example.com"),
+            Some("example.com:443".to_string())
+        );
+        assert_eq!(
+            url_to_host_port("wss://[::1]/"),
+            Some("[::1]:443".to_string())
+        );
+        assert!(!url_is_tls("ws://example.com/"));
+        assert!(url_is_tls("wss://example.com/"));
+        assert_eq!(url_host("wss://example.com:8443/x"), "example.com");
+        assert_eq!(url_host("ws://[::1]:9001/"), "::1");
+        assert_eq!(url_to_host_port("ws://"), None);
+    }
 
     #[test]
     fn tls_true_for_https() {

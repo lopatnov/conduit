@@ -13,6 +13,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Redis, SMTP, FTP and SFTP/SSH it says whether the protocol is an HTTP route or a TCP site, gives a working config, the
   limits (idle timeout, no TLS termination or PROXY protocol on TCP sites, FTP passive ports, no UDP) and which e2e
   scenario tests it. The TCP section of `docs/configuration.md` points to it.
+- `ws://` and `wss://` are accepted in proxy `targets` as `http://` and `https://` (a WebSocket handshake is an HTTP request, RFC 6455
+  section 4.1); the validation message lists all four schemes.
+- A WebDAV section in the protocol guide and an e2e scenario, `scripts/e2e/webdav.sh`: the WebDAV methods, their bodies and
+  the `Depth`, `Overwrite`, `Timeout`, `Lock-Token`, `If`, `Destination` headers reach the upstream as sent (a 1 MiB `PUT`
+  by SHA-256), and the `DAV` and `Lock-Token` response headers come back. Conduit does not rewrite `Destination`, `If` or
+  multistatus `href`s; the guide says what that means for `stripPrefix`.
 - `http2: "h2c"` on a proxy route: HTTP/2 with prior knowledge (RFC 9113 section 3.3) to a plaintext upstream, so gRPC
   servers without TLS can be proxied. `http2: true` still means ALPN only, and over TLS `"h2c"` behaves like `true`.
 - Three e2e scenarios in `scripts/e2e/`: `streaming.sh` (SSE and WebSocket over plain HTTP and TLS: events not held back,
@@ -58,6 +64,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- A static site answers `POST`, `PUT`, `DELETE`, `PATCH` and WebDAV's methods for a file that exists with 405 and
+  `Allow: GET, HEAD, OPTIONS` (RFC 9110 section 15.5.6); it used to answer them with the file as if they were `GET`. A path
+  with no file keeps its answer (404 or the fallback), and `OPTIONS` is unchanged.
 - An ACME order can no longer hold the renewal loop (or start-up) forever: every request of the order is limited to 60 s and
   the challenge validation to 180 s. A CA that accepts a connection and never answers used to block renewal of every
   certificate; it is now an error for that certificate and the cached pair is kept.

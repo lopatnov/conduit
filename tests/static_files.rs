@@ -669,3 +669,40 @@ fn static_an_unreadable_file_is_403_before_any_header() {
         .expect("HEAD");
     assert_eq!(head.status(), 403);
 }
+
+/// A file that exists is read, not written: every method but GET, HEAD and OPTIONS (WebDAV's included) is answered
+/// 405 with an `Allow` header, not with the file as if it were a GET (RFC 9110 section 15.5.6).
+#[test]
+#[serial]
+fn static_file_refuses_methods_that_write_or_browse_it() {
+    let (server, _dir) = make_static_server(&[("hello.txt", "Hello, world!")]);
+    let client = common::local_client();
+    for method in [
+        "POST", "PUT", "DELETE", "PATCH", "PROPFIND", "MKCOL", "COPY", "MOVE", "LOCK",
+    ] {
+        let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap();
+        let resp = client
+            .request(method.clone(), server.url("/hello.txt"))
+            .send()
+            .expect("request");
+        assert_eq!(resp.status(), 405, "{method} must be refused");
+        assert_eq!(
+            resp.headers().get("allow").unwrap().to_str().unwrap(),
+            "GET, HEAD, OPTIONS"
+        );
+        assert_eq!(resp.text().unwrap(), "Method Not Allowed");
+    }
+    // GET and HEAD still serve the file.
+    assert_eq!(common::get(server.url("/hello.txt")).unwrap().status(), 200);
+    assert_eq!(
+        client
+            .head(server.url("/hello.txt"))
+            .send()
+            .unwrap()
+            .status(),
+        200
+    );
+    // A path with no file keeps its answer, whatever the method.
+    let missing = client.post(server.url("/missing.txt")).send().unwrap();
+    assert_eq!(missing.status(), 404);
+}

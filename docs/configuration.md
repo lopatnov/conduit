@@ -725,7 +725,7 @@ proxy:
 
 | Field                 | Type                 | Default       | Description                                                                    |
 | --------------------- | -------------------- | ------------- | ------------------------------------------------------------------------------ |
-| `targets`             | string[] or object[] | —             | Upstream URLs (plain strings or `{url, weight}`)                               |
+| `targets`             | string[] or object[] | —             | Upstream URLs (plain strings or `{url, weight}`); `http://`, `https://`, and `ws://`/`wss://` as the same two (a WebSocket handshake is an HTTP request) |
 | `strategy`            | string               | `round-robin` | Load balancing — see [Load balancing](#load-balancing)                         |
 | `stripPrefix`         | bool                 | `false`       | Remove matched path prefix before forwarding                                   |
 | `hashKey`             | string               | —             | Key for hash-based strategies: `"ip"`, `"url"`, `"header:X-Name"`              |

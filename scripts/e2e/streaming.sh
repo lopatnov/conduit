@@ -31,13 +31,14 @@ done
 
 # The routes of the two sites (a plain port and a TLS port). The two `quick-` routes have a read timeout of 2 s, the two
 # `patient-` ones of 10 s, the others keep the default (30 s); `plain-ws` does not allow WebSocket upgrades.
+# `/ws` names its upstream as `ws://` (the same upstream as `http://`), the others as `http://`.
 routes() {
   cat <<'EOF'
     proxy:
       "/sse": {targets: ["http://sse.test:9000"], stripPrefix: true}
       "/quick-sse": {targets: ["http://sse.test:9000"], stripPrefix: true, timeout: {readMs: 2000}}
       "/patient-sse": {targets: ["http://sse.test:9000"], stripPrefix: true, timeout: {readMs: 10000}}
-      "/ws": {targets: ["http://ws.test:9001"], stripPrefix: true, websocket: true}
+      "/ws": {targets: ["ws://ws.test:9001"], stripPrefix: true, websocket: true}
       "/quick-ws": {targets: ["http://ws.test:9001"], stripPrefix: true, websocket: true, timeout: {readMs: 2000}}
       "/patient-ws": {targets: ["http://ws.test:9001"], stripPrefix: true, websocket: true, timeout: {readMs: 10000}}
       "/plain-ws": {targets: ["http://ws.test:9001"], stripPrefix: true}

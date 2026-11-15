@@ -22,8 +22,8 @@
 [] error|sites[28].proxy["/api"].groups[0].targets|At least one target is required in each group
 [] error|sites[29].proxy["/api"].groups[0].targets|Strategy 'weighted-round-robin' requires weighted targets: { "url": "...", "weight": N }
 [] error|sites[31].proxy["/api"].rewrite[0].from|Invalid regex '(unclosed': regex parse error:\n    (unclosed\n    ^\nerror: unclosed group
-[] error|sites[33].proxy|Invalid upstream URL 'not-a-url' — must start with http:// or https://
-[] error|sites[34].proxy["/api"][1]|Invalid upstream URL 'ftp://bad:4000' — must start with http:// or https://
+[] error|sites[33].proxy|Invalid upstream URL 'not-a-url' — must start with http://, https://, ws:// or wss://
+[] error|sites[34].proxy["/api"][1]|Invalid upstream URL 'ftp://bad:4000' — must start with http://, https://, ws:// or wss://
 [] error|sites[38].ipFilter.deny[0]|Invalid IP address or CIDR block: '999.999.0.0/8'
 [] error|sites[38].ipFilter.deny[1]|Invalid IP address or CIDR block: 'not-an-ip'
 [] error|sites[40].ipFilter.deny[0]|Invalid IP address or CIDR block: '10.0.0.0/33'
@@ -53,8 +53,8 @@
 [] error|sites[79].rateLimit.limit|limit must be greater than 0
 [] error|sites[80].upload.dir|Upload directory path must not be empty
 [] error|sites[81].ipFilter.deny[0]|Invalid IP address or CIDR block: '10.0.0.0/abc'
-[] error|sites[82].proxy["/api"]|Invalid upstream URL 'ftp://bad' — must start with http:// or https://
-[] error|sites[83].proxy["/api"].targets[0]|Invalid upstream URL 'ftp://bad:4000' — must start with http:// or https://
+[] error|sites[82].proxy["/api"]|Invalid upstream URL 'ftp://bad' — must start with http://, https://, ws:// or wss://
+[] error|sites[83].proxy["/api"].targets[0]|Invalid upstream URL 'ftp://bad:4000' — must start with http://, https://, ws:// or wss://
 [wasm] warning|sites[85].middleware[0].path|plugin "p.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
 [wasm] warning|sites[86].middleware[0].path|plugin "plugin.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
 [wasm] warning|sites[90].middleware[0].path|plugin "a.wasm" cannot be read (entity not found); until that is fixed this entry is skipped and requests pass through it (after a reload, a version that already ran in this process stays in use)
@@ -87,13 +87,13 @@
 [] error|sites[139].tls.clientAuth.ca|tls.clientAuth.ca must be a path to a PEM CA file
 [] error|sites[140].tls|TLS is configured but neither 'cert'/'key' nor 'acme' is set — this would silently fall back to a plain TCP listener. Remove the 'tls' block entirely for plaintext, or set 'cert'+'key' / 'acme'.
 [] error|sites[140].tls.clientAuth|tls.clientAuth requires tls.cert+tls.key or tls.acme to be configured
-[] error|sites[142].proxy["/"].targets[0]|Invalid upstream URL 'backend:4000' — must start with http:// or https://
+[] error|sites[142].proxy["/"].targets[0]|Invalid upstream URL 'backend:4000' — must start with http://, https://, ws:// or wss://
 [] error|sites[144].proxy["/"].rewrite[0].from|Invalid regex '[invalid': regex parse error:\n    [invalid\n    ^\nerror: unclosed character class
 [] error|sites[147].proxy["/"].mirror|mirror URL must be http:// or https://
 [] error|sites[149].upload.dir|Upload directory path must not be empty
 [] error|sites[150].proxy["/"].targets|Strategy 'weighted-round-robin' requires weighted targets: { "url": "...", "weight": N }
 [] error|sites[152].proxy["/"].groups[0].targets|At least one target is required in each group
-[] error|sites[154].proxy["/"][0]|Invalid upstream URL 'not-a-url' — must start with http:// or https://
+[] error|sites[154].proxy["/"][0]|Invalid upstream URL 'not-a-url' — must start with http://, https://, ws:// or wss://
 [] error|sites[159].consumers.sharedJwt|consumers.sharedJwt requires either "secret" (HS256) or "jwksUrl" (RS256/ES256)
 [] error|sites[160].apiKey.keys[0]|API key must not be empty — an empty key allows unauthenticated access
 [] error|sites[161].jwtAuth|jwtAuth.secret and jwtAuth.jwksUrl are mutually exclusive
@@ -123,10 +123,10 @@
 [] error|sites[170].tls.ciphers|tls.ciphers is not currently enforced — Pingora 0.9's rustls TLS backend gives Conduit no API to restrict cipher suites (the default rustls suite set is always used). Remove this field; see https://github.com/lopatnov/conduit/issues/189 for status.
 [] error|sites[171].tls|Cannot combine 'acme' with 'cert'/'key' — use Auto-TLS or manual certificates, not both
 [] error|sites[171].host|tls.acme needs a 'host': the certificate is ordered for it, and without one this site would serve plain HTTP on its TLS port
-[] error|sites[172].proxy["/list"][1]|Invalid upstream URL 'ftp://bad.example' — must start with http:// or https://
+[] error|sites[172].proxy["/list"][1]|Invalid upstream URL 'ftp://bad.example' — must start with http://, https://, ws:// or wss://
 [] error|sites[173].proxy["/empty"].targets|At least one target is required (or use 'groups' for two-level balancing)
 [] error|sites[174].proxy["/wrr"].targets|Strategy 'weighted-round-robin' requires weighted targets: { "url": "...", "weight": N }
-[] error|sites[175].proxy["/bad-url"].targets[0]|Invalid upstream URL 'ftp://a.example:1' — must start with http:// or https://
+[] error|sites[175].proxy["/bad-url"].targets[0]|Invalid upstream URL 'ftp://a.example:1' — must start with http://, https://, ws:// or wss://
 [] error|sites[176].proxy["/groups"].groups[0].targets|At least one target is required in each group
 [] error|sites[176].proxy["/groups"].groups[1].targets|Strategy 'weighted-round-robin' requires weighted targets: { "url": "...", "weight": N }
 [] error|sites[177].proxy["/rewrite"].rewrite[0].from|Invalid regex '(': regex parse error:\n    (\n    ^\nerror: unclosed group

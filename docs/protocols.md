@@ -13,6 +13,7 @@ Conduit has two ways to carry a protocol, and the first question for any protoco
 | [WebSocket](#websocket) | HTTP | `websocket: true`, `timeout.readMs` | `scripts/e2e/streaming.sh` |
 | [gRPC](#grpc) | HTTP | HTTP/2 on both sides, `http2: "h2c"` for a plaintext upstream | `scripts/e2e/grpc.sh` |
 | [GraphQL](#graphql) | HTTP | nothing special; subscriptions use WebSocket or SSE | covered by the WebSocket and SSE checks |
+| [WebDAV](#webdav) | HTTP | `limits.maxBodyBytes` for uploads; keep the upstream at the same path | `scripts/e2e/webdav.sh` |
 | [HLS / DASH](#hls-and-dash) | HTTP (`static:` or `proxy:`) | `staticOptions.maxAge` | by hand (see below) |
 | [WebRTC](#webrtc) | HTTP for signalling; media is UDP and cannot be proxied | — | signalling is WebSocket |
 | [RTMP](#rtmp) | TCP | one site on port 1935 | `scripts/e2e/protocols.sh` |
@@ -88,10 +89,17 @@ Upgrades are refused with 502 unless the route says `websocket: true`:
 ```yaml
     proxy:
       "/socket":
-        targets: ["http://ws.internal:9001"]
+        targets: ["ws://ws.internal:9001"]
         websocket: true
         timeout: {readMs: 300000}
 ```
+
+**`ws://` or `http://` in `targets`: both work, and they mean the same upstream.** A WebSocket connection starts as an
+ordinary HTTP/1.1 request with `Upgrade: websocket` ([RFC 6455 §4.1](https://www.rfc-editor.org/rfc/rfc6455#section-4.1)),
+and Conduit is the one that forwards that request, so the target is an address, not a protocol. `ws://` is accepted as
+`http://` (port 80 by default) and `wss://` as `https://` (port 443, TLS to the upstream). Use `wss://` or `https://` when
+the upstream itself speaks TLS. The route's `websocket: true` is what allows the upgrade, not the scheme of the target.
+The e2e scenario uses `ws://` for its main route and `http://` for the others.
 
 Through a plain port and a TLS port (`ws://` and `wss://`) the test passes the handshake, text messages, ping/pong,
 fragmented messages, a 1 MiB binary message (hash compared) and the close handshake including the upstream's close code. The
@@ -150,6 +158,40 @@ so the route that serves them needs `websocket: true` or the SSE note about `rea
     proxy:
       "/graphql": {targets: ["http://api.internal:4000"], websocket: true, timeout: {readMs: 120000}}
 ```
+
+## WebDAV
+
+WebDAV (RFC 4918) is HTTP with more methods, so it is an ordinary proxy route. Nothing needs enabling: Conduit has no
+list of allowed methods, and `PROPFIND`, `PROPPATCH`, `MKCOL`, `COPY`, `MOVE`, `LOCK`, `UNLOCK`, `DELETE`, `PUT` and `OPTIONS`
+reach the upstream as sent.
+
+```yaml
+    limits: {maxBodyBytes: 1073741824}     # a site setting: the largest upload (1 GiB here)
+    proxy:
+      "/files": {targets: ["http://dav.internal:8080"], timeout: {readMs: 600000}}
+```
+
+What `webdav.sh` shows, against an upstream that echoes every request:
+
+- The methods, the request bodies (PROPFIND and LOCK XML, a 1 MiB `PUT` compared by length and SHA-256) and the headers
+  `Depth`, `Overwrite`, `Timeout`, `Lock-Token`, `If`, `Destination` and `Content-Type` arrive unchanged. The statuses
+  (207, 201, 204) and the response headers `DAV`, `Allow` and `Lock-Token` come back unchanged. The client's `Host` is
+  forwarded, so an upstream that compares it with the host in `Destination` (Apache `mod_dav` does) sees the same one.
+- **Conduit does not rewrite URLs that the client wrote.** `Destination`, the resource tags of `If`, the `Location` of a
+  `201` and the `<href>` elements of a multistatus body are in the client's namespace, and are passed on and returned as
+  they are. With the default (no `stripPrefix`) the upstream is mounted at the same path as the route and all of this is
+  consistent; that is the setup to start with. With `stripPrefix: true` the upstream sees paths without the prefix but
+  `Destination` still has it, and the `href`s it returns do not: only an upstream that is told its public prefix can cope
+  (Radicale, for one, takes it from an `X-Script-Name` header, which `requestTransform.setHeaders` can add; check your server's
+  documentation, this is not covered by the test).
+- The site's `limits.maxBodyBytes` applies to uploads, so raise it for large `PUT`s. `timeout.readMs` is an idle timeout: a transfer
+  that stalls for that long is closed.
+- The cache stores only `GET` and `HEAD` by default, so `PROPFIND` is never served from it.
+
+A **static site is read-only**: a file that exists is served for `GET` and `HEAD`, and every other method (`PUT`, `DELETE`,
+`PROPFIND`, `MKCOL` ...) is answered **405 Method Not Allowed** with `Allow: GET, HEAD, OPTIONS`, so a WebDAV client that
+tries to mount a `static:` directory is told plainly that it cannot write instead of being sent the file. Conduit does not
+serve WebDAV itself; put a WebDAV server behind a `proxy:` route.
 
 ## HLS and DASH
 
