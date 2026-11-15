@@ -25,7 +25,7 @@
   - [Limits and timeouts](#limits-and-timeouts)
   - [Configuration](#configuration)
     - [Resource scopes](#resource-scopes)
-  - [Crates, Cargo features and the `webapp` bundle](#crates-cargo-features-and-the-webapp-bundle)
+  - [Crates, Cargo features and the `app-server` build](#crates-cargo-features-and-the-app-server-build)
   - [Rhai and WASM parity](#rhai-and-wasm-parity)
 - [Phased plan](#phased-plan)
 - [Decisions for the owner](#decisions-for-the-owner)
@@ -55,7 +55,7 @@ sub-questions:
    denied by default: read-only files, a key-value store, SQLite, outbound HTTP to an allowlist, named secrets. This is
    exactly the model of Spin, Fastly Compute, wasmCloud and Cloudflare Workers.
 3. A new `handler:` action on a `routes[]` entry (next to `proxy:` and `static:`), named resources (global defaults that a site
-   can override or extend) granted per handler, and a `webapp` Cargo feature bundle. See [Configuration](#configuration).
+   can override or extend) granted per handler, and a new `app-server` build profile. See [Configuration](#configuration).
 
 ---
 
@@ -255,8 +255,8 @@ request and must stay cheap); handlers use components. Two WASM paths in the cod
 **Decided (owner, 2026-11-15): C.** Handlers are application code, where standard tooling and async I/O matter more than the last
 bit of size; middleware is per-request plumbing, where the current ABI's cost profile is right. Accept 0.2
 (`incoming-handler`) first, since every toolchain emits it; add 0.3 (`handler`, native `async func`) through
-`ProxyPre::P3` once a toolchain the owner wants to support emits it. The extra size goes to the opt-in `webapp`
-bundle only, not to `default` or `standard`.
+`ProxyPre::P3` once a toolchain the owner wants to support emits it. The extra size goes to the opt-in `app-server`
+profile only, not to `default` or `standard`.
 
 A Rust handler under option B (illustrative; `wstd` is the Bytecode Alliance's async std for WASI):
 
@@ -596,7 +596,7 @@ Rules for validation:
 The JSON schema (`schema/conduit.schema.json`), `docs/configuration.md` and a new `docs/handlers.md` guide would
 follow the implementation, not this design.
 
-### Crates, Cargo features and the `webapp` bundle
+### Crates, Cargo features and the `app-server` build
 
 | Crate | Content |
 | --- | --- |
@@ -614,15 +614,23 @@ handler-wasm = ["dep:lopatnov-conduit-handler-wasm"]
 handler-rhai = ["dep:lopatnov-conduit-handler-rhai"]
 kv-redb      = ["lopatnov-conduit-kv/redb"]
 sqlite       = ["lopatnov-conduit-sql/sqlite"]
-webapp       = ["handler-wasm", "handler-rhai", "kv-redb", "sqlite", "static", "compression", "hotReload"]
+app-server   = [
+    "handler-wasm", "handler-rhai", "kv-redb", "sqlite",
+    "static", "compression", "hotreload", "proxy", "acme", "mimalloc",
+]
 ```
 
-- `default` and `standard` do not change: a proxy build pays nothing (decision #31: only heavy things are optional,
-  and these are heavy).
-- `full` includes `webapp`, so the `:latest` image and the plain release download can serve handlers.
-- **`conduit-webapp` as a product:** a release artifact built with `--features webapp` (plus TLS/ACME), published next
-  to `-standard`, for people who want "Conduit as an application server" without the rest of `full`. Whether it is a
-  separate download or only a documented feature set is a decision once its size is measured.
+- **A new build profile next to `standard`, `static-server`, `gateway` and `full`** (decided by the owner,
+  2026-11-15). The name is `app-server` (the owner's pick between `app-server`, `edge`, `functions`, `runtime` is
+  pending; this text uses the recommendation): `static-server` serves files, `app-server` runs applications. It
+  carries static serving, handlers and their stores, compression, hot reload, ACME, and `proxy` because an
+  application often sends `/api` to a backend and `upstream:` fetch targets need it.
+- `default`, `standard`, `static-server` and `gateway` do not change: a proxy build pays nothing (decision #31: only
+  heavy things are optional, and these are heavy).
+- `full` includes `app-server`, so the `:latest` image and the plain release download can serve handlers.
+- The release pipeline publishes a `conduit-app-server` artifact (binaries, Docker tag, npm platform packages) next to
+  `-standard`, built with `--no-default-features --features app-server`. The phase-1 size measurement is reported
+  for it in the Footprint report, as for the other profiles.
 
 ### Rhai and WASM parity
 
@@ -663,7 +671,7 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
    secrets; `identity` grant; the `conduit:handler/request-context` WIT (route, params, client IP, request id,
    identity) with guest bindings for Rust, JavaScript and Python. `lawyer` review of `redb`.
 3. **Outbound and SQL.** `fetch` with the allowlist, SSRF checks and `upstream:` targets; SQLite through
-   `conduit:sqlite` and `sql::*`; the `webapp` bundle and, if the size allows, the `conduit-webapp` artifact.
+   `conduit:sqlite` and `sql::*`; the complete `app-server` profile and its `conduit-app-server` release artifact.
    `lawyer` review of `rusqlite`/SQLite.
 4. **Later, on demand.** WASI 0.3 components and instance reuse; Postgres;
    streaming request bodies to Rhai; a `conduit new handler` scaffold command.
@@ -680,7 +688,7 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
 | 4 | Path parameter syntax | `{id}`/`{*rest}` (Axum 0.8) · `:id`/`...` (Spin) | **`{id}`/`{*rest}` — decided by the owner, 2026-11-15** |
 | 5 | Route data to WASM | reserved headers · a WIT interface · both | **both — decided by the owner, 2026-11-15**: headers in phase 1, the WIT interface in phase 2 |
 | 6 | Where resources are declared | `global.resources` · per site · both | **both — decided by the owner, 2026-11-15**: global as defaults, a site overrides a label or adds its own ([Resource scopes](#resource-scopes)) |
-| 7 | `conduit-webapp` | separate release artifact · only a feature set in `full` | **decide after the phase-1 size measurement** |
+| 7 | A build for handlers | a separate profile and artifact · only a feature set in `full` | **a separate profile next to `standard`/`static-server`/`gateway`/`full`, never in `standard` — decided by the owner, 2026-11-15**; name `app-server` recommended, owner's pick pending |
 | 8 | Phase-1 scope | stateless only (as above) · stateless plus KV | **stateless only — decided by the owner, 2026-11-15**: the routing and fail-closed plumbing is the part that touches the hot path |
 | 9 | JavaScript | J1: `jco` components (WASI HTTP) · J2: embedded engine (`rquickjs` or Boa) | **J1 — decided by the owner, 2026-11-15**; J2a (`rquickjs`) only as the fallback if J1 fails |
 
