@@ -13,9 +13,10 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  # A PR run is superseded by its next push; a run on main is not, or each merge would cancel the previous
-  # commit's run and leave a red "cancelled" mark on a commit that never failed.
+  # A PR run is superseded by its next push. On main every commit has a group of its own, so a merge neither cancels the
+  # run of the previous commit nor is cancelled by the next one (one group per ref would let a third merge cancel the
+  # queued run of the second): a "cancelled" mark on main would look like a failure of a commit that never failed.
+  group: ci-${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:

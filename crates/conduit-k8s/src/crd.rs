@@ -139,9 +139,21 @@ mod tests {
             manifest.contains(&format!("name: conduitsites.{group}")),
             "the CRD must be named `conduitsites.{group}`"
         );
+        // every rule of the Role (`conduitsites` and `conduitsites/status`), not just one of them
+        let rule_groups: Vec<&str> = example
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("- apiGroups: "))
+            .collect();
         assert!(
-            example.contains(&format!("apiGroups: [{group}]")),
-            "the Role in example-site.yaml must grant `apiGroups: [{group}]`"
+            rule_groups.len() >= 2,
+            "example-site.yaml must hold the Role with its two rules"
         );
+        for rule in rule_groups {
+            assert_eq!(
+                rule,
+                format!("[{group}]"),
+                "every Role rule must grant `apiGroups: [{group}]`"
+            );
+        }
     }
 }

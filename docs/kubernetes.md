@@ -333,10 +333,19 @@ has a token that a writer does not know. In practice:
 | `ConduitSite watch error` in the log                                 | The watch on the API server failed; Conduit keeps the config it has                                   |
 
 **Upgrading from a release that used the group `conduit.io`.** The API group is `conduit.lopatnov.github.io` since this
-version (`conduit.io` is a domain the project does not own). Objects of the old group are not read. Export them
-(`kubectl get conduitsites.conduit.io -A -o yaml`), delete the old CRD (`kubectl delete crd conduitsites.conduit.io`, which
-deletes its objects), apply the new CRD, change `apiVersion` to `conduit.lopatnov.github.io/v1` in the manifests and
-`apiGroups` in the RBAC `Role`, and apply them again.
+version (`conduit.io` is a domain the project does not own). Objects of the old group are not read. Keep the manifests you
+applied: they are what you apply again. If you have only the objects in the cluster, export them, and remove what the API
+server sets before you apply them under the new group (it refuses an object that carries a `resourceVersion`):
+
+```sh
+kubectl get conduitsites.conduit.io -A -o yaml \
+  | yq 'del(.items[].metadata.resourceVersion, .items[].metadata.uid, .items[].metadata.creationTimestamp,
+            .items[].metadata.generation, .items[].metadata.managedFields, .items[].status)
+        | .items[].apiVersion = "conduit.lopatnov.github.io/v1"' > conduitsites-new.yaml
+```
+
+Then delete the old CRD (`kubectl delete crd conduitsites.conduit.io`, which deletes its objects), apply the new CRD, change
+`apiGroups` in the RBAC `Role`, and apply the manifests.
 
 The effective config is not printed. To see what Conduit built, look at the log lines above and at the objects
 (`kubectl get conduitsites -o yaml`): the config is exactly the list of their specs, in the order the API returns them.
