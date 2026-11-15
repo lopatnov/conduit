@@ -29,6 +29,10 @@ impl UpstreamRegistry {
         site_label: &str,
         route: &str,
     ) -> Option<Vec<(String, u32)>> {
+        // No runtime override at all (the usual case): no key to build for the two lookups below (#486).
+        if self.overrides.is_empty() {
+            return None;
+        }
         // Site-specific takes precedence.
         let specific = override_key(site_label, route);
         if let Some(v) = self.overrides.get(&specific) {

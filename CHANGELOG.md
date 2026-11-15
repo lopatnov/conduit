@@ -74,6 +74,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Fewer allocations on every proxied request (#486), with no change to what a request sees: the guards that would answer
+  `Continue` and nothing else (health bypass, redirect, middleware) are not built for a request that does not need them, the
+  guard list is sized once, the request authority is read once, routing no longer formats a key per candidate route, and an
+  empty runtime-override table is not queried. Measured with `scripts/bench/cachegrind.sh` (instructions per request, one
+  worker, 2000 and 6000 requests): bare site 152 537 → 148 329 (−2.8 %), a site with `securityHeaders` and `responseTime`
+  180 014 → 174 933 (−2.8 %).
 - A static site answers `POST`, `PUT`, `DELETE`, `PATCH` and WebDAV's methods for a file that exists with 405 and
   `Allow: GET, HEAD, OPTIONS` (RFC 9110 section 15.5.6); it used to answer them with the file as if they were `GET`. A path
   with no file keeps its answer (404 or the fallback), and `OPTIONS` is unchanged.

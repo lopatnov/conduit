@@ -47,8 +47,12 @@ pub struct FilterChain {
 }
 
 impl FilterChain {
+    /// An empty chain with room for every guard a site can have (about 16), so building it is one allocation for the
+    /// list and never a grow-and-copy (#486).
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            filters: Vec::with_capacity(16),
+        }
     }
 
     /// Append a filter to the end of the chain.
