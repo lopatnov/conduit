@@ -165,6 +165,22 @@ class Rendering(unittest.TestCase):
                 self.assertEqual([n for n, _ in found], ["LICENSE"], license_file)
                 self.assertNotIn("do not publish", repr(found))
 
+    def test_a_bundled_notice_named_in_the_policy_is_added_and_a_missing_one_fails(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "c_src", "lib"))
+        with open(os.path.join(root, "LICENSE.txt"), "w") as f:
+            f.write("MIT License, the binding\n")
+        with open(os.path.join(root, "c_src", "lib", "LICENSE"), "w") as f:
+            f.write("MIT License, the C library\n")
+        pkg = {"name": "sys", "version": "1.0.0", "license": "MIT", "license_file": None,
+               "manifest_path": os.path.join(root, "Cargo.toml")}
+        policy = {"bundled_notices": {"sys": ["c_src/lib/LICENSE"]}}
+        self.assertEqual([n for n, _ in tpl.license_files(pkg)], ["LICENSE.txt"], "without the policy only the top directory")
+        self.assertEqual([n for n, _ in tpl.license_files(pkg, policy)], ["LICENSE.txt", "LICENSE"])  # sorted by the path in the package
+        self.assertIn("the C library", tpl.render([pkg], {**POLICY, **policy}))
+        with self.assertRaises(SystemExit):
+            tpl.license_files(pkg, {"bundled_notices": {"sys": ["c_src/gone/LICENSE"]}})
+
     def test_a_crate_without_a_file_is_listed_with_the_standard_text(self):
         text = tpl.render([package("bare", license="MIT OR Apache-2.0")], POLICY)
         self.assertIn("CRATES WITHOUT A LICENCE FILE", text)

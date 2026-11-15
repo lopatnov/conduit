@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Scenario: the opt-in global allocators (issue #486).
+# Scenario: the global allocators (issue #486).
 #
 #   scripts/e2e/allocator-check.sh SYSTEM_BINARY MIMALLOC_BINARY JEMALLOC_BINARY
 #
-# Three builds of the same source (default, `--features mimalloc`, `--features jemalloc`). Each allocator prints its
+# Three builds of the same source: the system allocator (`--no-default-features --features proxy,compression,static,
+# hotreload`), the default build (mimalloc) and `--features jemalloc`. Each allocator prints its
 # statistics when the process exits if its own environment variable asks for it (mimalloc: MIMALLOC_SHOW_STATS; jemalloc
 # with tikv's symbol prefix: _RJEM_MALLOC_CONF=stats_print:true), which shows the allocator in the binary is the one
-# the feature chose, and that the default build has neither. Then each binary proxies one request to a local upstream,
+# the features chose, and that the build with neither has none. Then each binary proxies one request to a local upstream,
 # so an allocator that links but breaks the server cannot pass. Host-only (loopback, python3, curl); no Docker.
 set -euo pipefail
 
@@ -30,8 +31,8 @@ je_stats() { _RJEM_MALLOC_CONF=stats_print:true "$1" --version 2>&1 | grep -c 'B
 [ "$(je_stats "$MIMALLOC")" -eq 0 ] || fail "the mimalloc build reports jemalloc statistics"
 [ "$(je_stats "$JEMALLOC")" -ge 1 ] || fail "the jemalloc build does not report jemalloc statistics"
 [ "$(mi_stats "$JEMALLOC")" -eq 0 ] || fail "the jemalloc build reports mimalloc statistics"
-[ "$(mi_stats "$SYSTEM")" -eq 0 ] && [ "$(je_stats "$SYSTEM")" -eq 0 ] || fail "the default build reports a custom allocator"
-ok "each binary carries the allocator it was built with; the default build carries neither"
+[ "$(mi_stats "$SYSTEM")" -eq 0 ] && [ "$(je_stats "$SYSTEM")" -eq 0 ] || fail "the system-allocator build reports a custom allocator"
+ok "each binary carries the allocator it was built with; the system-allocator build carries neither"
 
 # 2. Each binary proxies a request.
 mkdir -p "$WORK/www"; echo hello-from-upstream > "$WORK/www/index.html"

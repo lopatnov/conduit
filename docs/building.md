@@ -40,7 +40,7 @@ cargo build --release
 ```
 
 `cargo build --release` with no flags produces the **minimal build**
-(`default = ["proxy", "compression", "static", "hotreload"]`) — core reverse proxy, TLS, static files, rate
+(`default = ["proxy", "compression", "static", "hotreload", "mimalloc"]`) — core reverse proxy, TLS, static files, rate
 limiting, basic/API-key auth, compression, hot-reload, Prometheus metrics,
 health checks, and the Admin API. See [Optional features](#optional-features)
 below for the `standard` bundle that matches the published binaries and
@@ -53,7 +53,7 @@ Docker images.
 `conduit -c conduit.yaml features` prints the features a configuration needs and a ready-to-paste `cargo install`
 line (see [CLI reference](cli.md#features)).
 
-The default build (`default = ["proxy", "compression", "static", "hotreload"]`) is the minimal embed-friendly
+The default build (`default = ["proxy", "compression", "static", "hotreload", "mimalloc"]`) is the minimal embed-friendly
 proxy. Add features with `--features`:
 
 | Feature         | What it enables                                                            |
@@ -74,12 +74,12 @@ proxy. Add features with `--features`:
 | `otlp`          | OpenTelemetry OTLP distributed tracing (`global.otlp`)                     |
 | `tokio-metrics` | `conduit_eventloop_lag_ms` Prometheus gauge (no config key)                |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
-| `mimalloc`      | mimalloc as the global allocator of the `conduit` binary (see [Allocator](#allocator)) |
-| `jemalloc`      | jemalloc as the global allocator of the `conduit` binary (alternative to `mimalloc`) |
+| `mimalloc`      | mimalloc as the global allocator of the `conduit` binary; **on by default**, in every bundle (see [Allocator](#allocator)) |
+| `jemalloc`      | jemalloc as the global allocator instead of mimalloc; in no bundle (see [Allocator](#allocator)) |
 | `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `disk-cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
 | `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
 | `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `disk-cache` + `acme` + `compression` — the `standard` set without static files and hot-reload |
-| `full`          | Every optional feature above except the two allocators (`static-server` and `gateway` are shorthands, not extra capabilities) |
+| `full`          | Every optional feature above except `jemalloc`, which replaces the `mimalloc` it already has (`static-server` and `gateway` are shorthands, not extra capabilities) |
 
 `proxy`, `compression`, `static` and `hotreload` are on by default and are not
 listed above because there is nothing to add — `--no-default-features` turns
@@ -178,28 +178,32 @@ strip         = true   # strip debug symbols (ELF / Mach-O)
 ### Allocator
 
 A proxy allocates a little on every request (header maps, buffers, futures), so the allocator is a visible part of the
-cost of a request. The `conduit` binary uses the system allocator unless you ask for one of two alternatives. They are
-alternatives (with both on, as under `--all-features`, mimalloc is used), not part of `full`, and apply to the binary only: a program that
-embeds the `conduit` library keeps its own allocator.
+cost of a request. The `conduit` binary uses **mimalloc** by default (feature `mimalloc`, in `default` and in every
+bundle). Two other choices exist, and each applies to the binary only: a program that embeds the `conduit` library keeps
+its own allocator.
 
 ```bash
-cargo build --release --features mimalloc   # or: --features jemalloc
+cargo build --release                                        # mimalloc (default)
+cargo build --release --features jemalloc                    # jemalloc instead; with both on, jemalloc is used
+cargo build --release --no-default-features \
+  --features proxy,compression,static,hotreload              # the system allocator
 ```
 
-Measured on one machine (4 cores, `oha -c 50` for 10 s, `workers: 1`, access log off, default features, 5 rounds in
-ABBA order with `scripts/bench/ab.sh`; instructions per request with `scripts/bench/cachegrind.sh`):
+Measured on one machine (4 cores, `oha -c 50` for 10 s, `workers: 1`, access log off, 5 rounds in ABBA order with
+`scripts/bench/ab.sh`; instructions per request with `scripts/bench/cachegrind.sh`):
 
 | Allocator | req/s | CPU per request | Instructions per request | Binary size |
 | --- | ---: | ---: | ---: | ---: |
-| system (default) | 15 224 / 15 557 | 65.3 / 63.8 µs | 146 237 | 19 405 728 B |
-| `mimalloc` | 17 981 (+18 %) | 55.2 µs (−15 %) | 126 440 (−13.5 %) | +217 KiB (+1.1 %) |
+| system | 15 224 / 15 557 | 65.3 / 63.8 µs | 146 237 | 19 405 728 B |
+| `mimalloc` (default) | 17 981 (+18 %) | 55.2 µs (−15 %) | 126 440 (−13.5 %) | +217 KiB (+1.1 %) |
 | `jemalloc` | 16 880 (+8.5 %) | 58.9 µs (−7.7 %) | 130 045 (−11.1 %) | +527 KiB (+2.8 %) |
 
-The two req/s figures for the system allocator are the two baseline arms of the two comparisons. Numbers are from a
-shared 4-core machine and will differ on yours: measure with `scripts/bench/ab.sh` before relying on them. Neither
-allocator changes any behaviour or configuration key. Both add a small amount of C code to the build (they need a C
-compiler, like `aws-lc-sys` already does). The default build is unchanged, so the size budget of
-[#516](https://github.com/lopatnov/conduit/issues/516) is not touched unless you opt in.
+The two system-allocator req/s figures are the baseline arms of the two comparisons. These are numbers from a shared
+4-core machine and will differ on yours: measure with `scripts/bench/ab.sh` before relying on them. They were taken
+with the access log off and proxying only; a static-file server was not measured. Neither allocator changes a
+configuration key. Both add a small amount of C code to the build (a C compiler is needed, as `aws-lc-sys` already
+does). `--no-default-features` removes mimalloc, so the size budget of
+[#516](https://github.com/lopatnov/conduit/issues/516) (`--no-default-features`, stripped) is not affected.
 
 ---
 
@@ -320,7 +324,7 @@ cargo bench
 Build locally using the production Dockerfile (multi-stage musl + `FROM scratch`):
 
 ```bash
-# Minimal image (default = ["proxy", "compression", "static", "hotreload"])
+# Minimal image (default = ["proxy", "compression", "static", "hotreload", "mimalloc"])
 docker build -f contrib/Dockerfile -t conduit:local .
 
 # Standard image (matches the published default tag)

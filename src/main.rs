@@ -2,13 +2,14 @@ use clap::Parser;
 use conduit::cli::args::Cli;
 use conduit::cli::dispatch::dispatch_command;
 
-// Opt-in global allocator (issue #486): the binary only, so a library user keeps theirs. The two features are
-// alternatives; with both on (`--all-features`) mimalloc wins, so that flag still builds.
+// Global allocator (issue #486): the binary only, so a library user keeps theirs. mimalloc is on by default; the two
+// features are alternatives, and with both on (`--features jemalloc` on a default build, `--all-features`) jemalloc is
+// used, so asking for it is never overridden by the default. Neither on: the system allocator.
 #[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+#[cfg(feature = "jemalloc")]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

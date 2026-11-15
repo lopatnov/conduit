@@ -146,8 +146,13 @@ def shipped_crates(meta):
     return sorted(crates, key=lambda p: (p["name"], p["version"]))
 
 
-def license_files(package):
-    """(file name, text) of the licence and notice files in the package's top directory, sorted by name."""
+def license_files(package, policy=None):
+    """(file name, text) of the licence and notice files in the package's top directory, sorted by name.
+
+    `policy["bundled_notices"][crate]` names more files, relative to the package, for a crate that bundles C sources
+    under another licence than its own (libmimalloc-sys: Microsoft's mimalloc notice sits in `c_src/`). The file must
+    exist and stay inside the package: a stale entry fails the check instead of silently dropping a notice.
+    """
     directory = os.path.dirname(package["manifest_path"])
     names = set()
     for name in os.listdir(directory):
@@ -155,6 +160,10 @@ def license_files(package):
             names.add(name)
     if package.get("license_file"):
         names.add(package["license_file"])
+    for name in ((policy or {}).get("bundled_notices", {}).get(package["name"], [])):
+        if not os.path.isfile(os.path.join(directory, name)):
+            raise SystemExit(f"{package['name']}: ci/license-policy.json bundled_notices names {name}, which the package does not contain")
+        names.add(name)
     found = []
     root = os.path.realpath(directory)
     for name in sorted(names):
@@ -173,10 +182,11 @@ def license_files(package):
 
 
 def load_policy(path=POLICY):
-    """The allow-list: `allow`, `allow_exceptions` and `clarify` (a per-crate licence for a crate whose own expression is missing or malformed, pinned to it)."""
+    """The allow-list: `allow`, `allow_exceptions`, `clarify` (a per-crate licence for a crate whose own expression is missing or malformed, pinned to it) and `bundled_notices` (extra notice files inside a package)."""
     with open(path, encoding="utf-8") as f:
         policy = json.load(f)
     policy.setdefault("clarify", {})
+    policy.setdefault("bundled_notices", {})
     return policy
 
 
@@ -258,7 +268,7 @@ def missing_standard_texts(crates, policy):
     """
     problems = []
     for p in crates:
-        if license_files(p):
+        if license_files(p, policy):
             continue
         expr = effective_license(p, policy) or "unknown"
         if not standard_text(standard_text_id(expr)):
@@ -272,7 +282,7 @@ def missing_standard_texts(crates, policy):
 def render(crates, policy):
     """The text of the third-party licence file for `crates`."""
     notices = sorted(
-        f"{p['name']} {p['version']}" for p in crates if any(n.lower().startswith("notice") for n, _ in license_files(p))
+        f"{p['name']} {p['version']}" for p in crates if any(n.lower().startswith("notice") for n, _ in license_files(p, policy))
     )
     note = (
         "NOTICE files (Apache-2.0 section 4(d)): the text of a crate's NOTICE file is reproduced below with its licence "
@@ -287,7 +297,7 @@ def render(crates, policy):
         repo = p.get("repository") or p.get("homepage") or "(no repository given)"
         label = f"{p['name']} {p['version']}"
         out.append(f"{label}  [{expr}]  {repo}\n")
-        files = license_files(p)
+        files = license_files(p, policy)
         if not files:
             no_file.append((label, expr, repo))
         for name, text in files:

@@ -614,7 +614,7 @@ for the CRD schema and `kubectl apply` instructions.
 
 Conduit uses compile-time feature flags to keep the binary lean and the
 attack surface small. `cargo build --release` with no flags produces the
-**minimal build** (`default = ["proxy", "compression", "static", "hotreload"]`): core reverse proxy, TLS,
+**minimal build** (`default = ["proxy", "compression", "static", "hotreload", "mimalloc"]`): core reverse proxy, TLS,
 static files, rate limiting, basic/API-key auth, compression, hot-reload,
 Prometheus metrics, health checks, and the Admin API. It's the right choice
 for embedding Conduit in a larger system or for the smallest footprint.
@@ -631,7 +631,7 @@ out — see [Building without `proxy`](building.md#building-without-proxy) for t
 exact effect, including which config shapes change meaning.
 
 ```bash
-# Minimal build (default = ["proxy", "compression", "static", "hotreload"]) — embed-friendly, smallest footprint
+# Minimal build (default = ["proxy", "compression", "static", "hotreload", "mimalloc"]) — embed-friendly, smallest footprint
 cargo build --release
 
 # Standard build — matches the published "conduit-<target>" binaries
@@ -679,8 +679,10 @@ extra crates each feature compiles in. `conduit features -c FILE` prints what a 
 | `otlp`            | OpenTelemetry OTLP tracing                          | `opentelemetry` stack   |
 | `tokio-metrics`   | `conduit_eventloop_lag_ms` Prometheus gauge          | —                       |
 | `kubernetes`      | Kubernetes CRD config provider                      | `kube`, `k8s-openapi`   |
+| `mimalloc`        | mimalloc allocator in the binary (on by default, in every bundle) | `mimalloc`, `libmimalloc-sys` (C) |
+| `jemalloc`        | jemalloc allocator instead of mimalloc (not in a bundle) | `tikv-jemallocator` (C) |
 | `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) — used by the published "standard" binaries/images | bundle, no extra deps of its own |
-| `static-server`   | Bundle for `--no-default-features` builds: `static` + `compression` + `hotreload` (the default set minus `proxy`) | bundle, no extra deps of its own |
+| `static-server`   | Bundle for `--no-default-features` builds: `static` + `compression` + `hotreload` + `mimalloc` (the default set minus `proxy`) | bundle, no extra deps of its own |
 | `gateway`         | Bundle for `--no-default-features` builds: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` (the `standard` set without static files and hot-reload) | bundle, no extra deps of its own |
 | `full`            | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) | all of the above        |
 

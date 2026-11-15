@@ -990,11 +990,12 @@ jobs:
       - name: cargo hack check --workspace --each-feature --no-dev-deps
         run: cargo hack check --workspace --each-feature --no-dev-deps
 
-  # ── Opt-in global allocators (issue #486) ───────────────────────────────────
+  # ── Global allocators (issue #486) ──────────────────────────────────────────
   # `cargo hack` above only compiles each feature. What nothing else shows is that the allocator is really the one in
   # use: each allocator prints its statistics at exit when asked through its own environment variable (mimalloc:
-  # MIMALLOC_SHOW_STATS, jemalloc with tikv's symbol prefix: _RJEM_MALLOC_CONF), and the default build must print
-  # neither. A binary then serves one proxied request, so a broken allocator hook cannot hide behind `--version`.
+  # MIMALLOC_SHOW_STATS, jemalloc with tikv's symbol prefix: _RJEM_MALLOC_CONF), and the build with neither (the system
+  # allocator) must print none. Each binary then proxies requests, so a broken allocator hook cannot hide behind
+  # `--version`. mimalloc is the default build, jemalloc is `--features jemalloc`.
   allocators:
     name: Opt-in allocators (mimalloc, jemalloc)
     runs-on: ubuntu-latest
@@ -1014,12 +1015,12 @@ jobs:
           key: allocators
         continue-on-error: true
 
-      - name: Build the default, mimalloc and jemalloc binaries
+      - name: Build the system-allocator, default (mimalloc) and jemalloc binaries
         run: |
           set -eu
-          cargo build --locked
+          cargo build --locked --no-default-features --features proxy,compression,static,hotreload
           cp target/debug/conduit /tmp/conduit-system
-          cargo build --locked --features mimalloc
+          cargo build --locked
           cp target/debug/conduit /tmp/conduit-mimalloc
           cargo build --locked --features jemalloc
           cp target/debug/conduit /tmp/conduit-jemalloc
