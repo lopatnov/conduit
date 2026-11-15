@@ -6,7 +6,8 @@ that are compatible with Conduit's own [Apache-2.0](../LICENSE) licence; none of
 This page lists the technologies that shape what Conduit does. It is written by hand. The complete list is generated
 from `Cargo.lock`: every crate that can end up in a Conduit binary, its licence, and the full licence and notice texts
 are in [`THIRD-PARTY-LICENSES.txt`](../THIRD-PARTY-LICENSES.txt), which is also inside every release archive, the
-Debian package and the Docker image (`/licenses/`), and is attached to every GitHub release. CI checks both: a
+Debian package, the npm package (gzipped) and the Docker image (`/licenses/`), and is attached to every GitHub
+release. CI checks both: a
 dependency outside the allow-list in [`ci/license-policy.json`](../ci/license-policy.json) fails the build, and so does
 a row below whose licence differs from the one `Cargo.lock` says (`scripts/third_party_licenses.py --check`).
 
