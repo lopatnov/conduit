@@ -78,9 +78,11 @@ docker run --rm --network "$NET" -v "$WORK:/conf:ro" -v "$here/payload:/payload:
 #    Every line curl prints is stamped when it is read, so the time is that of the first completed event (the blank
 #    line that ends it), not of the response's first byte (headers can arrive early while the events are held back).
 out=$(client sh -c 'echo "start $(date +%s.%N)"
-  curl -sS --max-time 20 --cacert /conf/cert.pem --http2 -N -w "\n%{http_version}\n" \
-    "https://app.test:8443/sse/events?n=3&gap=0.5" | while IFS= read -r line; do printf "%s %s\n" "$(date +%s.%N)" "$line"; done
+  # curl runs in a subshell so its exit status is kept (a pipe would report the status of the last command).
+  { curl -sS --max-time 20 --cacert /conf/cert.pem --http2 -N -w "\n%{http_version}\n" \
+    "https://app.test:8443/sse/events?n=3&gap=0.5" || echo "curl-exit $?"; } | while IFS= read -r line; do printf "%s %s\n" "$(date +%s.%N)" "$line"; done
   echo "end $(date +%s.%N)"')
+echo "$out" | grep -q 'curl-exit' && fail "curl did not finish the SSE request over HTTP/2: $out"
 version=$(echo "$out" | awk 'NF == 2 && $1 ~ /^[0-9.]+$/ && $2 ~ /^[0-9]$/ { print $2 }')
 [ "$version" = "2" ] || fail "the SSE request did not use HTTP/2 (version '$version'): $out"
 echo "$out" | grep -c ' data: tick' | grep -qx 3 || fail "the three events did not arrive over HTTP/2: $out"

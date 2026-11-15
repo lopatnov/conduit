@@ -198,7 +198,7 @@ fn spawn_health_task(
                 let Some(host_port) = targets::url_to_host_port(url) else {
                     continue;
                 };
-                let (ok, latency_ms) = probe_http(&host_port, &path, timeout).await;
+                let (ok, latency_ms) = probe_upstream(url, &host_port, &path, timeout).await;
                 let mut entry = registry.statuses.entry(url.clone()).or_default();
                 let was_healthy = entry.healthy;
                 apply_probe_result(
@@ -242,6 +242,34 @@ pub(crate) async fn probe_http(host_port: &str, path: &str, timeout: Duration) -
             let latency_ms = start.elapsed().as_millis() as u64;
             (status > 0 && status < 500, latency_ms)
         }
+        _ => (false, 0),
+    }
+}
+
+/// Probe one upstream: plaintext HTTP/1.1 for `http://` and `ws://`, a TCP connect for TLS upstreams (`https://`,
+/// `wss://`). The HTTP probe is not understood by a TLS listener, which would mark a healthy upstream unhealthy (or,
+/// behind a server that answers plaintext on its TLS port, healthy by accident).
+pub(crate) async fn probe_upstream(
+    url: &str,
+    host_port: &str,
+    path: &str,
+    timeout: Duration,
+) -> (bool, u64) {
+    if targets::url_is_tls(url) {
+        probe_connect(host_port, timeout).await
+    } else {
+        probe_http(host_port, path, timeout).await
+    }
+}
+
+/// A probe that only opens a TCP connection to `host_port` (for upstreams that speak TLS: the connection succeeding
+/// means a listener is there, which is all a plaintext probe could learn from them).
+///
+/// Returns `(success, latency_ms)`; `timeout` is one deadline for the connect.
+pub(crate) async fn probe_connect(host_port: &str, timeout: Duration) -> (bool, u64) {
+    let start = tokio::time::Instant::now();
+    match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(host_port)).await {
+        Ok(Ok(_stream)) => (true, start.elapsed().as_millis() as u64),
         _ => (false, 0),
     }
 }
