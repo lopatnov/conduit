@@ -3936,7 +3936,7 @@ middleware:
 | `maxHeaderValueBytes` | `8192` | The longest header value the processor may set, up to 65536. |
 | `requestPhase` | `true` | `false`: the request headers are not sent (a processor that wants only bodies, or only the response). |
 | `requestBody` | `none` | `buffered`: the whole request body is held, sent as one message and replaced by the answer. `streamed`: every chunk is sent as it arrives and replaced by the answer to it. `none`: the body is not sent. |
-| `maxBodyBytes` | `1048576` | `buffered` only: the largest body that is held (1 to 16777216). A larger body is refused with **413** and never sent to the processor. |
+| `maxBodyBytes` | `1048576` | `buffered` only: the largest body that is held (1 to 16777216). A larger body is refused with **413** and never sent to the processor. An answer from the processor may be about this size (plus 64 KiB), never less than 4 MiB; a bigger one is a failure and follows `failOpen`. |
 | `responsePhase` | `false` | `true`: the response headers (`:status` and the upstream's headers) are sent; the processor may change them or replace the response. |
 | `responseBody` | `none` | `observe`: every chunk of the response body is copied to the processor without waiting for it. |
 
@@ -3974,7 +3974,7 @@ phase keeps its stream open until the request ends.
   afterwards.
 - *An immediate response*: the request ends there with the processor's status (200 to 599), headers and body; the
   site's CORS and security headers are added. One value per header name (a second `Set-Cookie`, even with an append
-  action, replaces the first). 204, 205 and 304 are sent without a body and without `Content-Length`. In the
+  action, replaces the first). 204 and 304 are sent without a body and without `Content-Length`; a 205 has `Content-Length: 0`. In the
   **response** phase an immediate response replaces the upstream's status, headers and body; when the upstream response
   has no body to replace (a `HEAD` request, 204, 304, `Content-Length: 0`) the answer's status and headers are sent and its
   body is not (logged once).
@@ -3992,7 +3992,10 @@ later than `timeoutMs`, or sends an answer that is not accepted) the entry's pol
 the entry then does nothing for the rest of that request (a request body that was being held is forwarded as it was
 received); without it the request is refused, or, if the response is already being sent, the response is replaced by
 the refusal. Each failure is logged at `warn` level on the `conduit::ext_proc` target with the reason. `observe` never
-fails a request: a processor that cannot keep up (the 256-chunk queue is full) or is unreachable simply stops being fed.
+fails a request: a processor that cannot keep up (the 256-chunk queue is full, or a send takes longer than `timeoutMs`) or is
+unreachable simply stops being fed. A response that a fail-closed entry refused stays refused: if the route's `retry` (or
+anything else) produces another response for the same request, the refusal is repeated for it, and a response replaced by
+a processor's answer is never retried upstream.
 
 **Where it runs.** `ext_proc` entries run in `middleware` order, after the built-in guards (IP filter, rate limit,
 authentication, `forwardAuth`, redirects, fault injection), so the processor only sees requests that already passed
@@ -4000,6 +4003,16 @@ them. The processor is trusted: it can set any header that is not in the list ab
 treats as identity, and a token it sets in `Authorization` is read, unverified, by features that run after the guards
 (the `{{ jwt.<claim> }}` header templates). It receives every request header, `Authorization` and cookies included, so
 `grpc://` (plain text) belongs on loopback or a private network only. Do not point `grpc` at a service you do not control.
+
+**Where the response phase does not run.** The response phase and `responseBody` run for responses that come from an
+upstream. They do not run for answers Conduit gives itself (cache hits, static files, redirects, health and other local
+handlers), so a fail-closed `responsePhase` entry does not apply to those. A response stored in the cache is stored as the
+processor changed it, and the cache key does not include headers a processor set on the request. The processor is shown the
+upstream's response headers, `Set-Cookie` included. With `requestBody` and `responseBody: observe` together, a response
+that starts before the client has finished its upload is not observed (the stream is still in use for the upload).
+`buffered` holds the body, not the request headers: the upstream has already received them when a processor refuses the
+body, and sees the body end early. Upgraded connections (WebSocket) are not sent to the body phases: the bytes of the
+tunnel are not a request body.
 
 **What is not there.** Trailers (`request_trailers`/`response_trailers`) are not sent; a processor that answers with one
 is refused (a failure). `response_body` is observe-only: the response body cannot be rewritten through `ext_proc` (the

@@ -790,3 +790,37 @@ fn a_response_phase_failure_is_refused_or_ignored_by_the_policy() {
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().unwrap(), "upstream says hi");
 }
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_refusal_of_the_response_phase_is_not_undone_by_the_routes_retry_on_5xx() {
+    // A fail-closed response phase refuses with 503; a route that retries on 5xx must not send the request upstream again
+    // and let the next response go to the client unseen (the security review of #749).
+    let upstream = start_body_upstream();
+    let (processor, _) = support::serve_in_background(script(|m| match &m.request {
+        Some(processing_request::Request::RequestHeaders(_)) => {
+            Reply::Answer(phase(true, false, CommonResponse::default()))
+        }
+        _ => Reply::Close,
+    }));
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let server = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": { "/": {
+                    "targets": [format!("http://127.0.0.1:{upstream}")],
+                    "retry": { "attempts": 3, "conditions": ["5xx"] }
+                } },
+                "middleware": [{ "type": "ext_proc",
+                                 "config": { "grpc": processor, "responsePhase": true } }]
+            }]
+        }),
+    );
+    let resp = common::get(server.url("/static")).unwrap();
+    assert_eq!(resp.status(), 503, "the refusal stands: {:?}", resp.text());
+}

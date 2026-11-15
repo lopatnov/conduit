@@ -659,3 +659,119 @@ async fn the_sessions_of_several_entries_are_asked_in_order_and_the_first_refusa
     ));
     assert_eq!(*refusing.lock().unwrap(), 0);
 }
+
+fn response_info(headers: &HeaderMap) -> ResponseInfo<'_> {
+    ResponseInfo {
+        status: 200,
+        headers,
+        end_of_stream: false,
+    }
+}
+
+#[tokio::test]
+async fn a_refusal_of_the_response_phase_is_repeated_for_the_response_of_a_retried_upstream() {
+    // The stream ends with the refusal. The upstream is then tried again (a route's `retry` on 5xx sees the 503 of the
+    // refusal) and its next response reaches the same session: it must not go to the client unseen.
+    use processing_request::Request as R;
+    let (address, _) = serve(script(|m| match &m.request {
+        Some(R::RequestHeaders(_)) => Reply::Answer(empty_headers_answer(true)),
+        Some(R::ResponseHeaders(_)) => Reply::Answer(immediate(503, "refused")),
+        _ => Reply::Nothing,
+    }))
+    .await;
+    let client = ExtProcClient::new(&config(
+        &address,
+        serde_json::json!({ "responsePhase": true }),
+    ));
+    let mut session = open(&client).await;
+    let headers = HeaderMap::new();
+    for attempt in 0..3 {
+        match session.response_headers(&response_info(&headers)).await {
+            Verdict::Respond(answer) => assert_eq!(answer.status, 503, "attempt {attempt}"),
+            Verdict::Continue(_) => {
+                panic!("attempt {attempt}: the second response went through unseen")
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_failed_response_phase_stays_closed_for_later_responses_and_open_when_failing_open() {
+    use processing_request::Request as R;
+    let behaviour = || {
+        script(|m| match &m.request {
+            Some(R::RequestHeaders(_)) => Reply::Answer(empty_headers_answer(true)),
+            Some(R::ResponseHeaders(_)) => Reply::Close,
+            _ => Reply::Nothing,
+        })
+    };
+    let headers = HeaderMap::new();
+
+    let (address, _) = serve(behaviour()).await;
+    let client = ExtProcClient::new(&config(
+        &address,
+        serde_json::json!({ "responsePhase": true }),
+    ));
+    let mut session = open(&client).await;
+    for attempt in 0..2 {
+        match session.response_headers(&response_info(&headers)).await {
+            Verdict::Respond(answer) => assert_eq!(answer.status, 503, "attempt {attempt}"),
+            Verdict::Continue(_) => panic!("attempt {attempt}: fail-closed let a response through"),
+        }
+    }
+
+    let (address, _) = serve(behaviour()).await;
+    let client = ExtProcClient::new(&config(
+        &address,
+        serde_json::json!({ "responsePhase": true, "failOpen": true }),
+    ));
+    let mut session = open(&client).await;
+    for _ in 0..2 {
+        assert!(matches!(
+            session.response_headers(&response_info(&headers)).await,
+            Verdict::Continue(_)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn the_response_is_not_observed_while_the_request_body_is_still_being_exchanged() {
+    // The upstream answered before the client finished its upload: observing would take the stream away from the body
+    // exchanges that are still to come, so it is skipped; the body that follows is exchanged as usual.
+    let (address, seen) = serve(processor(|_, _, request| {
+        if request {
+            Reply::Answer(body_answer(true, None))
+        } else {
+            Reply::Nothing
+        }
+    }))
+    .await;
+    let client = ExtProcClient::new(&config(
+        &address,
+        serde_json::json!({ "requestBody": "streamed", "responseBody": "observe" }),
+    ));
+    let mut session = open(&client).await;
+    assert!(matches!(
+        session.request_body(Some(Bytes::from("a")), false).await,
+        BodyVerdict::Forward(Some(_))
+    ));
+    session.start_observing();
+    session.observe_response_body(&Bytes::from("early"), false);
+    assert!(
+        matches!(
+            session.request_body(Some(Bytes::from("b")), true).await,
+            BodyVerdict::Forward(Some(_))
+        ),
+        "the upload is still exchanged after the response started"
+    );
+    // the upload is done: now the response can be observed
+    session.start_observing();
+    session.observe_response_body(&Bytes::from("late"), true);
+    for _ in 0..100 {
+        if !bodies(&seen, false).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(bodies(&seen, false), [("late".to_owned(), true)]);
+}

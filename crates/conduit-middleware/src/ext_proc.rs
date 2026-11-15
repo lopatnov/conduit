@@ -185,13 +185,19 @@ pub fn replace_response(
     for (name, value) in &answer.headers {
         let _ = resp.insert_header(name, value.clone());
     }
-    let carries_body =
-        body_allowed && !matches!(answer.status, 204 | 205 | 304) && answer.status >= 200;
+    let carries_body = body_allowed && !matches!(answer.status, 204 | 304) && answer.status >= 200;
     if carries_body {
-        let _ = resp.insert_header("content-length", answer.body.len().to_string());
-        Some(answer.body.clone())
+        // A 205 has no content (RFC 9110 section 15.3.6) but, unlike a 204, Pingora would still write the upstream's body
+        // after it: it gets an empty one in its place, with `Content-Length: 0`.
+        let body = if answer.status == 205 {
+            Bytes::new()
+        } else {
+            answer.body.clone()
+        };
+        let _ = resp.insert_header("content-length", body.len().to_string());
+        Some(body)
     } else {
-        if !matches!(answer.status, 204 | 205 | 304) && answer.status >= 200 {
+        if !matches!(answer.status, 204 | 304) && answer.status >= 200 {
             let _ = resp.insert_header("content-length", "0");
         }
         None

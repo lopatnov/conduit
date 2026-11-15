@@ -406,3 +406,14 @@ fn every_failure_says_what_went_wrong_in_one_line() {
         "a log line must stay one line: {texts:?}"
     );
 }
+
+#[tokio::test]
+async fn an_answer_may_be_as_large_as_the_body_limit_allows_and_never_below_the_tonic_default() {
+    let small = ExtProcClient::new(&config("grpc://127.0.0.1:1/", serde_json::json!({})));
+    assert_eq!(small.decode_limit(), 4 * 1024 * 1024 + 64 * 1024);
+    let big = ExtProcClient::new(&config(
+        "grpc://127.0.0.1:1/",
+        serde_json::json!({ "requestBody": "buffered", "maxBodyBytes": 16 * 1024 * 1024 }),
+    ));
+    assert_eq!(big.decode_limit(), 16 * 1024 * 1024 + 64 * 1024);
+}

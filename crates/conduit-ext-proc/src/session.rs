@@ -61,6 +61,12 @@ pub struct ExtProcSession {
     link: Link,
     /// The request body held so far (`buffered` mode).
     held: BytesMut,
+    /// What ended the request when the processor answered with a response (or failed under fail-closed). A later phase of
+    /// the same request (the response of a retried upstream) is refused with it again: a request that was refused is never
+    /// let through because the stream is gone.
+    refusal: Option<DirectResponse>,
+    /// `true` once no request body is left to exchange (the last chunk was seen, or the entry does not read the body).
+    body_done: bool,
 }
 
 impl ExtProcClient {
@@ -71,6 +77,8 @@ impl ExtProcClient {
             client: self.clone(),
             link: Link::Idle,
             held: BytesMut::new(),
+            refusal: None,
+            body_done: self.config.request_body_mode() == RequestBodyMode::None,
         }
     }
 }
@@ -137,7 +145,7 @@ impl ExtProcSession {
 
     /// What a header verdict (or a failure) means for the stream: an answer that ends the request ends the stream too.
     fn headers_outcome(&mut self, outcome: Result<Verdict, Failure>) -> Verdict {
-        match outcome {
+        let verdict = match outcome {
             Ok(verdict) => {
                 if matches!(verdict, Verdict::Respond(_)) {
                     self.link = Link::Dead;
@@ -148,12 +156,28 @@ impl ExtProcSession {
                 self.link = Link::Dead;
                 self.client.on_failure(&failure)
             }
+        };
+        if let Verdict::Respond(response) = &verdict {
+            self.refusal = Some(response.clone());
+        }
+        verdict
+    }
+
+    /// What a phase answers once the stream has ended: the refusal again when there was one (fail-closed stays closed for
+    /// every later response of the request), otherwise nothing to do.
+    fn after_end(&self) -> Verdict {
+        match &self.refusal {
+            Some(response) => Verdict::Respond(response.clone()),
+            None => Verdict::Continue(HeaderChanges::default()),
         }
     }
 
     /// The request headers phase. Not sent (the verdict is "continue unchanged") when the entry has `requestPhase: false`.
     pub async fn request_headers(&mut self, info: &RequestInfo<'_>) -> Verdict {
-        if self.ended() || !self.client.config.sends_request_headers() {
+        if self.ended() {
+            return self.after_end();
+        }
+        if !self.client.config.sends_request_headers() {
             return Verdict::Continue(HeaderChanges::default());
         }
         let outcome = match self.exchange(request_message(info)).await {
@@ -165,8 +189,11 @@ impl ExtProcSession {
 
     /// The response headers phase (`responsePhase: true`): the processor may change the headers or replace the response.
     pub async fn response_headers(&mut self, info: &ResponseInfo<'_>) -> Verdict {
-        if self.ended() || !self.client.config.sends_response_headers() {
+        if !self.client.config.sends_response_headers() {
             return Verdict::Continue(HeaderChanges::default());
+        }
+        if self.ended() {
+            return self.after_end();
         }
         let outcome = match self.exchange(response_message(info)).await {
             Ok(answer) => self.client.headers_verdict(answer, Phase::ResponseHeaders),
@@ -178,6 +205,7 @@ impl ExtProcSession {
     /// One chunk of the request body (`chunk` is `None` for the end of a body that had no last chunk), and whether it is
     /// the last. What to forward in its place: see [`BodyVerdict`].
     pub async fn request_body(&mut self, chunk: Option<Bytes>, end: bool) -> BodyVerdict {
+        self.body_done |= end;
         match self.client.config.request_body_mode() {
             _ if self.ended() => BodyVerdict::Forward(chunk),
             RequestBodyMode::None => BodyVerdict::Forward(chunk),
@@ -239,6 +267,7 @@ impl ExtProcSession {
             }
             Ok(BodyAnswer::Respond(response)) => {
                 self.link = Link::Dead;
+                self.refusal = Some(response.clone());
                 BodyVerdict::Respond(response)
             }
             Err(failure) => {
@@ -247,7 +276,10 @@ impl ExtProcSession {
                     Verdict::Continue(_) => {
                         BodyVerdict::Forward(original.filter(|b| !b.is_empty()))
                     }
-                    Verdict::Respond(response) => BodyVerdict::Respond(response),
+                    Verdict::Respond(response) => {
+                        self.refusal = Some(response.clone());
+                        BodyVerdict::Respond(response)
+                    }
                 }
             }
         }
@@ -258,6 +290,16 @@ impl ExtProcSession {
     /// which never waits.
     pub fn start_observing(&mut self) {
         if self.client.config.response_body_mode() != ResponseBodyMode::Observe || self.ended() {
+            return;
+        }
+        if !self.body_done {
+            // The upstream answered before the client finished sending its body, so the stream is still needed for the
+            // exchanges of the request body: observing would take it away. Observation never fails a request; it is skipped.
+            tracing::debug!(
+                target: "conduit::ext_proc",
+                processor = %self.client.config.grpc,
+                "the response is not observed: the request body is still being exchanged"
+            );
             return;
         }
         let (queue, chunks) = mpsc::channel(OBSERVE_QUEUE);
@@ -308,8 +350,15 @@ async fn pump(
                 let Some((chunk, end)) = next else { break };
                 let message = body_message(&chunk, end, false);
                 if let (Some(sender), Some(_)) = (&tx, &rx) {
-                    if sender.send(message).await.is_err() {
-                        break;
+                    // A processor that stopped reading fills the queues of the stream; the send is bounded like every other
+                    // exchange, so the task (and the chunks it holds) does not outlive the request for good.
+                    match tokio::time::timeout(client.config.timeout(), sender.send(message)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => break,
+                        Err(_) => {
+                            log_observe_failure(&client, &Failure::TimedOut(client.config.timeout()));
+                            return;
+                        }
                     }
                 } else {
                     match tokio::time::timeout(client.config.timeout(), client.open_stream(message)).await {

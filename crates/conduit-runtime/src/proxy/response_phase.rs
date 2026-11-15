@@ -151,12 +151,17 @@ pub(super) async fn upstream_response_filter(
 
     // External processing (#27): an `ext_proc` entry with `responsePhase` is told the upstream's response headers before
     // anything of the site's is added (so a processor can neither see nor strip the site's CORS and security headers),
-    // and may change them or replace the response. An entry with `responseBody: observe` starts being sent the body here.
+    // and may change them or replace the response. An entry with `responseBody: observe` starts being sent the body once
+    // the response is known to be final (below).
     #[cfg(feature = "ext-proc")]
-    let ext_proc_body = match req_ctx.ext_proc.clone().filter(|s| s.handles_response()) {
-        Some(sessions) => ext_proc_response(&sessions, upstream_response).await,
-        None => None,
+    let ext_proc_sessions = req_ctx.ext_proc.clone().filter(|s| s.handles_response());
+    #[cfg(feature = "ext-proc")]
+    let (ext_proc_replaced, ext_proc_body) = match &ext_proc_sessions {
+        Some(sessions) => ext_proc_response(sessions, upstream_response).await,
+        None => (false, None),
     };
+    #[cfg(not(feature = "ext-proc"))]
+    let ext_proc_replaced = false;
 
     let config = proxy.state.config.load();
     let chain = ResponseFilterChain::build(req_ctx, &config);
@@ -178,6 +183,10 @@ pub(super) async fn upstream_response_filter(
 
     match run_result? {
         ResponseFilterOutcome::Continue => {}
+
+        // A response that an `ext_proc` answer replaced is final: a retry would send the request to the upstream again
+        // for a response the processor never sees (#27), and the processor's refusal is not the upstream's failure.
+        ResponseFilterOutcome::RetryUpstream if ext_proc_replaced => {}
 
         ResponseFilterOutcome::RetryUpstream => {
             let status = upstream_response.status.as_u16();
@@ -224,11 +233,19 @@ pub(super) async fn upstream_response_filter(
         }
     }
 
-    // The body of an `ext_proc` answer that replaced the response (#27) goes out in place of the upstream's.
+    // The response is final now (it is not retried): an entry with `responseBody: observe` starts being sent the body.
+    #[cfg(feature = "ext-proc")]
+    if let (Some(sessions), false) = (&ext_proc_sessions, ext_proc_replaced) {
+        sessions.start_observing().await;
+    }
+
+    // The body of an `ext_proc` answer that replaced the response (#27) goes out in place of the upstream's, unless the
+    // chain that ran after it already took over the body: a plugin's replacement or the 5xx mask each set a
+    // `Content-Length` of their own, and the header and the body must come from the same source.
     #[cfg(feature = "ext-proc")]
     if let Some(bytes) = ext_proc_body {
         if let Some(req_ctx_mut) = ctx.as_mut() {
-            req_ctx_mut.replacement_body = Some(bytes);
+            place_ext_proc_body(req_ctx_mut, bytes);
         }
     }
 
@@ -258,13 +275,13 @@ pub(super) async fn upstream_response_filter(
     Ok(())
 }
 
-/// The response-headers phase of the `ext_proc` entries (issue #27). Returns the body to send in place of the upstream's
-/// when a processor's answer replaced the response.
+/// The response-headers phase of the `ext_proc` entries (issue #27). Returns whether a processor's answer replaced the
+/// response, and the body to send in place of the upstream's when it did (and one can be sent).
 #[cfg(feature = "ext-proc")]
 async fn ext_proc_response(
     sessions: &conduit_ext_proc::ExtProcSessions,
     resp: &mut ResponseHeader,
-) -> Option<Bytes> {
+) -> (bool, Option<Bytes>) {
     // Whether a body follows is not known here; one that can be replaced is treated as one that exists.
     let body_allowed = body_can_be_replaced(resp);
     match conduit_middleware::ext_proc::response_headers(sessions, resp, !body_allowed).await {
@@ -272,12 +289,12 @@ async fn ext_proc_response(
             if !body_allowed && !answer.body.is_empty() {
                 warn_body_not_replaceable(answer.status);
             }
-            conduit_middleware::ext_proc::replace_response(resp, &answer, body_allowed)
+            (
+                true,
+                conduit_middleware::ext_proc::replace_response(resp, &answer, body_allowed),
+            )
         }
-        None => {
-            sessions.start_observing().await;
-            None
-        }
+        None => (false, None),
     }
 }
 
@@ -285,6 +302,14 @@ async fn ext_proc_response(
 fn status_allows_body(resp: &pingora_http::ResponseHeader) -> bool {
     let status = resp.status.as_u16();
     !(status < 200 || status == 204 || status == 205 || status == 304)
+}
+
+/// Take the body of an `ext_proc` answer as the response's body, unless the chain already took the body over (#27).
+#[cfg(feature = "ext-proc")]
+fn place_ext_proc_body(req_ctx: &mut RequestCtx, bytes: Bytes) {
+    if req_ctx.replacement_body.is_none() && !req_ctx.mask_upstream_body {
+        req_ctx.replacement_body = Some(bytes);
+    }
 }
 
 /// `true` when a WASM `on_response` body replacement can be delivered for this response (issue #379).
@@ -545,6 +570,50 @@ mod tests {
             resp.insert_header("content-length", cl).unwrap();
         }
         resp
+    }
+
+    #[cfg(feature = "ext-proc")]
+    fn ctx_for_body() -> crate::proxy::ctx::RequestCtx {
+        use crate::proxy::ctx::{ProxyReqState, RequestCtx};
+        RequestCtx::new(
+            0,
+            crate::proxy::ctx::UpstreamTarget::Proxy {
+                addr: "backend:4000".to_owned(),
+                tls: false,
+                sni: String::new(),
+                strip_prefix: None,
+                rewrite: None,
+                mirror_url: None,
+                upstream_tls: None,
+            },
+            ProxyReqState::default(),
+            None,
+        )
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn an_ext_proc_body_is_used_when_nothing_took_the_body_over() {
+        let mut ctx = ctx_for_body();
+        super::place_ext_proc_body(&mut ctx, bytes::Bytes::from_static(b"from the processor"));
+        assert_eq!(
+            ctx.replacement_body.as_deref(),
+            Some(&b"from the processor"[..])
+        );
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_plugin_replacement_or_the_5xx_mask_keeps_the_body_its_content_length_describes() {
+        let mut ctx = ctx_for_body();
+        ctx.replacement_body = Some(bytes::Bytes::from_static(b"plugin"));
+        super::place_ext_proc_body(&mut ctx, bytes::Bytes::from_static(b"processor"));
+        assert_eq!(ctx.replacement_body.as_deref(), Some(&b"plugin"[..]));
+
+        let mut ctx = ctx_for_body();
+        ctx.mask_upstream_body = true;
+        super::place_ext_proc_body(&mut ctx, bytes::Bytes::from_static(b"processor"));
+        assert!(ctx.replacement_body.is_none());
     }
 
     #[test]

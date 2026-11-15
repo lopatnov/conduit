@@ -37,7 +37,7 @@ command -v jq >/dev/null || fail "jq is needed"
 PY=${PROCESSOR_PYTHON:-}
 if [ -z "$PY" ]; then
   python3 -m venv "$WORK/venv"
-  "$WORK/venv/bin/pip" install -q --disable-pip-version-check grpcio==1.85.1 xds-protos==1.85.1
+  "$WORK/venv/bin/pip" install -q --disable-pip-version-check -r "$here/ext-proc-requirements.txt"
   PY="$WORK/venv/bin/python"
 fi
 

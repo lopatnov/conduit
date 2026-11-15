@@ -70,7 +70,7 @@ pub(crate) async fn upstream_request_filter(
 /// A request whose body an `ext_proc` entry reads or changes (issue #27) cannot keep the client's `Content-Length`: what is
 /// forwarded is what the processor answered, whose length is not known up front (a buffered body is held until the whole of it
 /// is sent to the processor, a streamed one is rewritten chunk by chunk). The body is then framed by the protocol: chunked for
-/// HTTP/1.1 (`Transfer-Encoding` does not exist in HTTP/2, whose frames carry the end of the body themselves). A request with no
+/// HTTP/1.x (`Transfer-Encoding` does not exist in HTTP/2, whose frames carry the end of the body themselves). A request with no
 /// body keeps its headers, unless the method carries one (a processor may supply the body of an empty POST).
 #[cfg(feature = "ext-proc")]
 fn frame_rewritten_body(
@@ -85,13 +85,21 @@ fn frame_rewritten_body(
     if !rewrites {
         return;
     }
+    reframe_request(upstream_request, session.is_body_empty());
+}
+
+/// The header half of [`frame_rewritten_body`], apart from the session so that it can be tested.
+#[cfg(feature = "ext-proc")]
+fn reframe_request(upstream_request: &mut RequestHeader, body_is_empty: bool) {
     let method_has_body = matches!(upstream_request.method.as_str(), "POST" | "PUT" | "PATCH");
-    if session.is_body_empty() && !method_has_body {
+    if body_is_empty && !method_has_body {
         return;
     }
     upstream_request.remove_header("content-length");
     upstream_request.remove_header("transfer-encoding");
-    if upstream_request.version == http::Version::HTTP_11 {
+    if upstream_request.version != http::Version::HTTP_2 {
+        // HTTP/1.0 has no chunked framing, so the request goes upstream as HTTP/1.1 (what Pingora's H1 writer sends).
+        upstream_request.set_version(http::Version::HTTP_11);
         let _ = upstream_request.insert_header("transfer-encoding", "chunked");
     }
 }
@@ -535,6 +543,56 @@ mod tests {
     // test modules -- `peer.rs` holds the "canonical" original location.
     fn make_ctx(upstream: UpstreamTarget) -> RequestCtx {
         RequestCtx::new(0, upstream, ProxyReqState::default(), None)
+    }
+
+    // ── reframe_request (#27) ─────────────────────────────────────────────────
+
+    #[cfg(feature = "ext-proc")]
+    fn post(version: http::Version) -> RequestHeader {
+        let mut req = RequestHeader::build("POST", b"/x", None).unwrap();
+        req.set_version(version);
+        req.insert_header("content-length", "5").unwrap();
+        req
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_rewritten_http11_body_is_framed_chunked() {
+        let mut req = post(http::Version::HTTP_11);
+        reframe_request(&mut req, false);
+        assert!(req.headers.get("content-length").is_none());
+        assert_eq!(req.headers.get("transfer-encoding").unwrap(), "chunked");
+        assert_eq!(req.version, http::Version::HTTP_11);
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_rewritten_http10_body_goes_upstream_as_chunked_http11() {
+        // HTTP/1.0 has no chunked framing; without this the body would be forwarded with no framing at all.
+        let mut req = post(http::Version::HTTP_10);
+        reframe_request(&mut req, false);
+        assert!(req.headers.get("content-length").is_none());
+        assert_eq!(req.headers.get("transfer-encoding").unwrap(), "chunked");
+        assert_eq!(req.version, http::Version::HTTP_11);
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_rewritten_http2_body_has_no_framing_header() {
+        let mut req = post(http::Version::HTTP_2);
+        reframe_request(&mut req, false);
+        assert!(req.headers.get("content-length").is_none());
+        assert!(req.headers.get("transfer-encoding").is_none());
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_bodyless_get_keeps_its_headers() {
+        let mut req = RequestHeader::build("GET", b"/x", None).unwrap();
+        req.insert_header("content-length", "0").unwrap();
+        reframe_request(&mut req, true);
+        assert_eq!(req.headers.get("content-length").unwrap(), "0");
+        assert!(req.headers.get("transfer-encoding").is_none());
     }
 
     // ── forwarded_for_value / via_header_value ───────────────────────────────

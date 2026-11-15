@@ -239,6 +239,12 @@ impl ExtProcClient {
         }
     }
 
+    /// The largest answer accepted from a processor: what `maxBodyBytes` lets Conduit send (the processor may answer with a
+    /// body of about that size), never below tonic's own 4 MiB default, plus room for headers and framing.
+    pub(crate) fn decode_limit(&self) -> usize {
+        self.config.max_body_bytes().max(4 * 1024 * 1024) + 64 * 1024
+    }
+
     /// Open a stream that stays open: `first` is queued before the call, so a processor that waits for the first message
     /// before it sends its response headers is not waited on. The sender ends the request side when it is dropped.
     pub(crate) async fn open_stream(
@@ -254,7 +260,8 @@ impl ExtProcClient {
         let channel = self.channel.clone().map_err(Failure::Unreachable)?;
         let (tx, queue) = tokio::sync::mpsc::channel(STREAM_QUEUE);
         tx.try_send(first).map_err(|_| Failure::Closed)?;
-        let mut grpc = tonic::client::Grpc::new(channel);
+        let mut grpc =
+            tonic::client::Grpc::new(channel).max_decoding_message_size(self.decode_limit());
         grpc.ready()
             .await
             .map_err(|e| Failure::Unreachable(e.to_string()))?;
@@ -270,7 +277,8 @@ impl ExtProcClient {
 
     async fn exchange(&self, message: ProcessingRequest) -> Result<ProcessingResponse, Failure> {
         let channel = self.channel.clone().map_err(Failure::Unreachable)?;
-        let mut grpc = tonic::client::Grpc::new(channel);
+        let mut grpc =
+            tonic::client::Grpc::new(channel).max_decoding_message_size(self.decode_limit());
         grpc.ready()
             .await
             .map_err(|e| Failure::Unreachable(e.to_string()))?;

@@ -129,10 +129,13 @@ pub(crate) async fn request_body_filter(
     // External processing (#27): an `ext_proc` entry that reads or changes the request body sees the chunk after the size
     // and rate checks above, and what it answers is what goes on (and what a retry would replay, below).
     #[cfg(feature = "ext-proc")]
+    //
+    // Not for an upgraded connection (WebSocket): the bytes that pass through this hook after the upgrade are the tunnel, not a
+    // request body; holding them back or rewriting them would break the protocol.
     if let Some(sessions) = req_ctx
         .ext_proc
         .clone()
-        .filter(|s| s.rewrites_request_body())
+        .filter(|s| s.rewrites_request_body() && !session.is_upgrade_req())
     {
         use conduit_ext_proc::BodyVerdict;
         match sessions.request_body(body.take(), end_of_stream).await {
@@ -145,12 +148,16 @@ pub(crate) async fn request_body_filter(
                 };
             }
             BodyVerdict::Respond(answer) => {
-                conduit_middleware::ext_proc::write_direct(
-                    session,
-                    &answer,
-                    &req_ctx.extra_headers,
-                )
-                .await?;
+                // The upstream may already have started its response (it answered before the body was complete): a second
+                // response cannot be written over it, so the connection is dropped instead.
+                if session.response_written().is_none() {
+                    conduit_middleware::ext_proc::write_direct(
+                        session,
+                        &answer,
+                        &req_ctx.extra_headers,
+                    )
+                    .await?;
+                }
                 // The answer is already on its way: status 0 tells `fail_to_proxy` not to write an error page over it.
                 return Err(pingora_core::Error::explain(
                     pingora_core::ErrorType::HTTPStatus(0),

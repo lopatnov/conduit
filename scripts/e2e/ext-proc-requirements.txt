@@ -1,0 +1,5 @@
+# Everything the ext_proc e2e processor needs, pinned with its transitive packages (scripts/e2e/ext-proc.sh).
+grpcio==1.85.1
+protobuf==7.36.2
+typing_extensions==4.16.0
+xds-protos==1.85.1
