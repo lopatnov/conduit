@@ -342,7 +342,7 @@ fn find_route<'a>(
         let matches = if norm.is_empty() {
             true
         } else {
-            path == norm || path.starts_with(&format!("{norm}/"))
+            path == norm || path.strip_prefix(norm).is_some_and(|r| r.starts_with('/'))
         };
         if matches {
             let cur_len = norm.len();
@@ -417,6 +417,24 @@ mod tests {
             ProxyRouteTarget::Url("http://api:4000".to_string()),
         );
         assert!(find_route(&routes, "/other").is_none());
+    }
+
+    /// A prefix ends at a segment boundary: `/api` serves `/api`, `/api/` and `/api/x`, never `/apix` or `/api.json`
+    /// (the `strip_prefix` test that replaced a `format!("{norm}/")` per candidate route must keep that, #486).
+    #[test]
+    fn find_route_prefix_ends_at_a_segment_boundary() {
+        use indexmap::IndexMap;
+        let mut routes = IndexMap::new();
+        routes.insert(
+            "/api/".to_string(),
+            ProxyRouteTarget::Url("http://api:4000".to_string()),
+        );
+        for hit in ["/api", "/api/", "/api/x", "/api//x"] {
+            assert!(find_route(&routes, hit).is_some(), "{hit} must match");
+        }
+        for miss in ["/apix", "/api.json", "/ap", "/"] {
+            assert!(find_route(&routes, miss).is_none(), "{miss} must not match");
+        }
     }
 
     // ── resolve_backup (#417) ─────────────────────────────────────────────────
