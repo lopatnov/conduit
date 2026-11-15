@@ -18,6 +18,13 @@ tls:
     email: admin@example.com   # Used for expiry notifications from Let's Encrypt
     storage: ./certs           # Where to store the certificate and key files
     challenge: http-01         # HTTP-01 requires port 80 to be reachable
+    # Time limits, all optional (seconds); the values below are the defaults.
+    orderTimeoutSecs: 60        # one request of an order (new order, finalize, download)
+    validationTimeoutSecs: 180  # the whole challenge validation
+    ariTimeoutSecs: 30          # the whole renewal-information probe
+    retryAfterMinSecs: 300      # the CA's Retry-After is kept within this ...
+    retryAfterMaxSecs: 86400    # ... and this
+    checkIntervalSecs: 43200    # time between two renewal checks
 
   # Redirect plain HTTP (port 80) to HTTPS.
   # Conduit also uses port 80 to answer Let's Encrypt's challenge requests.

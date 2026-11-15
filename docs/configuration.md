@@ -466,6 +466,12 @@ a second file, `acme_account.<readable part of the URL>.<hash of the whole URL>.
 > misconfigured expectation of TLS restriction can't go unnoticed.
 | `acme.challenge`   | string   | —       | `"http-01"` (the only challenge implemented; other values are rejected)                                                                                                                     |
 | `acme.profile`     | string   | —       | Certificate profile to ask the CA for (Let's Encrypt: `classic`, `tlsserver`, `shortlived`); absent = the CA's default. An empty value is rejected; a profile the CA does not offer fails the order |
+| `acme.orderTimeoutSecs` | integer | `60` | Seconds one request of an order (account setup, new order, finalize, certificate download) may take. 1 to 86400 |
+| `acme.validationTimeoutSecs` | integer | `180` | Seconds the whole challenge validation may take. 1 to 86400 |
+| `acme.ariTimeoutSecs` | integer | `30` | Seconds the whole renewal-information (ARI) probe may take; one request of it gets half. 1 to 86400 |
+| `acme.retryAfterMinSecs` | integer | `300` | The CA's `Retry-After` is never taken as shorter than this. Must not exceed `retryAfterMaxSecs`. 60 to 86400 |
+| `acme.retryAfterMaxSecs` | integer | `86400` | The CA's `Retry-After` is never taken as longer than this. 1 to 86400 |
+| `acme.checkIntervalSecs` | integer | `43200` | Seconds between two renewal checks of a certificate. With several ACME sites the shortest value counts. 300 to 86400 |
 | `acme.directory`   | string   | —       | Custom ACME directory URL. Use `"https://acme-staging-v02.api.letsencrypt.org/directory"` for Let's Encrypt staging (rate-limit-free testing) |
 | `clientAuth`       | object   | —       | [mTLS client cert verification](#mtls--client-certificate-authentication)                                                                     |
 

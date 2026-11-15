@@ -207,6 +207,44 @@ fn tls_acme_challenge_other_than_http01_is_rejected() {
     }
 }
 
+/// Issue #746: the ACME durations are configurable and a typo cannot disable a limit.
+#[test]
+fn tls_acme_durations_are_validated() {
+    let site = |extra: &str| {
+        format!(
+            r#"{{ "host": "a.example.com", "tls": {{ "acme": {{ "email": "a@b.com"{extra} }} }} }}"#
+        )
+    };
+    assert!(errs(&site(
+        r#", "orderTimeoutSecs": 30, "validationTimeoutSecs": 600, "ariTimeoutSecs": 10,
+           "retryAfterMinSecs": 60, "retryAfterMaxSecs": 3600, "checkIntervalSecs": 3600"#
+    ))
+    .is_empty());
+    for (extra, field) in [
+        (r#", "orderTimeoutSecs": 0"#, "orderTimeoutSecs"),
+        (
+            r#", "validationTimeoutSecs": 86401"#,
+            "validationTimeoutSecs",
+        ),
+        (r#", "ariTimeoutSecs": 0"#, "ariTimeoutSecs"),
+        (r#", "checkIntervalSecs": 0"#, "checkIntervalSecs"),
+        (r#", "checkIntervalSecs": 299"#, "checkIntervalSecs"),
+        (r#", "retryAfterMinSecs": 59"#, "retryAfterMinSecs"),
+        (
+            r#", "retryAfterMinSecs": 600, "retryAfterMaxSecs": 60"#,
+            "retryAfterMinSecs",
+        ),
+    ] {
+        let e = errs(&site(extra));
+        assert_eq!(e.len(), 1, "{extra}: {e:?}");
+        assert!(
+            e[0].path.ends_with(&format!(".tls.acme.{field}")),
+            "{}",
+            e[0].path
+        );
+    }
+}
+
 // ── tls.acme: the site host names the certificate files (issue #554) ────────
 
 fn acme_site(host: &str) -> String {
