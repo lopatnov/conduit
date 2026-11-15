@@ -366,7 +366,7 @@ Instead of a config file, Conduit can read its sites from Kubernetes custom reso
 <!-- docs-check: skip (a Kubernetes ConduitSite resource, not a Conduit config file) -->
 ```yaml
 # site.yaml
-apiVersion: conduit.io/v1
+apiVersion: conduit.lopatnov.github.io/v1
 kind: ConduitSite
 metadata:
   name: my-app

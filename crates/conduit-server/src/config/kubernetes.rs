@@ -14,7 +14,7 @@
 //!
 //! Example resource:
 //! ```yaml
-//! apiVersion: conduit.io/v1
+//! apiVersion: conduit.lopatnov.github.io/v1
 //! kind: ConduitSite
 //! metadata:
 //!   name: my-app
@@ -674,7 +674,7 @@ mod tests {
     #[test]
     fn crd_spec_keeps_the_fields_it_does_not_name() {
         let crds = crds_in(
-            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: a}\nspec:\n  port: 8080\n  \
+            "apiVersion: conduit.lopatnov.github.io/v1\nkind: ConduitSite\nmetadata: {name: a}\nspec:\n  port: 8080\n  \
              proxy: http://b:1\n  jwtAuth: {jwksUrl: 'https://auth.example.com/jwks.json'}\n  \
              securityHeaders: true\n  limits: {maxBodyBytes: 1000}\n  maskErrors: true\n",
         );
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn crd_spec_reports_a_key_no_site_field_matches() {
         let crds = crds_in(
-            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: a}\nspec:\n  port: 8080\n  jwtAuht: {}\n",
+            "apiVersion: conduit.lopatnov.github.io/v1\nkind: ConduitSite\nmetadata: {name: a}\nspec:\n  port: 8080\n  jwtAuht: {}\n",
         );
         let site = spec_to_site_config(&crds[0].spec).unwrap();
         assert!(site.extra.contains_key("jwtAuht"));
@@ -705,7 +705,7 @@ mod tests {
     fn crd_spec_cannot_cache_to_a_host_directory() {
         let site_with = |proxy: &str| {
             let yaml = format!(
-                "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {{name: a}}\nspec:\n  port: 8080\n{proxy}"
+                "apiVersion: conduit.lopatnov.github.io/v1\nkind: ConduitSite\nmetadata: {{name: a}}\nspec:\n  port: 8080\n{proxy}"
             );
             spec_to_site_config(&crds_in(&yaml)[0].spec)
         };
@@ -774,11 +774,11 @@ mod tests {
     #[test]
     fn a_site_with_a_hard_error_of_its_own_is_refused_alone() {
         let ok = crds_in(
-            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: ok}\nspec: {port: 8080, proxy: 'http://a:1'}\n",
+            "apiVersion: conduit.lopatnov.github.io/v1\nkind: ConduitSite\nmetadata: {name: ok}\nspec: {port: 8080, proxy: 'http://a:1'}\n",
         );
         // a proxy target that is not a URL is a hard validation error of the site itself
         let bad = crds_in(
-            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: bad}\nspec: {port: 8081, proxy: 'not-a-url'}\n",
+            "apiVersion: conduit.lopatnov.github.io/v1\nkind: ConduitSite\nmetadata: {name: bad}\nspec: {port: 8081, proxy: 'not-a-url'}\n",
         );
         assert!(spec_to_site_config(&ok[0].spec).is_ok());
         let err = spec_to_site_config(&bad[0].spec)
@@ -797,9 +797,9 @@ mod tests {
     #[test]
     fn a_dropped_site_does_not_hand_its_host_to_another_site() {
         let all = crds_in(
-            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: other}\nspec: {host: other.example.com, port: 8080, proxy: 'http://secret-upstream:1'}\n---\n\
-             apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: bad}\nspec: {host: bad.example.com, port: 8080, proxy: 'not-a-url'}\n---\n\
-             apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: alone}\nspec: {host: alone.example.com, port: 9090, proxy: 'not-a-url'}\n",
+            "apiVersion: conduit.lopatnov.github.io/v1\nkind: ConduitSite\nmetadata: {name: other}\nspec: {host: other.example.com, port: 8080, proxy: 'http://secret-upstream:1'}\n---\n\
+             apiVersion: conduit.lopatnov.github.io/v1\nkind: ConduitSite\nmetadata: {name: bad}\nspec: {host: bad.example.com, port: 8080, proxy: 'not-a-url'}\n---\n\
+             apiVersion: conduit.lopatnov.github.io/v1\nkind: ConduitSite\nmetadata: {name: alone}\nspec: {host: alone.example.com, port: 9090, proxy: 'not-a-url'}\n",
         );
         let (cfg, reports) =
             conduit_k8s::SiteSet::<ConduitSchema>::new().build(all.iter(), "127.0.0.1:2019");
@@ -832,7 +832,7 @@ mod tests {
     /// and a dropped catch-all is answered too.
     #[test]
     fn a_placeholder_never_makes_the_whole_config_invalid() {
-        let hdr = "apiVersion: conduit.io/v1\nkind: ConduitSite\n";
+        let hdr = "apiVersion: conduit.lopatnov.github.io/v1\nkind: ConduitSite\n";
         let yaml = format!(
             "{hdr}metadata: {{name: web}}\nspec: {{host: web.example.com, port: 8080, proxy: 'http://a:1'}}\n---\n\
              {hdr}metadata: {{name: db}}\nspec: {{port: 5432, tcp: {{targets: ['db:5432']}}}}\n---\n\

@@ -54,10 +54,10 @@ metadata:
   name: conduit
   namespace: default
 rules:
-  - apiGroups: ["conduit.io"]
+  - apiGroups: ["conduit.lopatnov.github.io"]
     resources: ["conduitsites"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["conduit.io"]
+  - apiGroups: ["conduit.lopatnov.github.io"]
     resources: ["conduitsites/status"]
     verbs: ["patch"]
 ---
@@ -138,7 +138,7 @@ The Admin API listens on `127.0.0.1:2019` inside the pod in this mode, and its b
 
 <!-- docs-check: skip (a ConduitSite manifest, not a Conduit config file) -->
 ```yaml
-apiVersion: conduit.io/v1
+apiVersion: conduit.lopatnov.github.io/v1
 kind: ConduitSite
 metadata:
   name: my-app
@@ -193,7 +193,7 @@ An API that needs a JWT (the keys are fetched from the JWKS URL; nothing secret 
 
 <!-- docs-check: skip (a ConduitSite manifest, not a Conduit config file) -->
 ```yaml
-apiVersion: conduit.io/v1
+apiVersion: conduit.lopatnov.github.io/v1
 kind: ConduitSite
 metadata:
   name: my-api
@@ -212,7 +212,7 @@ Two upstreams with the least busy one chosen, passive ejection of a failing one,
 
 <!-- docs-check: skip (a ConduitSite manifest, not a Conduit config file) -->
 ```yaml
-apiVersion: conduit.io/v1
+apiVersion: conduit.lopatnov.github.io/v1
 kind: ConduitSite
 metadata:
   name: orders
@@ -232,7 +232,7 @@ A raw TCP site (a database, needs the `tcp` feature of the full image). It has n
 
 <!-- docs-check: skip (a ConduitSite manifest, not a Conduit config file) -->
 ```yaml
-apiVersion: conduit.io/v1
+apiVersion: conduit.lopatnov.github.io/v1
 kind: ConduitSite
 metadata:
   name: postgres
@@ -324,13 +324,28 @@ has a token that a writer does not know. In practice:
 
 | You see                                                              | Why                                                                                                   |
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| The pod exits at start with `kubernetes provider error: ...`         | The API call failed: no RBAC for `list`/`watch` `conduitsites`, the CRD is not installed, or the wrong namespace |
+| The pod exits at start with `kubernetes provider error: ...`         | The API call failed: no RBAC for `list`/`watch` `conduitsites` (the `apiGroups` of the `Role` must be `conduit.lopatnov.github.io`), the CRD is not installed, or the wrong namespace |
 | `ConduitSite <name> is invalid` in the log                            | That site is not active (its host answers `503`), or is kept at the last version that was valid; the message names the cause, for example `host file paths cannot be set from a ConduitSite` (the message lists them: remove them, or use a file config) |
 | `kubectl apply` works, the site never changes                        | Look for `ConduitSite <name> is invalid` and `live config update rejected` in `kubectl logs`: this site is invalid, or two sites collide |
 | A field of the spec has no effect                                    | `unknown key` warning in the log: the field name is misspelled (field names are camelCase, as in a config file) |
 | `cold field changed — restart required`                              | See [what does not apply live](#what-does-not-apply-live)                                              |
 | `READY` is `false`, or empty                                         | `false`: the spec is invalid, and `kubectl get conduitsites -o jsonpath='{.status.message}'` says why and whether the last valid version still serves. Empty: Conduit may not write the status (see the RBAC above); the log says so once |
 | `ConduitSite watch error` in the log                                 | The watch on the API server failed; Conduit keeps the config it has                                   |
+
+**Upgrading from a release that used the group `conduit.io`.** The API group is `conduit.lopatnov.github.io` since this
+version (`conduit.io` is a domain the project does not own). Objects of the old group are not read. Keep the manifests you
+applied: they are what you apply again. If you have only the objects in the cluster, export them, and remove what the API
+server sets before you apply them under the new group (it refuses an object that carries a `resourceVersion`):
+
+```sh
+kubectl get conduitsites.conduit.io -A -o yaml \
+  | yq 'del(.items[].metadata.resourceVersion, .items[].metadata.uid, .items[].metadata.creationTimestamp,
+            .items[].metadata.generation, .items[].metadata.managedFields, .items[].status)
+        | .items[].apiVersion = "conduit.lopatnov.github.io/v1"' > conduitsites-new.yaml
+```
+
+Then delete the old CRD (`kubectl delete crd conduitsites.conduit.io`, which deletes its objects), apply the new CRD, change
+`apiGroups` in the RBAC `Role`, and apply the manifests.
 
 The effective config is not printed. To see what Conduit built, look at the log lines above and at the objects
 (`kubectl get conduitsites -o yaml`): the config is exactly the list of their specs, in the order the API returns them.
