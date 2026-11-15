@@ -44,7 +44,7 @@ class Spdx(unittest.TestCase):
         self.assertTrue(ok("ISC AND (Apache-2.0 OR GPL-3.0-only)"))
 
     def test_the_legacy_slash_means_or(self):
-        self.assertTrue(ok("Some Custom Terms"))
+        self.assertTrue(ok("MIT/Apache-2.0"))
         self.assertTrue(ok("Apache-2.0 / MIT"))
         self.assertTrue(ok("GPL-3.0-only/MIT"))
 
