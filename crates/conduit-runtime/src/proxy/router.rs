@@ -39,6 +39,8 @@ pub struct RouteResolution {
     pub proxy_http2: bool,
     /// Speak cleartext HTTP/2 with prior knowledge to an `http://` upstream (`http2: "h2c"`).
     pub proxy_h2c: bool,
+    /// Apply the route's strip/rewrite rules to `Destination` and `If` too (`rewriteDestination`).
+    pub proxy_rewrite_destination: bool,
     /// Selected upstream URL — `Some` for every proxy route so passive-health
     /// attribution (EWMA, Outlier Detection, per-peer stats) works regardless
     /// of load-balancing strategy. See `upstream_conn_slot` for whether a
@@ -87,6 +89,7 @@ impl RouteResolution {
             proxy_pool: None,
             proxy_http2: false,
             proxy_h2c: false,
+            proxy_rewrite_destination: false,
             proxy_upstream_url: None,
             meters_traffic: false,
             upstream_conn_slot: false,
@@ -158,6 +161,7 @@ pub fn route_request(
         proxy_pool: res.proxy_pool,
         proxy_http2: res.proxy_http2,
         proxy_h2c: res.proxy_h2c,
+        proxy_rewrite_destination: res.proxy_rewrite_destination,
         proxy_upstream_url: res.proxy_upstream_url,
         meters_traffic: res.meters_traffic,
         upstream_conn_slot: res.upstream_conn_slot,
@@ -453,6 +457,7 @@ fn proxy_route_result(upstream: ProxyUpstream, state: ProxyReqState) -> RouteRes
         proxy_pool: state.proxy_pool,
         proxy_http2: state.proxy_http2,
         proxy_h2c: state.proxy_h2c,
+        proxy_rewrite_destination: state.proxy_rewrite_destination,
         proxy_upstream_url: state.proxy_upstream_url,
         meters_traffic: state.meters_traffic,
         upstream_conn_slot: state.upstream_conn_slot,

@@ -424,6 +424,7 @@
           "oneOf": [ { "type": "boolean" }, { "const": "h2c" } ]
         },
         "stripPrefix": { "type": "boolean" },
+        "rewriteDestination": { "type": "boolean", "description": "WebDAV: apply this route's stripPrefix and rewrite rules to the paths in the Destination and If request headers too. Default false: they are passed on as the client wrote them." },
         "backup": { "type": "string", "description": "Explicit backup (failover) upstream URL, used when all primary targets are unhealthy.", "examples": ["http://fallback:4000"] },
         "timeout": {
           "type": "object",

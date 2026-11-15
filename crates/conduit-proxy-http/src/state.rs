@@ -185,6 +185,9 @@ pub struct ProxyReqState {
     pub proxy_http2: bool,
     /// When `true`, speak cleartext HTTP/2 with prior knowledge to an `http://` upstream (`proxy.*.http2: "h2c"`).
     pub proxy_h2c: bool,
+    /// When `true`, the route's `stripPrefix` and `rewrite` rules also apply to the URLs in the `Destination` and `If`
+    /// request headers (`proxy.*.rewriteDestination`, WebDAV).
+    pub proxy_rewrite_destination: bool,
     /// The upstream URL that was selected for this request.
     ///
     /// `Some` for every proxied request (not just `least-conn`/circuit-breaker
@@ -407,6 +410,7 @@ mod tests {
         assert!(s.proxy_pool.is_none());
         assert!(!s.proxy_http2);
         assert!(!s.proxy_h2c);
+        assert!(!s.proxy_rewrite_destination);
         assert!(s.proxy_upstream_url.is_none());
         assert!(!s.upstream_conn_slot);
         assert!(s.proxy_cache_cfg.is_none());

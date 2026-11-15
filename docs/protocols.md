@@ -144,7 +144,7 @@ combination in the table.
 
 - Route by service with a path prefix: gRPC paths are `/package.Service/Method`, so `"/orders.Orders/"` is a prefix.
 - The idle `timeout.readMs` applies to streaming calls as well (tested for SSE and WebSocket, the same code path): raise it for calls that can be silent.
-- **Active health probes speak HTTP/1.1**, which a gRPC server does not answer; with a `healthCheck` on such a route the
+- **Active health probes speak plaintext HTTP/1.1** (a TLS upstream, `https://` or `wss://`, is probed by connecting only), which a gRPC server does not answer; with a `healthCheck` on such a route the
   upstream is marked unhealthy (observed with the Python gRPC server). Use `outlierDetection` (judges real calls) instead.
 - gRPC-Web (HTTP/1.1 from a browser) is plain HTTP and needs no `h2c`, but is not part of the test.
 
@@ -181,9 +181,20 @@ What `webdav.sh` shows, against an upstream that echoes every request:
   `201` and the `<href>` elements of a multistatus body are in the client's namespace, and are passed on and returned as
   they are. With the default (no `stripPrefix`) the upstream is mounted at the same path as the route and all of this is
   consistent; that is the setup to start with. With `stripPrefix: true` the upstream sees paths without the prefix but
-  `Destination` still has it, and the `href`s it returns do not: only an upstream that is told its public prefix can cope
-  (Radicale, for one, takes it from an `X-Script-Name` header, which `requestTransform.setHeaders` can add; check your server's
-  documentation, this is not covered by the test).
+  `Destination` still has it, and the `href`s it returns do not: either the upstream is told its public prefix (Radicale, for
+  one, takes it from an `X-Script-Name` header, which `requestTransform.setHeaders` can add; check your server's documentation,
+  this is not covered by the test), or the route sets `rewriteDestination: true` (next point). The upstream's own absolute
+  URLs (a `Location`, an `<href>` that names its internal host) are also passed on as it wrote them, so configure its public
+  origin as well as its path, or a client may be sent to a host it cannot reach.
+- **`rewriteDestination: true`** (opt-in, default off) applies the route's `stripPrefix` and `rewrite` rules to the paths in
+  `Destination` and in the resource tags of `If` (`<URL>` outside the parentheses, RFC 4918 section 10.4), so that a
+  `COPY` or `MOVE` through a stripping route names a resource the upstream knows. Only the path of a URL changes: the scheme,
+  the authority, the query, the state tokens and entity tags inside the parentheses of `If` stay as they were, a URL of another
+  authority than the request's `Host`, or a path outside the route's prefix, is left alone, and a request without the headers
+  is untouched. Do not turn it on for an upstream that expects the public path (Radicale with `X-Script-Name`). The response
+  side is not rewritten: a `Location` or `<href>` that the upstream writes in its own namespace stays as written.
+  `webdav.sh` checks it on a `stripPrefix` route and on a `rewrite` route, next to the default routes that leave both
+  headers alone.
 - The site's `limits.maxBodyBytes` applies to uploads, so raise it for large `PUT`s. `timeout.readMs` is an idle timeout: a transfer
   that stalls for that long is closed.
 - The cache stores only `GET` and `HEAD` by default, so `PROPFIND` is never served from it.
@@ -332,5 +343,5 @@ These are gaps rather than choices; each is a candidate feature:
 - UDP proxying (WebRTC media, QUIC, DNS, syslog).
 - TLS termination for TCP sites, the PROXY protocol, an access filter (IP allow/deny), an idle timeout and a connection limit on TCP sites.
 - Port ranges (FTP passive ports need one site each).
-- Active health probes for `h2c` and TLS upstreams, or a TCP-level probe for TCP sites.
+- Active health probes that speak h2c or TLS (a TLS upstream is probed by connecting only), or a TCP-level probe for TCP sites.
 - A per-route custom CA for `upstreamTls` (only `verify: false` or the process-wide roots: the system store, or the file in `SSL_CERT_FILE`). The host needs a non-empty root store even with `verify: false`; see [Upstream TLS verification](configuration.md#upstream-tls-verification).

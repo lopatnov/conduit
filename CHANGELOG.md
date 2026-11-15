@@ -19,6 +19,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the `Depth`, `Overwrite`, `Timeout`, `Lock-Token`, `If`, `Destination` headers reach the upstream as sent (a 1 MiB `PUT`
   by SHA-256), and the `DAV` and `Lock-Token` response headers come back. Conduit does not rewrite `Destination`, `If` or
   multistatus `href`s; the guide says what that means for `stripPrefix`.
+- `rewriteDestination: true` on a proxy route (WebDAV, opt-in, default off): applies the route's `stripPrefix` and `rewrite`
+  rules to the paths in the `Destination` and `If` request headers, so a `COPY` or `MOVE` through a stripping route names a
+  resource the upstream knows. The authority, the query, the state tokens of `If` and URLs of another host are left alone.
 - `http2: "h2c"` on a proxy route: HTTP/2 with prior knowledge (RFC 9113 section 3.3) to a plaintext upstream, so gRPC
   servers without TLS can be proxied. `http2: true` still means ALPN only, and over TLS `"h2c"` behaves like `true`.
 - Three e2e scenarios in `scripts/e2e/`: `streaming.sh` (SSE and WebSocket over plain HTTP and TLS: events not held back,
@@ -94,6 +97,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Active health probes of an `https://` or `wss://` upstream: the probe is plaintext HTTP/1.1, which a TLS listener does not
+  understand, so a healthy TLS upstream was marked unhealthy (or healthy by accident, behind a server that answers plaintext on its
+  TLS port). Such an upstream is now probed by opening a TCP connection (`path` is not used for it; behaviour change).
 - A `tcp` site that also had `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`, `limits` or `middleware` was
   accepted and the key silently ignored, so an operator could believe a database port was protected. Validation now
   refuses it, with a message that points to a firewall or network policy (behaviour change).

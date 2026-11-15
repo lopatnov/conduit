@@ -90,6 +90,10 @@ pub struct ProxyRouteConfig {
     pub http2: Option<UpstreamHttp2>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strip_prefix: Option<bool>,
+    /// WebDAV: apply this route's `stripPrefix` and `rewrite` rules to the URLs in the `Destination` and `If` request
+    /// headers too (default `false`: they are passed on as the client wrote them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewrite_destination: Option<bool>,
     /// Used with ip-hash / consistent-hash: "ip" | "header:X-Key" | "url"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash_key: Option<String>,

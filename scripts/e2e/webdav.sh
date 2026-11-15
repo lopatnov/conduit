@@ -5,12 +5,12 @@
 #
 # A WebDAV-shaped upstream (payload/webdav_server.py, standard library only) answers every method with the status a DAV
 # server gives and echoes what it received. Conduit proxies it under `/dav` (stripPrefix), `/keep` (the prefix stays) and
-# `/rw` (a rewrite rule), and serves a static directory on a second port. payload/webdav_checks.py then checks that
+# `/rw` (a rewrite rule), and, with `rewriteDestination: true`, `/mv` (stripPrefix) and `/rwd` (a rewrite rule), and serves a static directory on a second port. payload/webdav_checks.py then checks that
 # PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK, DELETE, PUT and OPTIONS reach the upstream with their bodies and
 # with Depth, Overwrite, Timeout, Lock-Token and Content-Type intact, that the response headers DAV, Allow, Lock-Token and
 # Location and the hrefs of a multistatus body come back as the upstream wrote them, that the client's Host is kept, that
 # `Destination` and the resource tags of `If` reach the upstream exactly as sent (not rewritten, whatever the route does to
-# the request line), and that a static site answers every method but GET, HEAD and OPTIONS with 405 and Allow.
+# the request line) unless the route sets `rewriteDestination`, which maps them like the request path, and that a static site answers every method but GET, HEAD and OPTIONS with 405 and Allow.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -36,6 +36,8 @@ sites:
       "/dav": {targets: ["http://dav.test:9100"], stripPrefix: true}
       "/keep": {targets: ["http://dav.test:9100"]}
       "/rw": {targets: ["http://dav.test:9100"], rewrite: [{from: "^/rw/", to: "/store/"}]}
+      "/mv": {targets: ["http://dav.test:9100"], stripPrefix: true, rewriteDestination: true}
+      "/rwd": {targets: ["http://dav.test:9100"], rewrite: [{from: "^/rwd/", to: "/store/"}], rewriteDestination: true}
   - port: 8081
     host: app.test
     static: /conf/static

@@ -731,6 +731,7 @@ proxy:
 | `targets`             | string[] or object[] | —             | Upstream URLs (plain strings or `{url, weight}`); `http://`, `https://`, and `ws://`/`wss://` as the same two (a WebSocket handshake is an HTTP request) |
 | `strategy`            | string               | `round-robin` | Load balancing — see [Load balancing](#load-balancing)                         |
 | `stripPrefix`         | bool                 | `false`       | Remove matched path prefix before forwarding                                   |
+| `rewriteDestination`  | bool                 | `false`       | WebDAV: apply `stripPrefix` and `rewrite` to the paths in the `Destination` and `If` request headers too — see [WebDAV](protocols.md#webdav) |
 | `hashKey`             | string               | —             | Key for hash-based strategies: `"ip"`, `"url"`, `"header:X-Name"`              |
 | `rewrite`             | object[]             | —             | URL rewrite rules: `[{from, to}]` — first match wins                           |
 | `http2`               | bool or `"h2c"`      | `false`       | HTTP/2 to the upstream: `true` negotiates it through ALPN (TLS upstreams); `"h2c"` also speaks it to a **plaintext** upstream (gRPC without TLS) — see [gRPC](protocols.md#grpc) |
@@ -2038,7 +2039,7 @@ healthCheck:
 
 | Field                       | Type     | Default       | Description                                                                                                                                          |
 | --------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `path`                      | string   | `/`           | Path of the probe's `HEAD` request (a path without a leading `/` gets one). The default is `/`, not `/__health__` (that is the path of Conduit's own site health endpoint) |
+| `path`                      | string   | `/`           | Path of the probe's `HEAD` request (a path without a leading `/` gets one; an `https://` or `wss://` upstream is probed by opening a TCP connection only, because the probe is plaintext HTTP/1.1 and a TLS listener would not understand it, so `path` is not used for it). The default is `/`, not `/__health__` (that is the path of Conduit's own site health endpoint) |
 | `intervalSecs`              | number   | `10`          | Seconds between probes of each upstream (minimum 1)                                                                                                  |
 | `unhealthyThreshold`        | number   | `3`           | Consecutive failed probes before the upstream is left out                                                                                            |
 | `healthyThreshold`          | number   | `1`           | Consecutive passed probes before it is brought back                                                                                                  |

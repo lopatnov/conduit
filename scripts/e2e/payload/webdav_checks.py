@@ -64,6 +64,13 @@ def main():
         if expected == 204:
             status, response_headers, _ = request(proxied, method, "/dav/col/a.txt", dav_headers, body)
             same(f"{method} status", status, 204)
+            # No body to echo: the upstream's receipt headers say what reached it.
+            same(f"{method}: method seen by the upstream", response_headers.get("x-seen-method"), method)
+            same(f"{method}: request target (prefix stripped)", response_headers.get("x-seen-target"), "/col/a.txt")
+            same(f"{method}: Lock-Token", response_headers.get("x-seen-lock-token"), token)
+            same(f"{method}: Depth", response_headers.get("x-seen-depth"), "1")
+            same(f"{method}: content-type", response_headers.get("x-seen-content-type"), dav_headers["Content-Type"])
+            same(f"{method}: Host is the client's", response_headers.get("x-seen-host"), authority)
             continue
         status, response_headers, seen = echo(proxied, method, "/dav/col/a.txt", dav_headers, body, expect=expected)
         same(f"{method}: method seen by the upstream", seen["method"], method)
@@ -105,6 +112,30 @@ def main():
     same("/rw target", seen["target"], "/store/a.txt")
     same("/rw Destination", seen["headers"]["destination"], f"http://{authority}/rw/b.txt")
     print("ok: /keep keeps its prefix; /rw rewrites the request line only")
+
+    # 3a. The opt-in `rewriteDestination`: the same strip and rewrite rules are applied to the paths in Destination and in the
+    #     resource tags of If; the authority, the query, the state tokens and entity tags are not touched, a URL of another
+    #     authority is left alone, and the default routes above are unchanged.
+    sent_if = f"<http://{authority}/mv/col/a.txt> ({token} [\"/mv/etag\"]) </mv/col/b.txt> (Not <DAV:no-lock>)"
+    want_if = f"<http://{authority}/col/a.txt> ({token} [\"/mv/etag\"]) </col/b.txt> (Not <DAV:no-lock>)"
+    for destination, want in (
+        (f"http://{authority}/mv/new%20dir/b.txt?x=1", f"http://{authority}/new%20dir/b.txt?x=1"),
+        ("/mv/new%20dir/b.txt", "/new%20dir/b.txt"),
+        ("https://elsewhere.example/mv/b.txt", "https://elsewhere.example/mv/b.txt"),
+        (f"http://{authority}/outside/b.txt", f"http://{authority}/outside/b.txt"),
+    ):
+        for method in ("COPY", "MOVE"):
+            _, _, seen = echo(proxied, method, "/mv/a.txt", {"Destination": destination, "If": sent_if}, expect=201)
+            same(f"{method} /mv request target", seen["target"], "/a.txt")
+            same(f"{method} /mv Destination {destination}", seen["headers"]["destination"], want)
+            same(f"{method} /mv If", seen["headers"]["if"], want_if)
+    _, _, seen = echo(proxied, "COPY", "/rwd/a.txt", {"Destination": f"http://{authority}/rwd/b.txt"}, expect=201)
+    same("/rwd target", seen["target"], "/store/a.txt")
+    same("/rwd Destination", seen["headers"]["destination"], f"http://{authority}/store/b.txt")
+    _, _, seen = echo(proxied, "GET", "/mv/a.txt", expect=200)
+    if "destination" in seen["headers"] or "if" in seen["headers"]:
+        fail("rewriteDestination invented a Destination or If header")
+    print("ok: rewriteDestination maps Destination and the resource tags of If like the request path, and nothing else")
 
     # 3b. The response side is passed on as the upstream wrote it: the hrefs of a multistatus body and the Location of a 201.
     status, response_headers, data = request(proxied, "PROPFIND", "/dav/multistatus", {"Depth": "1"}, xml.encode())

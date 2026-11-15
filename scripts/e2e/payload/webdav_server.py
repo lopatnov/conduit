@@ -2,7 +2,8 @@
 
 It answers every request, whatever the method, with the status a WebDAV server gives (207 for PROPFIND and PROPPATCH,
 201 for MKCOL, COPY and MOVE, 200 for LOCK, 204 for UNLOCK and DELETE), the `DAV`, `Lock-Token` and `Allow` headers a
-client reads, and a JSON body that echoes what it received: method, request target, headers, body, and the body's
+client reads, `X-Seen-*` headers naming the method, target, `Lock-Token`, `Depth`, `Content-Type` and `Host` it received (for the
+answers without a body), and a JSON body that echoes what it received: method, request target, headers, body, and the body's
 length and SHA-256. The checks then
 compare that echo with what the client sent, so a header that was cut, renamed or rewritten shows up.
 """
@@ -53,6 +54,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("DAV", "1, 2")
         self.send_header("Allow", "OPTIONS, GET, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK")
+        # A receipt of what arrived, in headers, for the answers that have no body (204).
+        self.send_header("X-Seen-Method", self.command)
+        self.send_header("X-Seen-Target", self.path)
+        for name in ("Lock-Token", "Depth", "Content-Type", "Host"):
+            self.send_header(f"X-Seen-{name}", self.headers.get(name, ""))
         if self.command == "MKCOL" and self.path == "/located":
             self.send_header("Location", LOCATION)
         if self.command == "LOCK":

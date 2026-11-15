@@ -247,6 +247,7 @@ pub(crate) fn resolve_grouped(
             proxy_pool: opts.pool.cloned(),
             proxy_http2: opts.http2,
             proxy_h2c: opts.h2c,
+            proxy_rewrite_destination: opts.rewrite_destination,
             proxy_upstream_url,
             meters_traffic: matches!(group.strategy, Some(LoadBalanceStrategy::LeastBandwidth)),
             upstream_conn_slot: holds_slot || circuit_tracking,
