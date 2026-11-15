@@ -139,7 +139,8 @@ ok "response headers: changed, and a 500 replaced by the processor's own respons
 marker="marker-$$-$RANDOM"
 curl -sS --max-time 10 -o "$WORK/body" "$B/echo?$marker"
 grep -qF -- "$marker" "$WORK/body" || fail "the client's body lost the marker: $(cat "$WORK/body")"
-for _ in $(seq 100); do grep -qF -- "$marker" "$WORK/observed" && break; sleep 0.1; done
+# Wait for the whole body, not for its first chunk: the processor is sent it chunk by chunk.
+for _ in $(seq 100); do grep -qF -- "$(cat "$WORK/body")" "$WORK/observed" && break; sleep 0.1; done
 grep -qF -- "$marker" "$WORK/observed" || fail "the processor was never shown the response of $marker"
 grep -qF -- "$(cat "$WORK/body")" "$WORK/observed" || fail "the processor was shown something else than the client got: '$(cat "$WORK/observed")'"
 ok "response body: the processor sees a copy, the client gets it unchanged"
