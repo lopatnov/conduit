@@ -48,7 +48,7 @@ mod crd;
 mod provider;
 
 pub use crd::{ConduitSite, ConduitSiteSpec, ConduitSiteStatus};
-pub use provider::{build_app_config, KubernetesProvider};
+pub use provider::{build_app_config, KubernetesProvider, SiteReport, SiteSet, StatusWriter};
 
 /// Binds `ConduitSite` CRD watching to a concrete conduit config schema.
 ///
@@ -57,8 +57,9 @@ pub use provider::{build_app_config, KubernetesProvider};
 /// root crate); `Config` is the full value sent on the provider channel
 /// (`AppConfig` in the root crate).
 pub trait CrdConfigBuilder: Send + Sync + 'static {
-    /// The per-CRD converted site value (e.g. `SiteConfig`).
-    type Site;
+    /// The per-CRD converted site value (e.g. `SiteConfig`). `Clone`, so that the last good version of a site can
+    /// stand in for a version that no longer converts (see [`SiteSet`]).
+    type Site: Clone + Send;
     /// The full config value streamed to the provider's channel (e.g. `AppConfig`).
     type Config: Send + 'static;
 

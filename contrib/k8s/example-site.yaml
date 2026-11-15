@@ -116,6 +116,9 @@ rules:
   - apiGroups: [conduit.io]
     resources: [conduitsites]
     verbs: [get, list, watch]
+  - apiGroups: [conduit.io]
+    resources: [conduitsites/status]
+    verbs: [patch]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

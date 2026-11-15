@@ -57,6 +57,9 @@ rules:
   - apiGroups: ["conduit.io"]
     resources: ["conduitsites"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["conduit.io"]
+    resources: ["conduitsites/status"]
+    verbs: ["patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -73,8 +76,9 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ```
 
-Conduit only reads: it needs no `update` or `patch`, and it does not write the `status` of an object (the `READY`
-column of `kubectl get conduitsites` stays empty).
+Conduit reads the objects and writes only their `status` (the `patch` rule on `conduitsites/status`): `READY` and a
+message in `kubectl get conduitsites`, `true` and `Active` for a site that is in the config. Without that rule
+Conduit works as before and says once in the log that it cannot write the status.
 
 **3. A Deployment and a Service.** A site listens on the `port` of its spec; the Service forwards to the same port.
 
@@ -152,7 +156,7 @@ spec:
 
 ```bash
 kubectl apply -f my-app.yaml
-kubectl get conduitsites            # PORT, HOST and AGE of every site
+kubectl get conduitsites            # PORT, HOST, READY and AGE of every site
 kubectl logs deploy/conduit | grep ConduitSite
 ```
 
@@ -265,17 +269,20 @@ Three differences from a file:
 Any `ConduitSite` that is added, changed or deleted makes Conduit list all objects in the namespace again and build the
 whole config from them. The result is checked like a config file and swapped in only if it passes.
 
-| Step                         | Failure                                                                                  | Result                                                                                |
-| ---------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Read the spec of every site  | one spec is refused (a host path, a field of the wrong type)                             | `failed to rebuild config from ConduitSite CRDs — keeping current config`             |
-| Validate the whole config    | a hard error: a duplicate `host` and `port`, a bad TLS setting, ...                       | `config error at <path>: <message>` and `live config update rejected`                 |
-| Compare with the running one | a change the running listeners cannot follow (see below)                                 | `cold field changed — restart required` and `live config update rejected`             |
-| Swap                         | none                                                                                     | the new config is in use, without a restart                                           |
+| Step                          | Failure                                                                      | Result                                                                                                  |
+| ----------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Read the spec of each site    | the spec is refused (a host path, a field of the wrong type) or the site alone has a hard validation error | `ConduitSite <name> is invalid` in the log and in its `status`; **only that site** is affected (see below)  |
+| Validate the whole config     | a hard error between sites: two sites with one `host` and `port`, ...         | `config error at <path>: <message>` and `live config update rejected`: the previous config stays      |
+| Compare with the running one  | a change the running listeners cannot follow (see below)                     | `cold field changed — restart required` and `live config update rejected`                              |
+| Swap                          | none                                                                         | the new config is in use, without a restart                                                             |
 
-A rejected update leaves the **whole** previous config in place: one invalid `ConduitSite` holds back the change of every
-other site until it is fixed or deleted. At start the same failure stops the process (the pod restarts and then waits
-in `CrashLoopBackOff`), because there is no previous config to keep. Warnings, such as a certificate close to expiry,
-are logged and do not stop an update.
+An invalid `ConduitSite` does not hold back the others. If it worked before, the **last good version of that site stays**
+in the config (`keeping its previous version` in the log), so a bad edit does not take a working site down. If it never
+worked, for example a new object, it is left out (`left out of the config`). The same holds at start: the pod starts with
+the sites that are valid. What no single site can show is checked on the whole config, and there the whole previous
+config stays: two sites with the same `host` and `port` are refused as a whole, and so is a change in the table's third
+row. Warnings, such as a certificate close to expiry, are logged and do not stop an update. At start, a failure of the
+whole config (or of the API call) stops the process, because there is no previous config to keep.
 
 ## What does not apply live
 
@@ -314,11 +321,11 @@ has a token that a writer does not know. In practice:
 | You see                                                              | Why                                                                                                   |
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | The pod exits at start with `kubernetes provider error: ...`         | The API call failed: no RBAC for `list`/`watch` `conduitsites`, the CRD is not installed, or the wrong namespace |
-| The pod exits with `host file paths cannot be set from a ConduitSite` | A spec names a host path; the message lists them. Remove them, or use a file config                  |
-| `kubectl apply` works, the site never changes                        | Look for `live config update rejected` and `keeping current config` in `kubectl logs`: another site, or this one, is invalid |
+| `ConduitSite <name> is invalid` in the log                            | That site was left out, or kept at its previous version; the message names the cause, for example `host file paths cannot be set from a ConduitSite` (the message lists them: remove them, or use a file config) |
+| `kubectl apply` works, the site never changes                        | Look for `ConduitSite <name> is invalid` and `live config update rejected` in `kubectl logs`: this site is invalid, or two sites collide |
 | A field of the spec has no effect                                    | `unknown key` warning in the log: the field name is misspelled (field names are camelCase, as in a config file) |
 | `cold field changed — restart required`                              | See [what does not apply live](#what-does-not-apply-live)                                              |
-| `kubectl get conduitsites` shows an empty `READY`                    | Conduit does not write the status; `READY` is not used                                                |
+| `READY` is `false`, or empty                                         | `false`: the spec is invalid, and `kubectl get conduitsites -o jsonpath='{.status.message}'` says why and whether the previous version still serves. Empty: Conduit may not write the status (see the RBAC above); the log says so once |
 | `ConduitSite watch error` in the log                                 | The watch on the API server failed; Conduit keeps the config it has                                   |
 
 The effective config is not printed. To see what Conduit built, look at the log lines above and at the objects

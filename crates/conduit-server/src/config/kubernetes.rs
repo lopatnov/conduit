@@ -70,6 +70,22 @@ impl CrdConfigBuilder for ConduitSchema {
                  they are only allowed in a file config"
             );
         }
+        // What is wrong with this site alone (a hard validation error) is refused here, so that the
+        // provider can leave this one object out instead of the whole config being refused.
+        let alone = AppConfig {
+            sites: vec![site.clone()],
+            ..Default::default()
+        };
+        let (_, hard) = crate::config::validate::partition_by_severity(
+            crate::config::validate::validate(&alone),
+        );
+        if !hard.is_empty() {
+            let errors: Vec<String> = hard
+                .iter()
+                .map(|e| format!("{}: {}", e.path, e.message))
+                .collect();
+            anyhow::bail!("{}", errors.join("; "));
+        }
         Ok(site)
     }
 
@@ -100,11 +116,33 @@ impl CrdConfigBuilder for ConduitSchema {
 fn admin_token() -> String {
     static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     TOKEN
-        .get_or_init(|| match std::env::var("CONDUIT_ADMIN_TOKEN") {
-            Ok(token) if !token.trim().is_empty() => token,
-            _ => random_token(),
+        .get_or_init(|| {
+            match token_from_env_value(std::env::var("CONDUIT_ADMIN_TOKEN").ok().as_deref()) {
+                Some(token) => {
+                    if token.len() < MIN_ADMIN_TOKEN_LEN {
+                        tracing::warn!(
+                            "CONDUIT_ADMIN_TOKEN is shorter than {MIN_ADMIN_TOKEN_LEN} characters: use a long random value, \
+                             the Admin API has no limit on wrong guesses"
+                        );
+                    }
+                    token
+                }
+                None => random_token(),
+            }
         })
         .clone()
+}
+
+/// A shorter `CONDUIT_ADMIN_TOKEN` is warned about at start.
+const MIN_ADMIN_TOKEN_LEN: usize = 32;
+
+/// The token in the value of `CONDUIT_ADMIN_TOKEN`, if there is one. Surrounding whitespace is dropped: a `Secret`
+/// mounted from a file ends in a newline, which the server and the admin commands would not accept as part of a token.
+fn token_from_env_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
 }
 
 /// 32 random bytes from the system's secure random source, as 64 hex characters.
@@ -672,6 +710,40 @@ mod tests {
         let (_, hard) =
             crate::config::validate::partition_by_severity(crate::config::validate::validate(&a));
         assert!(hard.is_empty(), "{hard:?}");
+    }
+
+    #[test]
+    fn an_env_admin_token_loses_its_whitespace_and_empty_means_random() {
+        assert_eq!(token_from_env_value(Some("abc\n")).as_deref(), Some("abc"));
+        assert_eq!(
+            token_from_env_value(Some("  a b \r\n")).as_deref(),
+            Some("a b")
+        );
+        assert_eq!(token_from_env_value(Some(" \n")), None);
+        assert_eq!(token_from_env_value(Some("")), None);
+        assert_eq!(token_from_env_value(None), None);
+    }
+
+    /// One `ConduitSite` that does not convert, or is invalid by itself, is left out; the others are built.
+    #[test]
+    fn a_site_with_a_hard_error_of_its_own_is_refused_alone() {
+        let ok = crds_in(
+            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: ok}\nspec: {port: 8080, proxy: 'http://a:1'}\n",
+        );
+        // a proxy target that is not a URL is a hard validation error of the site itself
+        let bad = crds_in(
+            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: bad}\nspec: {port: 8081, proxy: 'not-a-url'}\n",
+        );
+        assert!(spec_to_site_config(&ok[0].spec).is_ok());
+        let err = spec_to_site_config(&bad[0].spec)
+            .expect_err("must be refused")
+            .to_string();
+        assert!(err.contains("proxy"), "{err}");
+        let all = [ok[0].clone(), bad[0].clone()];
+        let (cfg, _) =
+            conduit_k8s::SiteSet::<ConduitSchema>::new().build(all.iter(), "127.0.0.1:2019");
+        assert_eq!(cfg.sites.len(), 1);
+        assert_eq!(cfg.sites[0].port, Some(8080));
     }
 
     // ── build_app_config ──────────────────────────────────────────────────────
