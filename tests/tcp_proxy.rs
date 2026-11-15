@@ -11,7 +11,9 @@ mod common;
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serial_test::serial;
 
@@ -43,13 +45,20 @@ fn read_line(stream: &mut impl Read) -> Vec<u8> {
 /// Handles connections sequentially, one at a time, which is enough for the
 /// deterministic round-robin test below (each connection is fully finished —
 /// request sent, reply read, socket closed — before the next one is opened).
-fn spawn_tagged_echo_backend(tag: &'static str) -> SocketAddr {
+///
+/// Also returns a count of the connections the backend has accepted, including
+/// ones that sent nothing (the proxy opens an upstream connection for every
+/// downstream one, even the readiness probe's bare connect).
+fn spawn_tagged_echo_backend(tag: &'static str) -> (SocketAddr, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind echo backend");
     let addr = listener.local_addr().expect("local_addr");
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let accepted_in_thread = Arc::clone(&accepted);
 
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
+            accepted_in_thread.fetch_add(1, Ordering::SeqCst);
             let request = read_line(&mut stream);
             if request.is_empty() {
                 continue;
@@ -60,7 +69,7 @@ fn spawn_tagged_echo_backend(tag: &'static str) -> SocketAddr {
         }
     });
 
-    addr
+    (addr, accepted)
 }
 
 /// Round-trip a line through a raw TCP connection and return the reply.
@@ -81,7 +90,7 @@ fn roundtrip(port: u16, payload: &str) -> String {
 #[test]
 #[serial]
 fn tcp_proxy_relays_bytes_to_single_target() {
-    let backend_addr = spawn_tagged_echo_backend("only");
+    let (backend_addr, _) = spawn_tagged_echo_backend("only");
     let port = common::free_port();
     let admin_port = common::free_port();
 
@@ -110,8 +119,8 @@ fn tcp_proxy_relays_bytes_to_single_target() {
 #[test]
 #[serial]
 fn tcp_proxy_round_robin_alternates_between_two_targets() {
-    let backend_a = spawn_tagged_echo_backend("a");
-    let backend_b = spawn_tagged_echo_backend("b");
+    let (backend_a, accepted_a) = spawn_tagged_echo_backend("a");
+    let (backend_b, accepted_b) = spawn_tagged_echo_backend("b");
     let port = common::free_port();
     let admin_port = common::free_port();
 
@@ -129,6 +138,22 @@ fn tcp_proxy_round_robin_alternates_between_two_targets() {
             }]
         }),
     );
+
+    // The readiness probe's bare connect (see below) is handled in its own
+    // task, and the proxy takes the round-robin slot inside that task. If the
+    // task runs late, the test's first request takes the slot before it, and
+    // the replies look like `a, a, b, a` (seen on CI, run 43764377417). The
+    // proxy opens the upstream connection right after taking the slot, so wait
+    // until one backend has accepted it: from then on the probe's slot is
+    // spent and the test's own requests get consecutive slots.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while accepted_a.load(Ordering::SeqCst) + accepted_b.load(Ordering::SeqCst) < 1 {
+        assert!(
+            Instant::now() < deadline,
+            "the readiness probe's connection never reached a backend"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 
     let replies: Vec<String> = (0..4)
         .map(|i| roundtrip(server.port, &format!("{i}\n")))
@@ -174,7 +199,7 @@ fn tcp_proxy_round_robin_alternates_between_two_targets() {
 #[test]
 #[serial]
 fn tcp_proxy_site_does_not_disable_admin_api() {
-    let backend_addr = spawn_tagged_echo_backend("x");
+    let (backend_addr, _) = spawn_tagged_echo_backend("x");
     let port = common::free_port();
     let admin_port = common::free_port();
 
