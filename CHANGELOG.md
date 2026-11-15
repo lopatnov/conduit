@@ -9,6 +9,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A Kubernetes guide, `docs/kubernetes.md` (#573): the CRD, RBAC and Deployment, a first site, what a `ConduitSite` may
+  contain, what is checked on each change and what a rejected update leaves (the whole previous config), what needs a
+  restart (a new port, `tls.acme`), who may write the objects, and troubleshooting. Every `ConduitSite` in the guide, in
+  `contrib/k8s/example-site.yaml` and the other manifests is checked by a test (`the_documented_conduitsite_manifests_are_accepted`);
+  the example site used a `fallback.file`, which a `ConduitSite` refuses, and the deployment guide's earlier ACME example set
+  `tls.acme.storage`, which is refused too.
 - A protocol guide, `docs/protocols.md`: for SSE, WebSocket, gRPC, GraphQL, HLS/DASH, WebRTC, RTMP, MQTT, PostgreSQL,
   Redis, SMTP, FTP and SFTP/SSH it says whether the protocol is an HTTP route or a TCP site, gives a working config, the
   limits (idle timeout, no TLS termination or PROXY protocol on TCP sites, FTP passive ports, no UDP) and which e2e
@@ -100,6 +106,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `EXTRA_SITE` adds site fields) (#486).
 
 ### Security
+
+- **A `ConduitSite` no longer drops the site fields its Rust type did not name** (#573). `jwtAuth`, `consumers`,
+  `forwardAuth`, `securityHeaders`, `limits`, `tcp`, `outlierDetection`, `maskErrors` and the other fields that are not
+  in the list of the `ConduitSite` spec were removed by the API server (the definition was a closed schema) and again by
+  the parser, with no message, so a site that asked for a JWT or a consumer check was served open. The definition now
+  keeps unknown fields of `spec` (`x-kubernetes-preserve-unknown-fields`; apply `contrib/k8s/conduitsite-crd.yaml`
+  again) and the spec keeps every field it does not name; a key that no site field matches is warned about, as in a
+  config file. The guard against host paths (`static`, `tls.cert`, ...) is unchanged and its schema-wide test covers the
+  new fields.
 
 - **A credential that is an unset environment variable is now warned about** (issue #624, the "sshole" class: a failed
   lookup that degrades into a value an attacker can predict). `basicAuth` passwords, `apiKey` keys, `jwtAuth.secret`,

@@ -287,6 +287,7 @@ mod tests {
             redirects: None,
             middleware: None,
             routes: None,
+            extra: Default::default(),
         }
     }
 

@@ -102,7 +102,7 @@ Where each group is documented in detail:
 | Observability | [Logging](docs/configuration.md#logging) · [Metrics](docs/configuration.md#metrics) · [OpenTelemetry](docs/configuration.md#opentelemetry-tracing) · [Response time](docs/configuration.md#response-time-header) · [Server-Timing](docs/configuration.md#server-timing-header) |
 | Operations | [Hot reload](docs/configuration.md#hot-reload) · [Admin API](docs/admin.md) |
 | Developer tools | [CLI](docs/cli.md) · [JSON Schema for editors](#editor-integration-json-schema) |
-| Packaging and Kubernetes | [Deployment guide](docs/deployment.md) · [ConduitSite resources](docs/deployment.md#conduitsite-crd---features-kubernetes) · [Building](docs/building.md) |
+| Packaging and Kubernetes | [Deployment guide](docs/deployment.md) · [Kubernetes guide](docs/kubernetes.md) · [Building](docs/building.md) |
 
 An asterisk on the map means the feature is optional at build time. [Choose your
 build](#choose-your-build) shows which build has what.
@@ -390,11 +390,11 @@ conduit --kubernetes-namespace default               # in the Conduit pod; '*' w
 Conduit watches the namespace, combines the resources into one config, checks it and swaps it in
 without a restart; an update that fails validation is rejected and the running config stays. Use
 the `:latest` (full) image (or a build with `--features kubernetes`) and give the pod a service
-account that may `get`, `list` and `watch` `conduitsites`. Write access to `ConduitSite` objects is
-deploy access: `spec` takes any site field, file paths such as `static` and `upload.dir` included, so
-grant it only to people who may deploy to the Conduit pod.
-**→ CRD, RBAC and Deployment manifests:**
-[docs/deployment.md](docs/deployment.md#conduitsite-crd---features-kubernetes)
+account that may `get`, `list` and `watch` `conduitsites`. A `ConduitSite` cannot name files on the
+Conduit host (`static`, `upload`, `tls.cert` and the other path fields are refused, `$VAR` is not
+expanded), so write access to the objects is access to the traffic, not to the pod's files.
+**→ CRD, RBAC, Deployment, what reloads and what needs a restart:**
+[docs/kubernetes.md](docs/kubernetes.md)
 
 ### Raw TCP *(needs `tcp`)* and file upload *(needs `upload`)*
 
