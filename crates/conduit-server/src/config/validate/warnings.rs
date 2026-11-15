@@ -270,7 +270,7 @@ pub(super) fn site_has_cache_config(site: &SiteConfig) -> bool {
 
 /// `true` when a proxy route of `site` caches in a `disk:<path>` store (issue #645): the disk store is the
 /// `disk-cache` feature, and a build without it does not cache that route.
-pub(super) fn site_uses_disk_store(site: &SiteConfig) -> bool {
+pub(crate) fn site_uses_disk_store(site: &SiteConfig) -> bool {
     iter_route_cache_configs(site).any(|cache| cache.store.starts_with("disk:"))
 }
 

@@ -14,6 +14,7 @@
 | [ext-proc.md](ext-proc.md)           | External processing — a gRPC processor (Envoy `ext_proc`) that sees and changes requests |
 | [node-python-workers.md](node-python-workers.md) | Recipe — Node.js/Python worker pool behind Conduit via the dynamic-upstream Admin API |
 | [deployment.md](deployment.md)       | Running in production — Docker, systemd, Kubernetes, production checklist  |
+| [kubernetes.md](kubernetes.md)       | Running from `ConduitSite` objects — CRD, RBAC, what reloads, trust boundary, troubleshooting |
 | [benchmarks.md](benchmarks.md)       | How the CI measures performance and how to reproduce it on your machine    |
 | [live-demo.md](live-demo.md)         | Local demo — two virtual sites, load balancing, caching, auth              |
 | [releasing.md](releasing.md)       | Maintainers — bump the version and publish a release                       |

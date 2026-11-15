@@ -62,6 +62,10 @@ spec:
           properties:
             spec:
               type: object
+              # Every site field of a config file is accepted (jwtAuth, consumers, forwardAuth,
+              # securityHeaders, limits, tcp, ...), not only the ones listed below; without this the
+              # API server would prune them from the object before Conduit sees it.
+              x-kubernetes-preserve-unknown-fields: true
               description: |
                 ConduitSite spec. Field names match the Conduit JSON config schema.
                 See https://github.com/lopatnov/conduit/blob/main/docs/configuration.md

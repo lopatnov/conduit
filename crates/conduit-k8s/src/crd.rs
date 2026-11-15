@@ -93,6 +93,13 @@ pub struct ConduitSiteSpec {
 
     /// Advanced routes array.
     pub routes: Option<serde_json::Value>,
+
+    /// Every other site field (`jwtAuth`, `consumers`, `forwardAuth`, `securityHeaders`,
+    /// `limits`, `tcp`, ...). They are kept as written, so that a `ConduitSite` accepts every
+    /// field a site of a config file accepts; the root crate reads them into its own site type.
+    /// A key that no site field matches is reported as a warning there, as in a config file.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Status subresource written back by the Conduit controller.

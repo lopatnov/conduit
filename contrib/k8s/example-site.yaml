@@ -32,15 +32,16 @@ spec:
   fallback:
     byAccept:
       html:
-        status: 200
-        file: /dist/index.html
+        status: 404
+        body: "<h1>Not Found</h1>"
       json:
         status: 404
         body:
           error: Not Found
 
 ---
-# Admin panel with Basic Auth
+# Admin panel behind an IP allow-list (a ConduitSite is stored as written: `$VAR` is not expanded,
+# so keep credentials out of it; see docs/kubernetes.md)
 apiVersion: conduit.io/v1
 kind: ConduitSite
 metadata:
@@ -50,11 +51,9 @@ spec:
   port: 8080
   host: admin.example.com
   proxy: http://admin-svc:5000
-  basicAuth:
-    users:
-      admin: $ADMIN_PASSWORD
-    challenge: true
-    realm: Admin Panel
+  ipFilter:
+    allow:
+      - 10.0.0.0/8
 
 ---
 # Conduit Deployment (requires kubernetes feature)
@@ -88,8 +87,6 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-            - name: admin
-              containerPort: 2019
           livenessProbe:
             httpGet:
               path: /__health__
@@ -121,7 +118,7 @@ rules:
     verbs: [get, list, watch]
   - apiGroups: [conduit.io]
     resources: [conduitsites/status]
-    verbs: [update, patch]
+    verbs: [patch]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1

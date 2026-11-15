@@ -78,6 +78,7 @@ tempfile = { workspace = true }
 rcgen    = { workspace = true }
 time     = { workspace = true }
 indexmap = { workspace = true }
+serde_yaml = { workspace = true }
 
 [features]
 # Reverse proxying: active health checks + connection warmup spawned by the Admin API supervisor at startup/reload,

@@ -9,6 +9,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A Kubernetes guide, `docs/kubernetes.md` (#573): the CRD, RBAC and Deployment, a first site, what a `ConduitSite` may
+  contain, what is checked on each change and what a rejected update leaves (the whole previous config), what needs a
+  restart (a new port, `tls.acme`), who may write the objects, and troubleshooting. Every `ConduitSite` in the guide, in
+  `contrib/k8s/example-site.yaml` and the other manifests is checked by a test (`the_documented_conduitsite_manifests_are_accepted`);
+  the example site used a `fallback.file`, which a `ConduitSite` refuses, and the deployment guide's earlier ACME example set
+  `tls.acme.storage`, which is refused too.
 - A protocol guide, `docs/protocols.md`: for SSE, WebSocket, gRPC, GraphQL, HLS/DASH, WebRTC, RTMP, MQTT, PostgreSQL,
   Redis, SMTP, FTP and SFTP/SSH it says whether the protocol is an HTTP route or a TCP site, gives a working config, the
   limits (idle timeout, no TLS termination or PROXY protocol on TCP sites, FTP passive ports, no UDP) and which e2e
@@ -100,6 +106,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `EXTRA_SITE` adds site fields) (#486).
 
 ### Security
+
+- **A `ConduitSite` no longer drops the site fields its Rust type did not name** (#573). `jwtAuth`, `consumers`,
+  `forwardAuth`, `securityHeaders`, `limits`, `tcp`, `outlierDetection`, `maskErrors` and the other fields that are not
+  in the list of the `ConduitSite` spec were removed by the API server (the definition was a closed schema) and again by
+  the parser, with no message, so a site that asked for a JWT or a consumer check was served open. The definition now
+  keeps unknown fields of `spec` (`x-kubernetes-preserve-unknown-fields`; apply `contrib/k8s/conduitsite-crd.yaml`
+  again) and the spec keeps every field it does not name; a key that no site field matches is warned about, as in a
+  config file. The guard against host paths (`static`, `tls.cert`, ...) is unchanged, except that a `cache.store` of the form
+  `disk:<path>` (reachable before, a directory of the host) is now refused too (behaviour change).
+- **One invalid `ConduitSite` no longer holds back the others** (#573; behaviour change). A spec that did not convert (a
+  host path, a wrong type) or that has a hard validation error of its own rejected the whole update, and at start it
+  stopped the pod. The site is now logged and not active, or, when it worked before, keeps its last good version, and the
+  other sites apply. A site that has no valid version at all answers `503` for its `host` where other sites share its
+  port, so that its requests do not fall through to the upstream of another site. A conflict between sites (one `host` and `port` twice) still rejects the update as a whole. Conduit
+  now writes `status.ready` and `status.message` of each object (the `READY` column of `kubectl get conduitsites`); that
+  needs `patch` on `conduitsites/status`, and without it Conduit says so once and carries on.
+- **The Admin API of a pod that reads `ConduitSite` objects now always has a token** (#573). It was on loopback with
+  no token, and a `ConduitSite` may route to loopback (`proxy: http://127.0.0.1:2019`, or a `tcp` target), so whoever
+  could write one could call `POST /shutdown` or `POST /upstreams/add` through their own site. The token is
+  `CONDUIT_ADMIN_TOKEN` from the pod's environment when set (the variable the admin commands read), otherwise a random
+  one made once at start (behaviour change: set the variable to use the Admin API in this mode). Surrounding whitespace
+  of the variable (a mounted `Secret` ends in a newline) is dropped, and a value under 32 characters is warned about.
 
 - **A credential that is an unset environment variable is now warned about** (issue #624, the "sshole" class: a failed
   lookup that degrades into a value an attacker can predict). `basicAuth` passwords, `apiKey` keys, `jwtAuth.secret`,

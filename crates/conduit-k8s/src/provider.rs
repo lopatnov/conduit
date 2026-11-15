@@ -2,6 +2,7 @@
 //! updates through a [`conduit_config_core::provider::Provider`], generic
 //! over the config schema via [`CrdConfigBuilder`].
 
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
 use anyhow::Result;
@@ -9,6 +10,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use futures::StreamExt as _;
+use kube::api::{Patch, PatchParams};
 use kube::runtime::watcher::{watcher, Config as WatcherConfig, Event};
 use kube::{Api, Client};
 
@@ -70,9 +72,13 @@ impl<B: CrdConfigBuilder> Provider<B::Config> for KubernetesProvider<B> {
         let client = Client::try_default().await?;
         let api: Api<ConduitSite> = make_api(&client, &self.namespace);
 
-        // Build and send the initial config from the current list of CRDs.
+        // Build and send the initial config from the current list of CRDs. A site that does not
+        // convert is left out and logged; it does not stop the others.
+        let mut set = SiteSet::<B>::new();
         let list = api.list(&Default::default()).await?;
-        let cfg = build_app_config::<B>(list.items.iter(), &self.admin_bind)?;
+        let (cfg, reports) = set.build(list.items.iter(), &self.admin_bind);
+        let mut status = StatusWriter::default();
+        status.write(&client, &list.items, &reports).await;
         if tx.send(cfg).await.is_err() {
             return Ok(());
         }
@@ -88,8 +94,15 @@ impl<B: CrdConfigBuilder> Provider<B::Config> for KubernetesProvider<B> {
         while let Some(event) = stream.next().await {
             match event {
                 Ok(event) if triggers_rebuild(&event) => {
-                    if !handle_watch_event::<B>(&client, &self.namespace, &self.admin_bind, &tx)
-                        .await
+                    if !handle_watch_event::<B>(
+                        &client,
+                        &self.namespace,
+                        &self.admin_bind,
+                        &tx,
+                        &mut set,
+                        &mut status,
+                    )
+                    .await
                     {
                         return Ok(());
                     }
@@ -135,6 +148,8 @@ async fn handle_watch_event<B: CrdConfigBuilder>(
     namespace: &str,
     admin_bind: &str,
     tx: &mpsc::Sender<B::Config>,
+    set: &mut SiteSet<B>,
+    status: &mut StatusWriter,
 ) -> bool {
     // Re-list to get a consistent snapshot after any change.
     // In production this could be optimised to maintain an in-memory cache
@@ -142,16 +157,8 @@ async fn handle_watch_event<B: CrdConfigBuilder>(
     let api: Api<ConduitSite> = make_api(client, namespace);
     match api.list(&Default::default()).await {
         Ok(list) => {
-            let cfg = match build_app_config::<B>(list.items.iter(), admin_bind) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "failed to rebuild config from ConduitSite CRDs — keeping current config"
-                    );
-                    return true;
-                }
-            };
+            let (cfg, reports) = set.build(list.items.iter(), admin_bind);
+            status.write(client, &list.items, &reports).await;
             tracing::info!(
                 provider = "kubernetes",
                 sites = list.items.len(),
@@ -193,6 +200,182 @@ pub fn build_app_config<'a, B: CrdConfigBuilder>(
     Ok(B::build_config(site_values, admin_bind))
 }
 
+/// The sites built from `ConduitSite` objects, one object at a time.
+///
+/// An object whose spec does not convert (a host path, a field of the wrong type, a hard validation error of the
+/// site itself) must not hold back the other sites: it is logged and left out. When it had converted before, its last
+/// good version stays in the config instead, so a bad edit of a working site does not take that site down.
+/// What no single site can show (two sites with one host and port) is still checked on the whole config by the
+/// consumer of the channel, which then keeps the config it has.
+pub struct SiteSet<B: CrdConfigBuilder> {
+    last_good: HashMap<String, B::Site>,
+}
+
+impl<B: CrdConfigBuilder> Default for SiteSet<B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<B: CrdConfigBuilder> SiteSet<B> {
+    /// An empty set: nothing has converted yet.
+    pub fn new() -> Self {
+        Self {
+            last_good: HashMap::new(),
+        }
+    }
+
+    /// Build the full config from every object of the list, in the order given, and say what became of each object.
+    pub fn build<'a>(
+        &mut self,
+        crds: impl Iterator<Item = &'a ConduitSite>,
+        admin_bind: &str,
+    ) -> (B::Config, Vec<SiteReport>) {
+        // One slot per object that is in the config; a `None` is an object that has no version at all yet and
+        // may get a placeholder once every other site is known.
+        let mut slots: Vec<Option<B::Site>> = Vec::new();
+        let mut reports: Vec<SiteReport> = Vec::new();
+        let mut pending: Vec<(usize, &ConduitSite, String)> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for crd in crds {
+            let name = crd.metadata.name.as_deref().unwrap_or("<unnamed>");
+            let namespace = crd.metadata.namespace.as_deref().unwrap_or("");
+            // The uid is part of the key: an object deleted and created again under the same name is another object
+            // and must not inherit the version of the first.
+            let key = format!(
+                "{namespace}/{name}/{}",
+                crd.metadata.uid.as_deref().unwrap_or("")
+            );
+            let report = |ready: bool, message: String| SiteReport {
+                namespace: namespace.to_owned(),
+                name: name.to_owned(),
+                ready,
+                message: message.chars().take(500).collect(),
+            };
+            match B::site_from_spec(&crd.spec) {
+                Ok(site) => {
+                    self.last_good.insert(key.clone(), site.clone());
+                    slots.push(Some(site));
+                    reports.push(report(true, "Valid".to_owned()));
+                }
+                Err(e) => match self.last_good.get(&key) {
+                    Some(previous) => {
+                        tracing::error!(
+                            site = %format!("{namespace}/{name}"),
+                            error = %e,
+                            "ConduitSite is invalid — keeping the last version that was valid"
+                        );
+                        slots.push(Some(previous.clone()));
+                        reports.push(report(
+                            false,
+                            format!("Invalid, still using the last version that was valid: {e}"),
+                        ));
+                    }
+                    None => {
+                        tracing::error!(
+                            site = %format!("{namespace}/{name}"),
+                            error = %e,
+                            "ConduitSite is invalid — not active"
+                        );
+                        pending.push((slots.len(), crd, format!("{e}")));
+                        slots.push(None);
+                        reports.push(report(false, String::new()));
+                    }
+                },
+            }
+            seen.insert(key);
+        }
+        // An object that is gone from the list takes its last good version with it.
+        self.last_good.retain(|key, _| seen.contains(key));
+
+        // An object with no version at all is not served. Its host must not fall through to another site of the
+        // same port (a request for it would reach someone else's upstream, with its credentials), so where that
+        // could happen it is answered by a placeholder that serves nothing.
+        let mut others: Vec<B::Site> = slots.iter().flatten().cloned().collect();
+        for (slot, crd, error) in pending {
+            let placeholder = B::placeholder(&crd.spec, &others);
+            // the next object is checked against this one too (two dropped sites with one host and port)
+            if let Some(p) = &placeholder {
+                others.push(p.clone());
+            }
+            let answered = placeholder.is_some();
+            slots[slot] = placeholder;
+            let message = if answered {
+                format!("Invalid, not active; its host is answered with 503: {error}")
+            } else {
+                format!("Invalid, not active: {error}")
+            };
+            reports[slot].message = message.chars().take(500).collect();
+        }
+        let sites: Vec<B::Site> = slots.into_iter().flatten().collect();
+        (B::build_config(sites, admin_bind), reports)
+    }
+}
+
+/// What became of one `ConduitSite` object in a build: the value written to its `status`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteReport {
+    /// The namespace of the object.
+    pub namespace: String,
+    /// The name of the object.
+    pub name: String,
+    /// `true` when the object's own spec is the one handed to the server. The server may still refuse the whole
+    /// update (two sites with one host and port, a change to a restart-only field); only its log says so.
+    pub ready: bool,
+    /// `Valid`, or why the spec is not in the config. It holds no time, so that an unchanged state is an unchanged status.
+    pub message: String,
+}
+
+/// Writes the `status` of the objects (`ready`, `message`), only where it differs from what the object holds, so that
+/// a write does not start another round of the watch for ever.
+#[derive(Default)]
+pub struct StatusWriter {
+    /// The API server refused a write once (no `patch` on `conduitsites/status`); it is said once and not tried again.
+    denied: bool,
+}
+
+impl StatusWriter {
+    async fn write(&mut self, client: &Client, crds: &[ConduitSite], reports: &[SiteReport]) {
+        if self.denied {
+            return;
+        }
+        for report in reports {
+            let current = crds
+                .iter()
+                .find(|c| {
+                    c.metadata.name.as_deref() == Some(report.name.as_str())
+                        && c.metadata.namespace.as_deref().unwrap_or("") == report.namespace
+                })
+                .and_then(|c| c.status.as_ref());
+            if current.is_some_and(|st| {
+                st.ready == Some(report.ready) && st.message.as_deref() == Some(&report.message)
+            }) {
+                continue;
+            }
+            let api: Api<ConduitSite> = Api::namespaced(client.clone(), &report.namespace);
+            let patch = serde_json::json!({
+                "status": { "ready": report.ready, "message": report.message }
+            });
+            if let Err(e) = api
+                .patch_status(&report.name, &PatchParams::default(), &Patch::Merge(&patch))
+                .await
+            {
+                // Only a refusal is for good. A 404 is an object deleted since the list: skip it, the next
+                // round of the watch does not hold it any more.
+                if matches!(&e, kube::Error::Api(r) if r.code == 403) {
+                    tracing::warn!(
+                        "cannot write the status of ConduitSite objects: grant `patch` on `conduitsites/status` \
+                         to the service account, to see the state of each site in `kubectl get conduitsites`"
+                    );
+                    self.denied = true;
+                    return;
+                }
+                tracing::warn!(site = %report.name, error = %e, "failed to write the status of a ConduitSite");
+            }
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 //
 // These cover the generic mechanism only (constructor/builder fields, and
@@ -223,7 +406,7 @@ mod tests {
     /// depending on the root crate's real one.
     struct TestSchema;
 
-    #[derive(Debug, PartialEq)]
+    #[derive(Clone, Debug, PartialEq)]
     struct TestSite {
         port: Option<u16>,
     }
@@ -287,6 +470,7 @@ mod tests {
             redirects: None,
             middleware: None,
             routes: None,
+            extra: Default::default(),
         }
     }
 
@@ -353,5 +537,91 @@ mod tests {
             err.to_string().contains("boom"),
             "error must include the cause: {err}"
         );
+    }
+
+    // ── SiteSet: one bad object does not hold back the others ───────────────
+
+    /// A schema that refuses port 0, as a stand-in for a spec that does not convert.
+    struct PickySchema;
+
+    impl CrdConfigBuilder for PickySchema {
+        type Site = TestSite;
+        type Config = Vec<TestSite>;
+
+        fn site_from_spec(spec: &crate::ConduitSiteSpec) -> Result<Self::Site> {
+            anyhow::ensure!(spec.port != Some(0), "port 0");
+            Ok(TestSite { port: spec.port })
+        }
+
+        fn build_config(sites: Vec<Self::Site>, _admin_bind: &str) -> Self::Config {
+            sites
+        }
+    }
+
+    fn ports(sites: &[TestSite]) -> Vec<Option<u16>> {
+        sites.iter().map(|s| s.port).collect()
+    }
+
+    #[test]
+    fn an_invalid_site_is_left_out_and_the_others_are_built() {
+        let crds = [
+            make_crd("a", make_spec(8080)),
+            make_crd("bad", make_spec(0)),
+            make_crd("b", make_spec(8081)),
+        ];
+        let (built, reports) = SiteSet::<PickySchema>::new().build(crds.iter(), "x");
+        assert_eq!(ports(&built), [Some(8080), Some(8081)]);
+        let state: Vec<(&str, bool)> = reports.iter().map(|r| (r.name.as_str(), r.ready)).collect();
+        assert_eq!(state, [("a", true), ("bad", false), ("b", true)]);
+        assert_eq!(reports[0].message, "Valid");
+        assert!(reports[1].message.contains("not active") && reports[1].message.contains("port 0"));
+    }
+
+    #[test]
+    fn a_bad_edit_of_a_working_site_keeps_its_previous_version() {
+        let mut set = SiteSet::<PickySchema>::new();
+        let good = [
+            make_crd("a", make_spec(8080)),
+            make_crd("b", make_spec(8081)),
+        ];
+        assert_eq!(
+            ports(&set.build(good.iter(), "x").0),
+            [Some(8080), Some(8081)]
+        );
+        // "a" is edited into something that does not convert
+        let edited = [make_crd("a", make_spec(0)), make_crd("b", make_spec(8082))];
+        let (built, reports) = set.build(edited.iter(), "x");
+        assert_eq!(
+            ports(&built),
+            [Some(8080), Some(8082)],
+            "a keeps 8080, b takes its new value"
+        );
+        assert!(!reports[0].ready && reports[0].message.contains("last version"));
+        assert!(reports[1].ready);
+    }
+
+    #[test]
+    fn a_deleted_site_does_not_leave_its_last_good_version_behind() {
+        let mut set = SiteSet::<PickySchema>::new();
+        let good = [make_crd("a", make_spec(8080))];
+        set.build(good.iter(), "x");
+        set.build(std::iter::empty(), "x"); // "a" is deleted
+        let bad_again = [make_crd("a", make_spec(0))];
+        assert!(
+            set.build(bad_again.iter(), "x").0.is_empty(),
+            "a new object named a must not inherit the deleted one's version"
+        );
+    }
+
+    #[test]
+    fn an_object_created_again_under_the_same_name_does_not_inherit_the_old_version() {
+        let mut set = SiteSet::<PickySchema>::new();
+        let mut first = make_crd("a", make_spec(8080));
+        first.metadata.uid = Some("uid-1".to_owned());
+        set.build([first].iter(), "x");
+        // deleted and created again before the next list; the new spec does not convert
+        let mut second = make_crd("a", make_spec(0));
+        second.metadata.uid = Some("uid-2".to_owned());
+        assert!(set.build([second].iter(), "x").0.is_empty());
     }
 }

@@ -48,7 +48,7 @@ mod crd;
 mod provider;
 
 pub use crd::{ConduitSite, ConduitSiteSpec, ConduitSiteStatus};
-pub use provider::{build_app_config, KubernetesProvider};
+pub use provider::{build_app_config, KubernetesProvider, SiteReport, SiteSet, StatusWriter};
 
 /// Binds `ConduitSite` CRD watching to a concrete conduit config schema.
 ///
@@ -57,8 +57,9 @@ pub use provider::{build_app_config, KubernetesProvider};
 /// root crate); `Config` is the full value sent on the provider channel
 /// (`AppConfig` in the root crate).
 pub trait CrdConfigBuilder: Send + Sync + 'static {
-    /// The per-CRD converted site value (e.g. `SiteConfig`).
-    type Site;
+    /// The per-CRD converted site value (e.g. `SiteConfig`). `Clone`, so that the last good version of a site can
+    /// stand in for a version that no longer converts (see [`SiteSet`]).
+    type Site: Clone + Send;
     /// The full config value streamed to the provider's channel (e.g. `AppConfig`).
     type Config: Send + 'static;
 
@@ -68,4 +69,10 @@ pub trait CrdConfigBuilder: Send + Sync + 'static {
     /// Combine every site value plus the Admin API bind address into the
     /// full config value sent on the channel.
     fn build_config(sites: Vec<Self::Site>, admin_bind: &str) -> Self::Config;
+
+    /// A site that stands in for an object that has no valid version at all (see [`SiteSet`]), given the sites that
+    /// are in the config. It must serve nothing, only refuse; `None` (the default) leaves the object out.
+    fn placeholder(_spec: &ConduitSiteSpec, _others: &[Self::Site]) -> Option<Self::Site> {
+        None
+    }
 }

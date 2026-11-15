@@ -62,7 +62,77 @@ impl CrdConfigBuilder for ConduitSchema {
         let json = serde_json::to_value(spec)?;
         reject_host_paths(&json)?;
         let site: SiteConfig = serde_json::from_value(json)?;
+        // A `disk:<path>` cache store writes upstream responses under a directory of the host: a host
+        // path like the ones above, in a field the key-by-key check cannot see (the route shapes differ).
+        if crate::config::validate::site_uses_disk_store(&site) {
+            anyhow::bail!(
+                "host file paths cannot be set from a ConduitSite (cache.store disk:<path>); \
+                 they are only allowed in a file config"
+            );
+        }
+        // What is wrong with this site alone (a hard validation error) is refused here, so that the
+        // provider can leave this one object out instead of the whole config being refused.
+        let alone = AppConfig {
+            sites: vec![site.clone()],
+            ..Default::default()
+        };
+        let (_, hard) = crate::config::validate::partition_by_severity(
+            crate::config::validate::validate(&alone),
+        );
+        if !hard.is_empty() {
+            let errors: Vec<String> = hard
+                .iter()
+                .map(|e| format!("{}: {}", e.path, e.message))
+                .collect();
+            anyhow::bail!("{}", errors.join("; "));
+        }
         Ok(site)
+    }
+
+    fn placeholder(spec: &ConduitSiteSpec, others: &[SiteConfig]) -> Option<SiteConfig> {
+        // No host (or `*`): the site was a catch-all, and without an answer of its own its requests would go to
+        // the first site of the port.
+        let host = spec.host.as_deref().filter(|h| !h.is_empty() && *h != "*");
+        let port = spec
+            .port
+            .unwrap_or(if spec.tls.is_some() { 443 } else { 80 });
+        let same_port: Vec<&SiteConfig> = others
+            .iter()
+            .filter(|o| o.port.unwrap_or(if o.tls.is_some() { 443 } else { 80 }) == port)
+            .collect();
+        // On a port of its own nothing falls through to another site: the listener is not bound and the
+        // connection is refused. (A new port would also be a restart-only change that refuses the whole update.)
+        if same_port.is_empty() {
+            return None;
+        }
+        // A port of a `tcp` site, or a host and port that another site already has, would make the whole config
+        // invalid (`validate_no_duplicate_host_port`): that site is left out as before.
+        let taken = same_port.iter().any(|o| {
+            o.tcp.is_some()
+                || match (host, o.host.as_deref()) {
+                    (Some(h), Some(oh)) => h.eq_ignore_ascii_case(oh),
+                    (None, None | Some("*")) => true,
+                    _ => false,
+                }
+        });
+        if taken {
+            return None;
+        }
+        let site: SiteConfig = serde_json::from_value(serde_json::json!({
+            "host": host,
+            "port": port,
+            "fallback": { "status": 503, "body": "ConduitSite is not valid" },
+        }))
+        .ok()?;
+        // Whatever stops it standing alone leaves the object out as before.
+        let alone = AppConfig {
+            sites: vec![site.clone()],
+            ..Default::default()
+        };
+        let (_, hard) = crate::config::validate::partition_by_severity(
+            crate::config::validate::validate(&alone),
+        );
+        hard.is_empty().then_some(site)
     }
 
     fn build_config(sites: Vec<SiteConfig>, admin_bind: &str) -> AppConfig {
@@ -70,7 +140,7 @@ impl CrdConfigBuilder for ConduitSchema {
             global: Some(GlobalConfig {
                 admin: Some(AdminConfig {
                     bind: Some(admin_bind.to_owned()),
-                    token: None,
+                    token: Some(admin_token()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -79,6 +149,60 @@ impl CrdConfigBuilder for ConduitSchema {
             ..Default::default()
         }
     }
+}
+
+/// The Admin API token of a pod that takes its config from `ConduitSite` objects.
+///
+/// The Admin API is on loopback, but a `ConduitSite` may route to any address the pod can reach, loopback included
+/// (`proxy: http://127.0.0.1:2019`, or a `tcp` target): without a token, whoever writes a `ConduitSite` could call
+/// `POST /shutdown` or `POST /upstreams/add` through their own site. So the API always has one: `CONDUIT_ADMIN_TOKEN`
+/// from the pod's environment when set (the variable `conduit status` and the other admin commands read, so they work
+/// in the pod), otherwise a random one that nobody knows, which closes the API. It is made once per process: a config
+/// rebuilt on every `ConduitSite` change must not rotate it.
+fn admin_token() -> String {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN
+        .get_or_init(|| {
+            match token_from_env_value(std::env::var("CONDUIT_ADMIN_TOKEN").ok().as_deref()) {
+                Some(token) => {
+                    if token.len() < MIN_ADMIN_TOKEN_LEN {
+                        tracing::warn!(
+                            "CONDUIT_ADMIN_TOKEN is shorter than {MIN_ADMIN_TOKEN_LEN} characters: use a long random value, \
+                             the Admin API has no limit on wrong guesses"
+                        );
+                    }
+                    token
+                }
+                None => random_token(),
+            }
+        })
+        .clone()
+}
+
+/// A shorter `CONDUIT_ADMIN_TOKEN` is warned about at start.
+const MIN_ADMIN_TOKEN_LEN: usize = 32;
+
+/// The token in the value of `CONDUIT_ADMIN_TOKEN`, if there is one. Surrounding whitespace is dropped: a `Secret`
+/// mounted from a file ends in a newline, which the server and the admin commands would not accept as part of a token.
+fn token_from_env_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+}
+
+/// 32 random bytes from the system's secure random source, as 64 hex characters.
+fn random_token() -> String {
+    use std::fmt::Write as _;
+    let mut bytes = [0u8; 32];
+    rustls::crypto::ring::default_provider()
+        .secure_random
+        .fill(&mut bytes)
+        .expect("the system random source is available");
+    bytes.iter().fold(String::with_capacity(64), |mut out, b| {
+        let _ = write!(out, "{b:02x}");
+        out
+    })
 }
 
 /// CRD-mode trust boundary (#580): whoever can write a `ConduitSite` must not be
@@ -201,6 +325,7 @@ mod tests {
             redirects: None,
             middleware: None,
             routes: None,
+            extra: Default::default(),
         }
     }
 
@@ -447,6 +572,293 @@ mod tests {
         spec.proxy = Some(serde_json::json!("http://backend:4000"));
         let site = spec_to_site_config(&spec).expect("conversion must succeed");
         assert!(site.proxy.is_some());
+    }
+
+    // ── what a ConduitSite accepts, checked against the manifests we ship and document ──
+
+    /// Every `kind: ConduitSite` document of a YAML text.
+    fn crds_in(yaml: &str) -> Vec<ConduitSite> {
+        use serde::Deserialize as _;
+        serde_yaml::Deserializer::from_str(yaml)
+            .map(|doc| serde_yaml::Value::deserialize(doc).expect("valid YAML"))
+            .filter(|v| v["kind"] == "ConduitSite")
+            .map(|v| serde_yaml::from_value(v).expect("a valid ConduitSite"))
+            .collect()
+    }
+
+    /// The text of every fenced ```yaml block of a Markdown file.
+    fn yaml_blocks(markdown: &str) -> Vec<String> {
+        let mut blocks = Vec::new();
+        let mut current: Option<String> = None;
+        for line in markdown.lines() {
+            match (&mut current, line.trim_end()) {
+                (None, "```yaml") => current = Some(String::new()),
+                (Some(_), "```") => blocks.extend(current.take()),
+                (Some(text), l) => {
+                    text.push_str(l);
+                    text.push('\n');
+                }
+                _ => {}
+            }
+        }
+        blocks
+    }
+
+    /// The config a set of manifests builds, with its hard validation errors as a message.
+    fn check_manifests(what: &str, crds: &[ConduitSite]) {
+        for crd in crds {
+            let name = crd.metadata.name.as_deref().unwrap_or("?");
+            spec_to_site_config(&crd.spec)
+                .unwrap_or_else(|e| panic!("{what}: ConduitSite {name} is refused: {e}"));
+        }
+        let cfg = build_app_config(crds.iter(), "127.0.0.1:2019")
+            .unwrap_or_else(|e| panic!("{what}: {e}"));
+        let (_, hard) =
+            crate::config::validate::partition_by_severity(crate::config::validate::validate(&cfg));
+        assert!(
+            hard.is_empty(),
+            "{what}: the config built from the manifests has errors: {:?}",
+            hard.iter()
+                .map(|e| format!("{}: {}", e.path, e.message))
+                .collect::<Vec<_>>()
+        );
+        for site in &cfg.sites {
+            assert!(
+                site.extra.is_empty(),
+                "{what}: unknown site keys {:?}",
+                site.extra.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// The example manifests in `contrib/k8s/` are what a user applies first: they must be accepted.
+    #[test]
+    fn the_shipped_example_manifests_are_accepted() {
+        let crds = crds_in(include_str!("../../../../contrib/k8s/example-site.yaml"));
+        assert!(!crds.is_empty());
+        check_manifests("contrib/k8s/example-site.yaml", &crds);
+    }
+
+    /// Every `ConduitSite` in the docs builds a valid config (an excerpt that is not a whole
+    /// manifest is not a `ConduitSite` document and is left out).
+    #[test]
+    fn the_documented_conduitsite_manifests_are_accepted() {
+        let mut found = 0;
+        for (file, text) in [
+            (
+                "docs/deployment.md",
+                include_str!("../../../../docs/deployment.md"),
+            ),
+            (
+                "docs/kubernetes.md",
+                include_str!("../../../../docs/kubernetes.md"),
+            ),
+        ] {
+            // one config per file: two examples may share a host and port
+            for (i, block) in yaml_blocks(text).iter().enumerate() {
+                let crds = crds_in(block);
+                found += crds.len();
+                if !crds.is_empty() {
+                    check_manifests(&format!("{file}, YAML block {i}"), &crds);
+                }
+            }
+        }
+        assert!(
+            found >= 4,
+            "found only {found} ConduitSite documents in the docs"
+        );
+    }
+
+    /// A `ConduitSite` accepts every field of a site, not only the ones its Rust type names
+    /// (before, `jwtAuth` was dropped without a word and the site was served open).
+    #[test]
+    fn crd_spec_keeps_the_fields_it_does_not_name() {
+        let crds = crds_in(
+            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: a}\nspec:\n  port: 8080\n  \
+             proxy: http://b:1\n  jwtAuth: {jwksUrl: 'https://auth.example.com/jwks.json'}\n  \
+             securityHeaders: true\n  limits: {maxBodyBytes: 1000}\n  maskErrors: true\n",
+        );
+        let site = spec_to_site_config(&crds[0].spec).unwrap();
+        assert!(site.jwt_auth.is_some(), "jwtAuth was dropped");
+        assert!(
+            site.security_headers.is_some(),
+            "securityHeaders was dropped"
+        );
+        assert!(site.limits.is_some(), "limits was dropped");
+        assert_eq!(site.mask_errors, Some(true));
+        assert!(site.extra.is_empty());
+    }
+
+    /// A key no site field matches ends in `SiteConfig.extra`, where validation warns about it as it
+    /// does for a config file.
+    #[test]
+    fn crd_spec_reports_a_key_no_site_field_matches() {
+        let crds = crds_in(
+            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: a}\nspec:\n  port: 8080\n  jwtAuht: {}\n",
+        );
+        let site = spec_to_site_config(&crds[0].spec).unwrap();
+        assert!(site.extra.contains_key("jwtAuht"));
+    }
+
+    /// A `disk:<path>` cache store is a host path, in any route shape; `memory` and a Redis URL are not.
+    #[test]
+    fn crd_spec_cannot_cache_to_a_host_directory() {
+        let site_with = |proxy: &str| {
+            let yaml = format!(
+                "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {{name: a}}\nspec:\n  port: 8080\n{proxy}"
+            );
+            spec_to_site_config(&crds_in(&yaml)[0].spec)
+        };
+        let in_map = |store: &str| {
+            format!("  proxy:\n    /:\n      targets: [http://b:1]\n      cache: {{store: '{store}'}}\n")
+        };
+        let in_routes = |store: &str| {
+            format!(
+                "  routes:\n    - match: {{path: /}}\n      proxy:\n        targets: [http://b:1]\n        cache: {{store: '{store}'}}\n"
+            )
+        };
+        for store in ["disk:/etc", "disk:./cache"] {
+            for (shape, proxy) in [("proxy map", in_map(store)), ("routes[]", in_routes(store))] {
+                let err = site_with(&proxy)
+                    .expect_err(&format!("{shape} {store}"))
+                    .to_string();
+                assert!(err.contains("host file paths"), "{shape} {store}: {err}");
+            }
+        }
+        for store in ["memory", "redis://cache.default.svc:6379"] {
+            assert!(site_with(&in_map(store)).is_ok(), "proxy map {store}");
+            assert!(site_with(&in_routes(store)).is_ok(), "routes[] {store}");
+        }
+    }
+
+    /// The Admin API of a CRD-mode pod always has a token: a `ConduitSite` can route to loopback.
+    #[test]
+    fn the_admin_api_of_a_crd_pod_has_a_token_that_does_not_change() {
+        let token_of = |cfg: &AppConfig| {
+            cfg.global
+                .as_ref()
+                .and_then(|g| g.admin.as_ref())
+                .and_then(|a| a.token.clone())
+        };
+        let a = build_app_config(std::iter::empty(), "127.0.0.1:2019").unwrap();
+        let b = build_app_config(std::iter::empty(), "127.0.0.1:2019").unwrap();
+        let token = token_of(&a).expect("a token is set");
+        assert!(
+            token.len() >= 32,
+            "token too short: {} characters",
+            token.len()
+        );
+        assert_eq!(
+            Some(token),
+            token_of(&b),
+            "the token must not rotate with the config"
+        );
+        let (_, hard) =
+            crate::config::validate::partition_by_severity(crate::config::validate::validate(&a));
+        assert!(hard.is_empty(), "{hard:?}");
+    }
+
+    #[test]
+    fn an_env_admin_token_loses_its_whitespace_and_empty_means_random() {
+        assert_eq!(token_from_env_value(Some("abc\n")).as_deref(), Some("abc"));
+        assert_eq!(
+            token_from_env_value(Some("  a b \r\n")).as_deref(),
+            Some("a b")
+        );
+        assert_eq!(token_from_env_value(Some(" \n")), None);
+        assert_eq!(token_from_env_value(Some("")), None);
+        assert_eq!(token_from_env_value(None), None);
+    }
+
+    /// One `ConduitSite` that does not convert, or is invalid by itself, is left out; the others are built.
+    #[test]
+    fn a_site_with_a_hard_error_of_its_own_is_refused_alone() {
+        let ok = crds_in(
+            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: ok}\nspec: {port: 8080, proxy: 'http://a:1'}\n",
+        );
+        // a proxy target that is not a URL is a hard validation error of the site itself
+        let bad = crds_in(
+            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: bad}\nspec: {port: 8081, proxy: 'not-a-url'}\n",
+        );
+        assert!(spec_to_site_config(&ok[0].spec).is_ok());
+        let err = spec_to_site_config(&bad[0].spec)
+            .expect_err("must be refused")
+            .to_string();
+        assert!(err.contains("proxy"), "{err}");
+        let all = [ok[0].clone(), bad[0].clone()];
+        let (cfg, _) =
+            conduit_k8s::SiteSet::<ConduitSchema>::new().build(all.iter(), "127.0.0.1:2019");
+        assert_eq!(cfg.sites.len(), 1);
+        assert_eq!(cfg.sites[0].port, Some(8080));
+    }
+
+    /// A site that is left out must not hand its host to another site of the same port: `find_site_idx` falls back
+    /// to the first site for an unknown host, and that is somebody else's upstream.
+    #[test]
+    fn a_dropped_site_does_not_hand_its_host_to_another_site() {
+        let all = crds_in(
+            "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: other}\nspec: {host: other.example.com, port: 8080, proxy: 'http://secret-upstream:1'}\n---\n\
+             apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: bad}\nspec: {host: bad.example.com, port: 8080, proxy: 'not-a-url'}\n---\n\
+             apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {name: alone}\nspec: {host: alone.example.com, port: 9090, proxy: 'not-a-url'}\n",
+        );
+        let (cfg, reports) =
+            conduit_k8s::SiteSet::<ConduitSchema>::new().build(all.iter(), "127.0.0.1:2019");
+        // `bad` shares port 8080 with `other`: a placeholder answers for it. `alone` has a port of its own: left out.
+        assert_eq!(cfg.sites.len(), 2);
+        // The first pass of `find_site_idx` is an exact host match on the port, so this site is the one chosen.
+        let site = cfg
+            .sites
+            .iter()
+            .find(|s| s.host.as_deref() == Some("bad.example.com") && s.port == Some(8080))
+            .expect("a site answers for the host");
+        assert!(site.proxy.is_none(), "the placeholder proxies nothing");
+        assert_eq!(site.fallback.as_ref().and_then(|f| f.status), Some(503));
+        assert!(reports[1].message.contains("503"), "{}", reports[1].message);
+        assert!(
+            !reports[2].message.contains("503"),
+            "{}",
+            reports[2].message
+        );
+        // a conflict-free config: the placeholder passes validation next to the others
+        assert!(
+            crate::config::validate::partition_by_severity(crate::config::validate::validate(&cfg))
+                .1
+                .is_empty()
+        );
+    }
+
+    /// The placeholder of a dropped site must never make the whole config invalid, or one bad object would hold back
+    /// every other site again: no placeholder on a `tcp` port, next to a site with its host, or twice for one host;
+    /// and a dropped catch-all is answered too.
+    #[test]
+    fn a_placeholder_never_makes_the_whole_config_invalid() {
+        let hdr = "apiVersion: conduit.io/v1\nkind: ConduitSite\n";
+        let yaml = format!(
+            "{hdr}metadata: {{name: web}}\nspec: {{host: web.example.com, port: 8080, proxy: 'http://a:1'}}\n---\n\
+             {hdr}metadata: {{name: db}}\nspec: {{port: 5432, tcp: {{targets: ['db:5432']}}}}\n---\n\
+             {hdr}metadata: {{name: copy-of-web}}\nspec: {{host: WEB.example.com, port: 8080, proxy: 'not-a-url'}}\n---\n\
+             {hdr}metadata: {{name: on-the-tcp-port}}\nspec: {{host: x.example.com, port: 5432, proxy: 'not-a-url'}}\n---\n\
+             {hdr}metadata: {{name: bad-1}}\nspec: {{host: twice.example.com, port: 8080, proxy: 'not-a-url'}}\n---\n\
+             {hdr}metadata: {{name: bad-2}}\nspec: {{host: twice.example.com, port: 8080, proxy: 'not-a-url'}}\n---\n\
+             {hdr}metadata: {{name: bad-catch-all}}\nspec: {{port: 8080, proxy: 'not-a-url'}}\n"
+        );
+        let all = crds_in(&yaml);
+        let (cfg, reports) =
+            conduit_k8s::SiteSet::<ConduitSchema>::new().build(all.iter(), "127.0.0.1:2019");
+        let (_, hard) =
+            crate::config::validate::partition_by_severity(crate::config::validate::validate(&cfg));
+        assert!(hard.is_empty(), "{hard:?}");
+        let answered: Vec<&str> = reports
+            .iter()
+            .filter(|r| r.message.contains("503"))
+            .map(|r| r.name.as_str())
+            .collect();
+        // one of the two bad objects of one host, and the catch-all; nothing for the copy or the tcp port
+        assert_eq!(answered, ["bad-1", "bad-catch-all"]);
+        // the catch-all has no host, so an unknown host on 8080 reaches it and not the first site
+        assert!(cfg.sites.iter().any(|s| s.host.is_none()
+            && s.port == Some(8080)
+            && s.fallback.as_ref().and_then(|f| f.status) == Some(503)));
     }
 
     // ── build_app_config ──────────────────────────────────────────────────────
