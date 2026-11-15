@@ -76,16 +76,25 @@ pub(crate) async fn upstream_request_filter(
 fn frame_rewritten_body(
     session: &mut Session,
     upstream_request: &mut RequestHeader,
-    ctx: &Option<RequestCtx>,
+    ctx: &mut Option<RequestCtx>,
 ) {
-    let rewrites = ctx
+    let Some(req_ctx) = ctx.as_mut() else {
+        return;
+    };
+    if !req_ctx
+        .ext_proc
         .as_ref()
-        .and_then(|c| c.ext_proc.as_ref())
-        .is_some_and(|s| s.rewrites_request_body());
-    if !rewrites {
+        .is_some_and(|s| s.rewrites_request_body())
+    {
         return;
     }
-    reframe_request(upstream_request, session.is_body_empty());
+    let body_is_empty = session.is_body_empty();
+    // Remembered for the body hook: the same answer must hold at the last chunk (see `ext_proc_body_processable`).
+    req_ctx.ext_proc_body_processable = Some(body_can_be_processed(
+        upstream_request.method.as_str(),
+        body_is_empty,
+    ));
+    reframe_request(upstream_request, body_is_empty);
 }
 
 /// `true` when a request can carry a body after an `ext_proc` entry: it has one, or its method is one that carries one (a

@@ -960,6 +960,45 @@ fn a_get_without_a_body_is_not_shown_to_the_body_phase() {
     assert_eq!(kinds(&seen), ["request-headers"]);
 }
 
+/// A chunked `GET` whose body turns out to hold no data (`0\r\n\r\n`): it is framed for a body because it announced one, so
+/// the processor must get its body exchange although Pingora reports the body as empty once the terminating chunk is read.
+#[cfg(feature = "proxy")]
+fn chunked_get_without_data(request_body: &str) -> (Vec<&'static str>, String) {
+    use std::io::{Read, Write};
+    let (processor, seen) = support::serve_in_background(body_processor(|_| {
+        replace_body(true, "made up by the processor")
+    }));
+    let server =
+        start_body_site(serde_json::json!({ "grpc": processor, "requestBody": request_body }));
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+        .unwrap();
+    stream
+        .write_all(
+            b"GET /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n",
+        )
+        .unwrap();
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    let body = answer.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
+    (kinds(&seen), body)
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_chunked_get_with_an_empty_body_still_gets_its_body_exchange() {
+    for mode in ["buffered", "streamed"] {
+        let (seen, answer_body) = chunked_get_without_data(mode);
+        assert_eq!(seen, ["request-headers", "request-body"], "{mode}");
+        assert!(
+            answer_body.contains("made up by the processor"),
+            "{mode}: {answer_body}"
+        );
+    }
+}
+
 #[cfg(feature = "proxy")]
 #[test]
 fn a_refusal_after_100_continue_still_delivers_the_final_answer() {

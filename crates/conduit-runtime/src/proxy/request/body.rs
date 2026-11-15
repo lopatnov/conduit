@@ -140,11 +140,18 @@ pub(crate) async fn request_body_filter(
         .filter(|s| s.rewrites_request_body() && !session.was_upgraded())
     {
         use conduit_ext_proc::BodyVerdict;
-        let body_is_empty = session.is_body_empty();
-        let processable = super::transform::body_can_be_processed(
-            session.req_header().method.as_str(),
-            body_is_empty,
-        );
+        // The decision made when the request was framed: `is_body_empty()` is not asked again, it turns `true` for a
+        // chunked body that holds no data once its terminating chunk is read, after the request was sent as having one.
+        let processable = match req_ctx.ext_proc_body_processable {
+            Some(decided) => decided,
+            None => {
+                let body_is_empty = session.is_body_empty();
+                super::transform::body_can_be_processed(
+                    session.req_header().method.as_str(),
+                    body_is_empty,
+                )
+            }
+        };
         let verdict = if processable {
             sessions.request_body(body.take(), end_of_stream).await
         } else {
