@@ -56,8 +56,8 @@ conduit
 > stays the server's), the source URL, the destination file, the progress and the verification:
 >
 > ```text
-> [conduit] Downloading the native binary for linux/x64 (conduit v2.3.1).
-> [conduit] From: https://github.com/lopatnov/conduit/releases/download/v2.3.1/conduit-x86_64-unknown-linux-gnu
+> [conduit] Downloading the native binary for linux/x64 (conduit v2.4.0).
+> [conduit] From: https://github.com/lopatnov/conduit/releases/download/v2.4.0/conduit-x86_64-unknown-linux-gnu
 > [conduit] To:   /usr/lib/node_modules/@lopatnov/conduit/bin/native/conduit-x86_64-unknown-linux-gnu
 > [conduit] Downloading 100% (41.3 of 41.3 MB)
 > [conduit] SHA-256 verified (…).
@@ -161,7 +161,7 @@ fallback:
 ```yaml
 port: 3000
 logging: dev
-hotReload: true   # reload the browser when a served file changes
+hotReload: true # reload the browser when a served file changes
 cors: true
 static: ./src
 proxy:
@@ -303,29 +303,29 @@ dropped by the next reload. The complete reference is
   <img src="https://raw.githubusercontent.com/lopatnov/conduit/main/docs/img/feature-map.svg" alt="Sixteen feature groups: routing; proxy and balancing; resilience; caching; static files; TCP and uploads; response shaping; TLS; authentication; traffic control; scripting; observability; operations; developer tools; packaging; Kubernetes. Items marked with an asterisk need an optional build feature." width="900">
 </p>
 
-| Area                  | Details                                                                                   |
-| --------------------- | ----------------------------------------------------------------------------------------- |
-| **Reverse proxy**     | Balancing (round-robin, least-connections, IP hash, consistent hash, power of two choices and more), health checks, outlier detection, circuit breaker, retries, sticky sessions, traffic mirroring |
-| **Static files**      | ETag, Last-Modified, Range, optional pre-compressed `.br` / `.gz` files, SPA fallback     |
-| **TLS**               | Your own certificates, HTTP→HTTPS redirect, mTLS client certificates                      |
-| **Automatic TLS**     | Let's Encrypt through ACME: certificates are issued at start and renewed on disk; restart to serve a renewed one |
-| **HTTP/2**            | Negotiated through ALPN on TLS ports, optional h2c (cleartext), HTTP/2 to upstreams       |
-| **Compression**       | gzip, Brotli, Zstd and deflate, with a content-type filter                                |
-| **WebSocket**         | Upgrade requests are proxied                                                              |
-| **Proxy cache**       | Memory, Redis or disk store; stale-while-revalidate, stale-if-error, request coalescing   |
-| **IP filtering**      | CIDR allow and deny lists, `X-Forwarded-For` trust, runtime deny-list through the Admin API |
-| **Rate limiting**     | Token bucket per client IP or header, bursts, per-route and per-consumer limits, optional Redis backend |
-| **Auth**              | Basic, API key, JWT (HS256 with a shared secret; RS256/ES256 through a JWKS URL), forward auth, consumers |
-| **CORS and security headers** | Origin allow-list, preflight, credentials mode; HSTS, CSP, X-Frame-Options, Referrer-Policy, allowed hosts; 5xx error masking |
-| **Transforms**        | Set or remove request and response headers; use JWT claims in headers (`{{ jwt.sub }}`)   |
-| **Scripting**         | Rhai scripts and WebAssembly plugins, in the request and response phases                  |
-| **Config reload**     | `conduit reload` applies most config changes without a restart; connections stay open     |
-| **Observability**     | Health endpoint with upstream status, Prometheus metrics, OpenTelemetry tracing, JSON access log, `X-Response-Time` and `Server-Timing` headers |
-| **File upload**       | `multipart/form-data` with generated filenames, a MIME allow-list and size limits         |
-| **TCP proxy**         | Raw TCP passthrough for databases, SMTP and similar                                       |
-| **Redirects**         | Named parameters (`:slug`) with 301, 302, 307 or 308                                      |
-| **Routing**           | Virtual hosts; path glob, method, header regex, query and cookie predicates               |
-| **Kubernetes**        | Sites come from `ConduitSite` resources (`--kubernetes-namespace`, full build); changes apply live |
+| Area                          | Details                                                                                                                                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Reverse proxy**             | Balancing (round-robin, least-connections, IP hash, consistent hash, power of two choices and more), health checks, outlier detection, circuit breaker, retries, sticky sessions, traffic mirroring |
+| **Static files**              | ETag, Last-Modified, Range, optional pre-compressed `.br` / `.gz` files, SPA fallback                                                                                                               |
+| **TLS**                       | Your own certificates, HTTP→HTTPS redirect, mTLS client certificates                                                                                                                                |
+| **Automatic TLS**             | Let's Encrypt through ACME: certificates are issued at start and renewed on disk; restart to serve a renewed one                                                                                    |
+| **HTTP/2**                    | Negotiated through ALPN on TLS ports, optional h2c (cleartext), HTTP/2 to upstreams                                                                                                                 |
+| **Compression**               | gzip, Brotli, Zstd and deflate, with a content-type filter                                                                                                                                          |
+| **WebSocket**                 | Upgrade requests are proxied                                                                                                                                                                        |
+| **Proxy cache**               | Memory, Redis or disk store; stale-while-revalidate, stale-if-error, request coalescing                                                                                                             |
+| **IP filtering**              | CIDR allow and deny lists, `X-Forwarded-For` trust, runtime deny-list through the Admin API                                                                                                         |
+| **Rate limiting**             | Token bucket per client IP or header, bursts, per-route and per-consumer limits, optional Redis backend                                                                                             |
+| **Auth**                      | Basic, API key, JWT (HS256 with a shared secret; RS256/ES256 through a JWKS URL), forward auth, consumers                                                                                           |
+| **CORS and security headers** | Origin allow-list, preflight, credentials mode; HSTS, CSP, X-Frame-Options, Referrer-Policy, allowed hosts; 5xx error masking                                                                       |
+| **Transforms**                | Set or remove request and response headers; use JWT claims in headers (`{{ jwt.sub }}`)                                                                                                             |
+| **Scripting**                 | Rhai scripts and WebAssembly plugins, in the request and response phases                                                                                                                            |
+| **Config reload**             | `conduit reload` applies most config changes without a restart; connections stay open                                                                                                               |
+| **Observability**             | Health endpoint with upstream status, Prometheus metrics, OpenTelemetry tracing, JSON access log, `X-Response-Time` and `Server-Timing` headers                                                     |
+| **File upload**               | `multipart/form-data` with generated filenames, a MIME allow-list and size limits                                                                                                                   |
+| **TCP proxy**                 | Raw TCP passthrough for databases, SMTP and similar                                                                                                                                                 |
+| **Redirects**                 | Named parameters (`:slug`) with 301, 302, 307 or 308                                                                                                                                                |
+| **Routing**                   | Virtual hosts; path glob, method, header regex, query and cookie predicates                                                                                                                         |
+| **Kubernetes**                | Sites come from `ConduitSite` resources (`--kubernetes-namespace`, full build); changes apply live                                                                                                  |
 
 ### Limits you should know about
 
@@ -344,11 +344,11 @@ dropped by the next reload. The complete reference is
 
 **This npm package** installs the full build for:
 
-| Platform | Architecture          |
-| -------- | --------------------- |
+| Platform | Architecture                                                                                                                            |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | Linux    | x86-64 and ARM64, glibc or musl (Alpine: the static musl build is picked); 32-bit x86, ARMv7 and ARMv6 (Raspberry Pi 1 and Zero), glibc |
-| macOS    | Intel, Apple Silicon  |
-| Windows  | x86-64, ARM64         |
+| macOS    | Intel, Apple Silicon                                                                                                                    |
+| Windows  | x86-64, ARM64                                                                                                                           |
 
 Other platforms (Linux RISC-V 64 and soft-float ARM) and the smaller builds
 (files ending in `-standard`, `-gateway`, `-static`) are [release downloads](https://github.com/lopatnov/conduit/releases).
