@@ -245,7 +245,7 @@ that exports `incoming-handler` (0.2) or `handler` (0.3). Conduit runs it with `
 **Option C: B for handlers, A stays for middleware.** Middleware keeps its small synchronous ABI (it runs on every
 request and must stay cheap); handlers use components. Two WASM paths in the codebase, but each fits its job.
 
-**Recommendation: C.** Handlers are application code, where standard tooling and async I/O matter more than the last
+**Decided (owner, 2026-11-15): C.** Handlers are application code, where standard tooling and async I/O matter more than the last
 bit of size; middleware is per-request plumbing, where the current ABI's cost profile is right. Accept 0.2
 (`incoming-handler`) first, since every toolchain emits it; add 0.3 (`handler`, native `async func`) through
 `ProxyPre::P3` once a toolchain the owner wants to support emits it. The extra size goes to the opt-in `webapp`
