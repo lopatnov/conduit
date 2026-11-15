@@ -232,9 +232,7 @@ async fn handle_rule(
     if let Some(ref path) = rule.file {
         match fs::read(path).await {
             Ok(bytes) => {
-                let ct = mime_guess::from_path(path)
-                    .first_raw()
-                    .unwrap_or("application/octet-stream");
+                let ct = crate::mime::content_type(std::path::Path::new(path));
                 write_maybe_compressed(
                     session,
                     status,

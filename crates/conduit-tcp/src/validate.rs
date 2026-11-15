@@ -16,8 +16,11 @@ pub fn validate_tcp(tcp: &TcpConfig, prefix: &str, errors: &mut Vec<ValidationEr
         ));
     }
     for (i, t) in tcp.targets.iter().enumerate() {
-        // Targets must be "host:port" — no http:// prefix.
-        if t.starts_with("http://") || t.starts_with("https://") {
+        // Targets must be "host:port" — no URL scheme.
+        if ["http://", "https://", "ws://", "wss://"]
+            .iter()
+            .any(|scheme| t.starts_with(scheme))
+        {
             errors.push(ValidationError::new(
                 format!("{prefix}.tcp.targets[{i}]"),
                 format!("TCP target \"{t}\" must be a plain host:port — no http:// prefix"),
@@ -42,5 +45,35 @@ pub fn validate_tcp(tcp: &TcpConfig, prefix: &str, errors: &mut Vec<ValidationEr
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn errors_for(targets: &[&str]) -> Vec<ValidationError> {
+        let tcp = TcpConfig {
+            targets: targets.iter().map(|t| (*t).to_owned()).collect(),
+            ..TcpConfig::default()
+        };
+        let mut errors = Vec::new();
+        validate_tcp(&tcp, "sites[0]", &mut errors);
+        errors
+    }
+
+    #[test]
+    fn a_url_scheme_on_a_tcp_target_is_refused() {
+        for target in [
+            "http://db:5432",
+            "https://db:5432",
+            "ws://db:5432",
+            "wss://db:5432",
+        ] {
+            let errors = errors_for(&[target]);
+            assert_eq!(errors.len(), 1, "{target}");
+            assert!(errors[0].message.contains("plain host:port"), "{target}");
+        }
+        assert!(errors_for(&["db:5432"]).is_empty());
     }
 }

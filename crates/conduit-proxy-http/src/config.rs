@@ -45,6 +45,39 @@ pub enum ProxyRouteTarget {
     Full(Box<ProxyRouteConfig>),
 }
 
+/// The `http2` option of a proxy route: a flag, or the word `h2c`.
+///
+/// `true` offers HTTP/2 to the upstream through ALPN, so it applies to `https://` targets; a cleartext `http://`
+/// target stays on HTTP/1.1 (there is no ALPN to negotiate with). `"h2c"` is HTTP/2 with prior knowledge: every
+/// connection to an `http://` target starts with the HTTP/2 preface. That is what a cleartext gRPC server needs, and
+/// what an HTTP/1.1-only upstream cannot answer, hence a separate word and not a change of what `true` does
+/// (nginx `grpc_pass grpc://`, Envoy `http2_protocol_options`, Traefik `h2c://`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum UpstreamHttp2 {
+    Flag(bool),
+    Mode(Http2Mode),
+}
+
+/// The words `http2` accepts besides a flag.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Http2Mode {
+    H2c,
+}
+
+impl UpstreamHttp2 {
+    /// Offer HTTP/2 to the upstream (ALPN on TLS).
+    pub fn enabled(self) -> bool {
+        !matches!(self, Self::Flag(false))
+    }
+
+    /// Cleartext HTTP/2 with prior knowledge.
+    pub fn h2c(self) -> bool {
+        matches!(self, Self::Mode(Http2Mode::H2c))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyRouteConfig {
@@ -52,10 +85,15 @@ pub struct ProxyRouteConfig {
     pub targets: Vec<ProxyTarget>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strategy: Option<LoadBalanceStrategy>,
+    /// `true`: negotiate HTTP/2 with the upstream (ALPN); `"h2c"`: also speak cleartext HTTP/2 to `http://` targets.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub http2: Option<bool>,
+    pub http2: Option<UpstreamHttp2>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strip_prefix: Option<bool>,
+    /// WebDAV: apply this route's `stripPrefix` and `rewrite` rules to the URLs in the `Destination` and `If` request
+    /// headers too (default `false`: they are passed on as the client wrote them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewrite_destination: Option<bool>,
     /// Used with ip-hash / consistent-hash: "ip" | "header:X-Key" | "url"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash_key: Option<String>,
@@ -402,6 +440,49 @@ pub struct MatchConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn http2_of(value: serde_json::Value) -> Result<Option<UpstreamHttp2>, serde_json::Error> {
+        let route = serde_json::json!({ "targets": ["http://up:4000"], "http2": value });
+        serde_json::from_value::<ProxyRouteConfig>(route).map(|r| r.http2)
+    }
+
+    /// `http2` stays a flag, and `"h2c"` is the one word besides it; the two mean different things on the wire.
+    #[test]
+    fn http2_accepts_a_flag_or_the_word_h2c() {
+        let flag_on = http2_of(serde_json::json!(true)).unwrap().unwrap();
+        assert!(flag_on.enabled() && !flag_on.h2c(), "true offers ALPN only");
+        let flag_off = http2_of(serde_json::json!(false)).unwrap().unwrap();
+        assert!(!flag_off.enabled() && !flag_off.h2c());
+        let h2c = http2_of(serde_json::json!("h2c")).unwrap().unwrap();
+        assert!(
+            h2c.enabled() && h2c.h2c(),
+            "h2c is HTTP/2 and prior knowledge"
+        );
+        assert_eq!(http2_of(serde_json::json!(null)).unwrap(), None);
+    }
+
+    #[test]
+    fn http2_rejects_other_words() {
+        for bad in ["h2", "h3", "H2C", "true", ""] {
+            assert!(
+                http2_of(serde_json::json!(bad)).is_err(),
+                "{bad:?} must not parse"
+            );
+        }
+        assert!(http2_of(serde_json::json!(2)).is_err());
+    }
+
+    #[test]
+    fn http2_round_trips() {
+        for value in [
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!("h2c"),
+        ] {
+            let parsed = http2_of(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+        }
+    }
 
     #[test]
     fn sticky_config_secret_is_redacted() {

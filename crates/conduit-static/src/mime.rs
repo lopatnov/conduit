@@ -7,7 +7,29 @@
 
 use std::path::Path;
 
+/// The media types of adaptive streaming, which `mime_guess` gets wrong or does not know. HLS (RFC 8216 section 4) names
+/// `application/vnd.apple.mpegurl` or `audio/mpegurl` for a playlist and the MPEG-2 transport stream type is `video/mp2t`
+/// (IANA); a player or a CDN that goes by the header, not the extension, needs the right one. nginx's `mime.types` and
+/// Caddy's table carry the same values.
+fn streaming_type(extension: &str) -> Option<&'static str> {
+    match extension {
+        "m3u8" => Some("application/vnd.apple.mpegurl"),
+        "m3u" => Some("audio/mpegurl"),
+        "ts" => Some("video/mp2t"),
+        "m4s" => Some("video/iso.segment"),
+        "mpd" => Some("application/dash+xml"),
+        _ => None,
+    }
+}
+
 pub fn content_type(path: &Path) -> &'static str {
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    if let Some(known) = extension.as_deref().and_then(streaming_type) {
+        return known;
+    }
     mime_guess::from_path(path)
         .first_raw()
         .unwrap_or("application/octet-stream")
@@ -16,6 +38,28 @@ pub fn content_type(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HLS and DASH: the types a player or a CDN looks at (RFC 8216 section 4 for playlists, IANA for the segments).
+    #[test]
+    fn streaming_media_extensions() {
+        for (name, expected) in [
+            ("index.m3u8", "application/vnd.apple.mpegurl"),
+            ("INDEX.M3U8", "application/vnd.apple.mpegurl"),
+            ("list.m3u", "audio/mpegurl"),
+            ("seg0.ts", "video/mp2t"),
+            ("SEG0.TS", "video/mp2t"),
+            ("init.mp4", "video/mp4"),
+            ("chunk.m4s", "video/iso.segment"),
+            ("manifest.mpd", "application/dash+xml"),
+        ] {
+            assert_eq!(content_type(Path::new(name)), expected, "{name}");
+        }
+        // a directory called like a segment is not special, and a name without an extension still falls back
+        assert_eq!(
+            content_type(Path::new("video.ts/readme")),
+            "application/octet-stream"
+        );
+    }
 
     #[test]
     fn html_extension() {

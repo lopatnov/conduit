@@ -175,10 +175,16 @@ fn probe_http_head(host: &str, port: u16, path: &str) -> anyhow::Result<u16> {
 /// Parse an upstream URL into `(is_tls, host, port, path)`.
 fn parse_upstream_url(url: &str) -> Option<(bool, String, u16, String)> {
     let url = url.trim();
-    let (is_tls, rest) = if let Some(rest) = url.strip_prefix("https://") {
+    // `ws://` and `wss://` are the same upstreams as `http://` and `https://` (a WebSocket handshake is an HTTP request).
+    let (is_tls, rest) = if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("wss://"))
+    {
         (true, rest)
     } else {
-        let rest = url.strip_prefix("http://")?;
+        let rest = url
+            .strip_prefix("http://")
+            .or_else(|| url.strip_prefix("ws://"))?;
         (false, rest)
     };
 
@@ -207,4 +213,23 @@ fn parse_upstream_url(url: &str) -> Option<(bool, String, u16, String)> {
     };
 
     Some((is_tls, host, port, path))
+}
+
+#[cfg(test)]
+mod ws_scheme_tests {
+    use super::parse_upstream_url;
+
+    #[test]
+    fn ws_and_wss_probe_the_same_upstream_as_http_and_https() {
+        // A WebSocket handshake is an HTTP request (RFC 6455 section 4.1).
+        assert_eq!(
+            parse_upstream_url("ws://a:9001/x"),
+            Some((false, "a".to_owned(), 9001, "/x".to_owned()))
+        );
+        assert_eq!(
+            parse_upstream_url("wss://a"),
+            Some((true, "a".to_owned(), 443, "/".to_owned()))
+        );
+        assert_eq!(parse_upstream_url("ftp://a"), None);
+    }
 }

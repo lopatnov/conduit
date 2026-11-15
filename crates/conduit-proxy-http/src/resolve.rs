@@ -10,6 +10,8 @@
 use conduit_upstream::health::UpstreamRegistry;
 use conduit_upstream::LoadBalanceStrategy;
 
+#[cfg(test)]
+use crate::config::UpstreamHttp2;
 use crate::config::{ProxyRouteTarget, StickyConfig};
 use crate::groups::resolve_grouped;
 use crate::options::{ProxyCtx, RouteOptions};
@@ -143,6 +145,8 @@ pub(crate) fn resolve_target(
             proxy_timeout: opts.timeout.cloned(),
             proxy_pool: opts.pool.cloned(),
             proxy_http2: opts.http2,
+            proxy_h2c: opts.h2c,
+            proxy_rewrite_destination: opts.rewrite_destination,
             proxy_upstream_url,
             meters_traffic: matches!(opts.strategy, Some(LoadBalanceStrategy::LeastBandwidth)),
             upstream_conn_slot,
@@ -292,6 +296,8 @@ fn resolve_backup(
             proxy_timeout: opts.timeout.cloned(),
             proxy_pool: opts.pool.cloned(),
             proxy_http2: opts.http2,
+            proxy_h2c: opts.h2c,
+            proxy_rewrite_destination: opts.rewrite_destination,
             proxy_upstream_url: Some(backup.to_owned()),
             proxy_cache_cfg: opts.cache.cloned(),
             passive_unhealthy_status: opts.unhealthy_status.to_vec(),
@@ -418,6 +424,39 @@ mod tests {
     /// A failed-over request keeps the route's own settings and is attributed to the backup
     /// for passive health. With the old `ProxyReqState::default()` every assertion below
     /// fails: timeout/pool/cache/websocket were dropped and `proxy_upstream_url` was `None`.
+    /// `http2: "h2c"` reaches the per-request state as both "HTTP/2" and "prior knowledge"; `true` only as HTTP/2.
+    #[test]
+    fn h2c_is_carried_into_the_route_options() {
+        use crate::config::ProxyRouteConfig;
+        use conduit_upstream::ProxyTarget;
+
+        for (http2, expect_http2, expect_h2c) in [
+            (None, false, false),
+            (Some(UpstreamHttp2::Flag(false)), false, false),
+            (Some(UpstreamHttp2::Flag(true)), true, false),
+            (
+                Some(UpstreamHttp2::Mode(crate::config::Http2Mode::H2c)),
+                true,
+                true,
+            ),
+        ] {
+            let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
+                targets: vec![ProxyTarget::Simple("http://grpc:50051".to_string())],
+                http2,
+                ..Default::default()
+            }));
+            let opts = RouteOptions::from_target(&target);
+            assert_eq!(
+                (opts.http2, opts.h2c),
+                (expect_http2, expect_h2c),
+                "{http2:?}"
+            );
+        }
+        let url = ProxyRouteTarget::Url("http://x:1".to_string());
+        let shorthand = RouteOptions::from_target(&url);
+        assert!(!shorthand.http2 && !shorthand.h2c);
+    }
+
     #[test]
     fn backup_failover_keeps_the_routes_own_settings() {
         use crate::config::{ConnectionPoolConfig, ProxyRouteConfig, ProxyTimeout, RewriteRule};
@@ -435,7 +474,7 @@ mod tests {
         let target = ProxyRouteTarget::Full(Box::new(ProxyRouteConfig {
             targets: vec![ProxyTarget::Simple("http://primary:4000".to_string())],
             backup: Some("https://backup.example:8443".to_string()),
-            http2: Some(true),
+            http2: Some(UpstreamHttp2::Flag(true)),
             websocket: Some(true),
             strip_prefix: Some(true),
             timeout: Some(ProxyTimeout {

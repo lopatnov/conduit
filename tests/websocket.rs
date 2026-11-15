@@ -426,6 +426,40 @@ fn websocket_data_is_tunneled_after_upgrade() {
     );
 }
 
+/// `ws://` names the same upstream as `http://` (a WebSocket handshake is an HTTP request, RFC 6455 section 4.1):
+/// a route whose target is written `ws://host:port` upgrades and tunnels exactly like the `http://` one.
+#[test]
+#[serial]
+fn websocket_target_may_be_written_with_the_ws_scheme() {
+    let upstream_addr = spawn_ws_upstream();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+
+    let _srv = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": { "/": { "targets": [format!("ws://{upstream_addr}")], "websocket": true } }
+            }]
+        }),
+    );
+
+    let (mut stream, response) = ws_connect(
+        &format!("127.0.0.1:{port}"),
+        "/",
+        "dGhlIHNhbXBsZSBub25jZQ==",
+    );
+    assert!(
+        response.contains("101"),
+        "a ws:// target must accept the upgrade; got: {response}"
+    );
+    ws_send_text(&mut stream, "hello over ws://");
+    assert_eq!(ws_recv_text(&mut stream), "hello over ws://");
+}
+
 // ── SHA-1 self-test (RFC 6455 known vector) ───────────────────────────────────
 
 #[test]

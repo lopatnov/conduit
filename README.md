@@ -93,7 +93,7 @@ Where each group is documented in detail:
 | Resilience | [Health checks](docs/configuration.md#health-checks) · [Circuit breaker](docs/configuration.md#circuit-breaker) · [Retry](docs/configuration.md#retry) · [Outlier detection](docs/configuration.md#outlier-detection) |
 | Caching | [Proxy cache](docs/configuration.md#proxy-cache) |
 | Static files | [Static files](docs/configuration.md#static-files) · [Fallback](docs/configuration.md#fallback) |
-| TCP and uploads | [TCP proxy](docs/configuration.md#tcp-proxy) · [Upload](docs/configuration.md#upload) |
+| TCP and uploads | [TCP proxy](docs/configuration.md#tcp-proxy) · [Protocol guide](docs/protocols.md) (SSE, WebSocket, gRPC, HLS, MQTT, PostgreSQL …) · [Upload](docs/configuration.md#upload) |
 | Response shaping | [Compression](docs/configuration.md#compression) · [Security headers](docs/configuration.md#security-headers) · [CORS](docs/configuration.md#cors) · [Error masking](docs/configuration.md#error-masking) · [Response transform](docs/configuration.md#request--response-transform) |
 | TLS | [TLS / HTTPS](docs/configuration.md#tls--https) · [mTLS](docs/configuration.md#mtls--client-certificate-authentication) · [HTTP/2](docs/configuration.md#http2) |
 | Authentication | [Basic](docs/configuration.md#basic-auth) · [API key](docs/configuration.md#api-key) · [JWT](docs/configuration.md#jwt-auth) · [Forward auth](docs/configuration.md#forward-auth) · [Consumers](docs/configuration.md#consumers) |
@@ -415,7 +415,7 @@ sites:
 
 Uploads are open to anyone who can reach the port unless the site also has an auth guard
 (`basicAuth`, `apiKey` or `jwtAuth`).
-**→ Details:** [TCP proxy](docs/configuration.md#tcp-proxy) · [Upload](docs/configuration.md#upload)
+**→ Details:** [TCP proxy](docs/configuration.md#tcp-proxy) · [Protocol guide](docs/protocols.md) · [Upload](docs/configuration.md#upload)
 
 **→ More scenarios:** [docs/recipes.md](docs/recipes.md) covers HTTPS, load balancing, failover,
 circuit breaker, caching, security hardening, observability and Kubernetes, and

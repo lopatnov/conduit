@@ -69,7 +69,7 @@ conduit validate -c conduit.yaml   # prints a warning for every ignored section
 | Feature | What it gives you | Config | If it is compiled out |
 | --- | --- | --- | --- |
 | `proxy` | Reverse proxying: upstream targets, [load balancing](#load-balancing), upstream groups, health checks, retry, circuit breaker, traffic mirroring. | `proxy`, `routes[].proxy`, `groups` | Those sections are ignored; a request that would have gone to an upstream gets the site's fallback response. See [Building without `proxy`](building.md#building-without-proxy). |
-| `compression` | Response compression (brotli, gzip, deflate, zstd), negotiated with `Accept-Encoding`, for proxied responses, static files and the metrics page. | [`compression`](#compression) | Responses are sent uncompressed. |
+| `compression` | Response compression (brotli, gzip, deflate, zstd), negotiated with `Accept-Encoding`, for static files, fallback responses and the metrics page. Proxied responses are not compressed by Conduit (the upstream can do it). | [`compression`](#compression) | Responses are sent uncompressed. |
 | `static` | Static file serving and the fallback responses (404 page, single-page-app shell). | [`static`](#static-files), `fallback` | `static` and `fallback` are ignored: every unmatched request gets a plain `404 Not Found`. |
 | `hotreload` | Browser live reload: a Server-Sent Events stream and a file watcher that tells open pages to refresh when a served file changes. | `hotReload` | `hotReload` is ignored and `/__hot-reload__` is an ordinary unmatched path. |
 | `mimalloc` | The mimalloc memory allocator, in its hardened `secure` mode, in the `conduit` binary instead of the system one: about 4 % less CPU per proxied request in our measurement (see [building](building.md#allocator)). A build-time choice; nothing to configure. | no config key | The system allocator is used (`--no-default-features`); everything works, a little slower. |
@@ -530,7 +530,7 @@ http2:
 | ---------------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `maxConcurrentStreams` | number | `100`   | Max parallel streams per connection                                                                                                                    |
 | `initialWindowSize`    | number | `65535` | Flow-control window in bytes                                                                                                                           |
-| `h2c`                  | bool   | `false` | Allow HTTP/2 upgrade on **plaintext** connections (h2c). For TLS ports HTTP/2 is negotiated via ALPN regardless. Useful for internal gRPC without TLS. |
+| `h2c`                  | bool   | `false` | Serve HTTP/2 on **plaintext** connections (h2c): a client that starts with the HTTP/2 preface, as gRPC clients do (prior knowledge), works (tested in `scripts/e2e/grpc.sh`); the HTTP/1.1 `Upgrade: h2c` handshake is not covered by a test. For TLS ports HTTP/2 is negotiated via ALPN regardless. See [gRPC](protocols.md#grpc). |
 
 ---
 
@@ -728,12 +728,13 @@ proxy:
 
 | Field                 | Type                 | Default       | Description                                                                    |
 | --------------------- | -------------------- | ------------- | ------------------------------------------------------------------------------ |
-| `targets`             | string[] or object[] | —             | Upstream URLs (plain strings or `{url, weight}`)                               |
+| `targets`             | string[] or object[] | —             | Upstream URLs (plain strings or `{url, weight}`); `http://`, `https://`, and `ws://`/`wss://` as the same two (a WebSocket handshake is an HTTP request) |
 | `strategy`            | string               | `round-robin` | Load balancing — see [Load balancing](#load-balancing)                         |
 | `stripPrefix`         | bool                 | `false`       | Remove matched path prefix before forwarding                                   |
+| `rewriteDestination`  | bool                 | `false`       | WebDAV: apply `stripPrefix` and `rewrite` to the paths in the `Destination` and `If` request headers too — see [WebDAV](protocols.md#webdav) |
 | `hashKey`             | string               | —             | Key for hash-based strategies: `"ip"`, `"url"`, `"header:X-Name"`              |
 | `rewrite`             | object[]             | —             | URL rewrite rules: `[{from, to}]` — first match wins                           |
-| `http2`               | bool                 | `false`       | Enable HTTP/2 for upstream connections                                         |
+| `http2`               | bool or `"h2c"`      | `false`       | HTTP/2 to the upstream: `true` negotiates it through ALPN (TLS upstreams); `"h2c"` also speaks it to a **plaintext** upstream (gRPC without TLS) — see [gRPC](protocols.md#grpc) |
 | `timeout.connectMs`   | number               | `3000`        | TCP connect timeout                                                            |
 | `timeout.sendMs`      | number               | —             | Request send timeout                                                           |
 | `timeout.readMs`      | number               | `30000`       | Response read timeout                                                          |
@@ -1032,7 +1033,7 @@ Routes each request to the upstream with the **lowest measured latency** from
 the most recent active health probe. Falls back to round-robin during the
 warm-up phase before any probe has completed.
 
-Latency is measured by the health-check prober (HEAD request to `healthCheck.path`).
+Latency is measured by the health-check prober (a `HEAD` request to `healthCheck.path` for a plaintext upstream, the TCP connect time for a TLS one: `https://`, `wss://`).
 Upstreams without probe data are ranked last (`u64::MAX`).
 
 **Use when:** upstreams have meaningfully different hardware or geographic
@@ -2038,7 +2039,7 @@ healthCheck:
 
 | Field                       | Type     | Default       | Description                                                                                                                                          |
 | --------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `path`                      | string   | `/`           | Path of the probe's `HEAD` request (a path without a leading `/` gets one). The default is `/`, not `/__health__` (that is the path of Conduit's own site health endpoint) |
+| `path`                      | string   | `/`           | Path of the probe's `HEAD` request (a path without a leading `/` gets one; an `https://` or `wss://` upstream is probed by opening a TCP connection only, because the probe is plaintext HTTP/1.1 and a TLS listener would not understand it, so `path` is not used for it). The default is `/`, not `/__health__` (that is the path of Conduit's own site health endpoint) |
 | `intervalSecs`              | number   | `10`          | Seconds between probes of each upstream (minimum 1)                                                                                                  |
 | `unhealthyThreshold`        | number   | `3`           | Consecutive failed probes before the upstream is left out                                                                                            |
 | `healthyThreshold`          | number   | `1`           | Consecutive passed probes before it is brought back                                                                                                  |
@@ -3762,6 +3763,14 @@ Do not set `verify: false` to work around a name mismatch: it also turns off the
 certificate was issued by a trusted authority. Use the name from the certificate in the target URL, or set
 `serverName` to it.
 
+**The host needs a CA bundle even with `verify: false`.** Conduit loads the system CA store (or the file named by the
+`SSL_CERT_FILE` environment variable, or the directory in `SSL_CERT_DIR`) and the TLS library builds its verifier from it
+before the setting is applied. On a host or container image without any CA certificates, such as a minimal base image, every
+HTTPS upstream fails with `no root trust anchors were provided` (HTTP 502), whatever `verify` says. Install the
+`ca-certificates` package, or point `SSL_CERT_FILE` at a bundle that holds at least one certificate (checked with a TLS
+gRPC upstream in `scripts/e2e/grpc.sh`: `verify: false` with an empty root store gives 502, with a one-certificate
+`SSL_CERT_FILE` it works).
+
 ---
 
 ## mTLS — Client Certificate Authentication
@@ -4080,7 +4089,12 @@ upload that was fine before; this part comes from reading the code, not from a r
 > **Requires** `cargo build --features tcp`
 
 Forward raw TCP connections without HTTP parsing. Useful for MySQL, PostgreSQL,
-Redis, SMTP, and any other non-HTTP protocol.
+Redis, SMTP, and any other non-HTTP protocol. What a TCP site does and does not do, and a working
+config for RTMP, MQTT, PostgreSQL, Redis, SMTP, FTP (passive ports) and SSH, are in the
+[protocol guide](protocols.md#what-a-tcp-site-does-and-does-not-do). HTTP-based protocols (SSE,
+WebSocket, gRPC, GraphQL, HLS) are best served by ordinary routes, also in that guide: only a route can apply
+access control, rate limits, routing by host or path, and the HTTP-aware handling those protocols need. A TCP site can still
+relay their bytes untouched (for example TLS that the upstream terminates itself), with none of that.
 
 ```yaml
 # conduit.yaml
@@ -4124,6 +4138,11 @@ sites:
 
 > **Note:** `tcp` cannot be combined with `proxy`, `static`, or other HTTP
 > features on the same site. Use a separate port/site for HTTP traffic.
+
+> **Not supported on a TCP site:** TLS termination (TLS passes through untouched and the client verifies the
+> upstream's certificate), the PROXY protocol (the upstream sees Conduit's address), an idle timeout
+> or a connection limit, UDP, and port ranges. `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` and
+> `middleware` next to `tcp` are refused at validation (they would be ignored). See the [guide](protocols.md#what-a-tcp-site-does-and-does-not-do).
 
 ---
 

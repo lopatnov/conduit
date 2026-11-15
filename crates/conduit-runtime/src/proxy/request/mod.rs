@@ -28,6 +28,8 @@
 
 mod body;
 mod cache;
+#[cfg(feature = "proxy")]
+mod destination;
 // The hostname-resolution cache is only reachable from `peer.rs`'s upstream-peer path,
 // which exists whenever a proxied upstream (`proxy`) or the internal upload loopback
 // upstream (`upload`) can be selected (issue #144).

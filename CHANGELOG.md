@@ -9,6 +9,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A protocol guide, `docs/protocols.md`: for SSE, WebSocket, gRPC, GraphQL, HLS/DASH, WebRTC, RTMP, MQTT, PostgreSQL,
+  Redis, SMTP, FTP and SFTP/SSH it says whether the protocol is an HTTP route or a TCP site, gives a working config, the
+  limits (idle timeout, no TLS termination or PROXY protocol on TCP sites, FTP passive ports, no UDP) and which e2e
+  scenario tests it. The TCP section of `docs/configuration.md` points to it.
+- `ws://` and `wss://` are accepted in proxy `targets` as `http://` and `https://` (a WebSocket handshake is an HTTP request, RFC 6455
+  section 4.1); the validation message lists all four schemes.
+- A WebDAV section in the protocol guide and an e2e scenario, `scripts/e2e/webdav.sh`: the WebDAV methods, their bodies and
+  the `Depth`, `Overwrite`, `Timeout`, `Lock-Token`, `If`, `Destination` headers reach the upstream as sent (a 1 MiB `PUT`
+  by SHA-256), and the `DAV` and `Lock-Token` response headers come back. Conduit does not rewrite `Destination`, `If` or
+  multistatus `href`s; the guide says what that means for `stripPrefix`.
+- `rewriteDestination: true` on a proxy route (WebDAV, opt-in, default off): applies the route's `stripPrefix` and `rewrite`
+  rules to the paths in the `Destination` and `If` request headers, so a `COPY` or `MOVE` through a stripping route names a
+  resource the upstream knows. The authority, the query, the state tokens of `If` and URLs of another host are left alone.
+- `http2: "h2c"` on a proxy route: HTTP/2 with prior knowledge (RFC 9113 section 3.3) to a plaintext upstream, so gRPC
+  servers without TLS can be proxied. `http2: true` still means ALPN only, and over TLS `"h2c"` behaves like `true`.
+- Three e2e scenarios in `scripts/e2e/`: `streaming.sh` (SSE and WebSocket over plain HTTP and TLS: events not held back,
+  `Last-Event-ID`, the idle timeout `timeout.readMs`, upgrade, ping/pong, fragments, a 1 MiB binary message, close codes, 502
+  without `websocket: true`), `grpc.sh` (unary, streaming, error status, deadline over h2c, TLS and a TLS upstream) and
+  `protocols.sh` (Redis, MQTT, PostgreSQL, SMTP, SSH, RTMP, FTP with a passive data port and TLS passthrough through TCP
+  sites). The e2e client image gains `python3-grpcio`.
+
 - Third-party licence notices (#640). `THIRD-PARTY-LICENSES.txt` lists every crate that can end up in a binary with its
   licence and the licence and notice texts it ships (including the CDLA-Permissive-2.0 text of the bundled root
   certificates); it is inside every release archive (with `LICENSE`), the Debian package, the Docker image (`/licenses/`)
@@ -53,6 +74,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- A static site answers `POST`, `PUT`, `DELETE`, `PATCH` and WebDAV's methods for a file that exists with 405 and
+  `Allow: GET, HEAD, OPTIONS` (RFC 9110 section 15.5.6); it used to answer them with the file as if they were `GET`. A path
+  with no file keeps its answer (404 or the fallback), and `OPTIONS` is unchanged.
 - An ACME order can no longer hold the renewal loop (or start-up) forever: every request of the order is limited to 60 s and
   the challenge validation to 180 s. A CA that accepts a connection and never answers used to block renewal of every
   certificate; it is now an error for that certificate and the cached pair is kept.
@@ -73,6 +97,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Active health probes of an `https://` or `wss://` upstream: the probe is plaintext HTTP/1.1, which a TLS listener does not
+  understand, so a healthy TLS upstream was marked unhealthy (or healthy by accident, behind a server that answers plaintext on its
+  TLS port). Such an upstream is now probed by opening a TCP connection (`path` is not used for it; behaviour change).
+- A `tcp` site that also had `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`, `limits` or `middleware` was
+  accepted and the key silently ignored, so an operator could believe a database port was protected. Validation now
+  refuses it, with a message that points to a firewall or network policy (behaviour change).
+- Static files and fallback `file:` responses use the media types of adaptive streaming: `.m3u8` is
+  `application/vnd.apple.mpegurl` (was `audio/x-mpegurl`), `.m3u` `audio/mpegurl`, `.ts` `video/mp2t` (was
+  `video/vnd.dlna.mpeg-tts`), `.m4s` `video/iso.segment` and `.mpd` `application/dash+xml` (RFC 8216 section 4, IANA).
+- `docs/configuration.md` said compression applies to proxied responses. It applies to static files, fallback responses
+  and the metrics page; proxied responses are sent as the upstream sent them.
 - **`p2c` no longer favours an upstream that fails fast** (issue #734). A response of 500 or more (and a connect failure or
   timeout) now counts as at least one second in the latency estimate, so an upstream that answers every request with an
   error right away stops looking like the cheapest one; `ewma_latency_ms` of `GET /upstreams` shows it.

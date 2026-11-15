@@ -199,6 +199,23 @@ pub(super) async fn write_error(
     session.write_response_body(Some(body), true).await
 }
 
+/// `405 Method Not Allowed` with `Allow: GET, HEAD, OPTIONS` (RFC 9110 section 15.5.6): a static file is read, never
+/// written, so `POST`, `PUT`, `DELETE` and WebDAV's `PROPFIND`, `MKCOL`, `COPY`, `MOVE`, `LOCK` ... are refused instead of
+/// being answered with the file as if they were `GET`.
+pub(super) async fn write_method_not_allowed(
+    session: &mut Session,
+    extra: &[(String, String)],
+) -> Result<()> {
+    let body = Bytes::from_static(b"Method Not Allowed");
+    let mut resp = ResponseHeader::build(405, Some(3 + extra.len()))?;
+    resp.insert_header("allow", "GET, HEAD, OPTIONS")?;
+    resp.insert_header("content-type", "text/plain")?;
+    resp.insert_header("content-length", body.len().to_string())?;
+    insert_extra(&mut resp, extra)?;
+    session.write_response_header(Box::new(resp), false).await?;
+    session.write_response_body(Some(body), true).await
+}
+
 #[cfg(test)]
 mod tests_extra {
     use super::*;

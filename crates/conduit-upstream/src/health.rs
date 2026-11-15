@@ -899,6 +899,59 @@ mod tests {
         assert!(latency_ms < 5000);
     }
 
+    /// A listener that answers every connection with bytes no HTTP client understands (what a TLS server says to a
+    /// plaintext probe) and closes it.
+    async fn garbage_listener() -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 256];
+                let _ = stream.read(&mut buf).await;
+                let _ = stream
+                    .write_all(&[0x15, 0x03, 0x01, 0x00, 0x02, 0x02, 0x28])
+                    .await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn tls_upstreams_are_probed_by_connecting_not_by_http() {
+        let port = garbage_listener().await;
+        let hp = format!("127.0.0.1:{port}");
+        let t = std::time::Duration::from_secs(5);
+        for scheme in ["https", "wss"] {
+            let (ok, _) =
+                crate::probes::probe_upstream(&format!("{scheme}://{hp}"), &hp, "/", t).await;
+            assert!(ok, "{scheme}: a listener that accepts the connection is up");
+        }
+        // The control: the same listener behind a plaintext scheme fails the HTTP probe.
+        for scheme in ["http", "ws"] {
+            let (ok, _) =
+                crate::probes::probe_upstream(&format!("{scheme}://{hp}"), &hp, "/", t).await;
+            assert!(!ok, "{scheme}: the answer is not HTTP");
+        }
+    }
+
+    #[tokio::test]
+    async fn tls_upstream_with_nothing_listening_fails_the_probe() {
+        let port = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let hp = format!("127.0.0.1:{port}");
+        let (ok, _) = crate::probes::probe_upstream(
+            &format!("https://{hp}"),
+            &hp,
+            "/",
+            std::time::Duration::from_secs(2),
+        )
+        .await;
+        assert!(!ok);
+    }
+
     #[tokio::test]
     async fn probe_http_fails_on_500() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

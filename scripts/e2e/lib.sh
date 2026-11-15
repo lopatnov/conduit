@@ -54,7 +54,7 @@ ok() {
 # e2e_build_client: the client image. It needs the Internet, so it is built before the network exists.
 e2e_build_client() {
   # E2E_SKIP_CLIENT_BUILD=1: the image `conduit-e2e-client` was built by hand (a sandbox whose build containers cannot
-  # reach the Debian mirror); it needs curl, nghttp, jq, openssl and nc.
+  # reach the Debian mirror); it needs curl, nghttp, jq, openssl, nc, python3 and python3-grpcio.
   if [ -n "${E2E_SKIP_CLIENT_BUILD:-}" ]; then
     docker image inspect conduit-e2e-client >/dev/null || fail "E2E_SKIP_CLIENT_BUILD is set but there is no conduit-e2e-client image"
     docker pull -q "$E2E_HTTPBIN" >/dev/null
@@ -63,7 +63,7 @@ e2e_build_client() {
   docker build -q -t conduit-e2e-client - >/dev/null <<EOF
 FROM $E2E_DEBIAN
 RUN apt-get update -qq \\
- && apt-get install -y -qq --no-install-recommends curl ca-certificates nghttp2-client jq openssl netcat-openbsd python3 >/dev/null \\
+ && apt-get install -y -qq --no-install-recommends curl ca-certificates nghttp2-client jq openssl netcat-openbsd python3 python3-grpcio >/dev/null \\
  && rm -rf /var/lib/apt/lists/*
 EOF
   docker pull -q "$E2E_HTTPBIN" >/dev/null
@@ -87,11 +87,12 @@ e2e_network() {
 
 # e2e_start_conduit CONFIG: copy CONFIG to $WORK/conduit.yaml and start the binary on it; /conf in the container is $WORK
 # (the certificate is /conf/cert.pem and /conf/key.pem). Returns when conduit answers on URL (the second argument); more
-# arguments are given to the curl that waits (a client certificate, for instance).
+# arguments are given to the curl that waits (a client certificate, for instance). E2E_CONDUIT_DOCKER_ARGS adds arguments to
+# the `docker run` of Conduit (an environment variable, for instance).
 e2e_start_conduit() {
   cp "$1" "$WORK/conduit.yaml"
   docker run -d --name "$APP" --network "$NET" --ip 192.0.2.20 --network-alias app.test \
-    -v "$BIN:/usr/local/bin/conduit:ro" -v "$WORK:/conf:ro" "$CONDUIT_IMAGE" \
+    -v "$BIN:/usr/local/bin/conduit:ro" -v "$WORK:/conf:ro" ${E2E_CONDUIT_DOCKER_ARGS:-} "$CONDUIT_IMAGE" \
     conduit -c /conf/conduit.yaml >/dev/null
   local up=""
   for _ in $(seq 1 50); do

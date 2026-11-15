@@ -14,7 +14,7 @@ pub fn validate_proxy(proxy: &ProxyConfig, prefix: &str, errors: &mut Vec<Valida
             if !is_valid_upstream_url(url) {
                 errors.push(ValidationError::new(
                     prefix,
-                    format!("Invalid upstream URL '{url}' — must start with http:// or https://"),
+                    format!("Invalid upstream URL '{url}' — must start with http://, https://, ws:// or wss://"),
                 ));
             }
         }
@@ -52,7 +52,7 @@ fn validate_proxy_route_target(
             if !is_valid_upstream_url(url) {
                 errors.push(ValidationError::new(
                     prefix,
-                    format!("Invalid upstream URL '{url}' — must start with http:// or https://"),
+                    format!("Invalid upstream URL '{url}' — must start with http://, https://, ws:// or wss://"),
                 ));
             }
         }
@@ -62,7 +62,7 @@ fn validate_proxy_route_target(
                     errors.push(ValidationError::new(
                         format!("{prefix}[{i}]"),
                         format!(
-                            "Invalid upstream URL '{url}' — must start with http:// or https://"
+                            "Invalid upstream URL '{url}' — must start with http://, https://, ws:// or wss://"
                         ),
                     ));
                 }
@@ -74,13 +74,13 @@ fn validate_proxy_route_target(
     }
 }
 
-/// Return `true` when the string is an absolute http:// or https:// URL with a non-empty host.
+/// Return `true` when the string is an absolute http://, https://, ws:// or wss:// URL with a non-empty host.
+/// (`ws://` and `wss://` name the same upstream as `http://` and `https://`: a WebSocket handshake is an HTTP request.)
 fn is_valid_upstream_url(url: &str) -> bool {
-    let rest = if let Some(r) = url.strip_prefix("http://") {
-        r
-    } else if let Some(r) = url.strip_prefix("https://") {
-        r
-    } else {
+    let Some(rest) = ["http://", "https://", "ws://", "wss://"]
+        .iter()
+        .find_map(|scheme| url.strip_prefix(scheme))
+    else {
         return false;
     };
     // After stripping the scheme the host must be non-empty.
@@ -362,7 +362,7 @@ fn validate_target_urls(targets: &[ProxyTarget], prefix: &str, errors: &mut Vec<
         if !is_valid_upstream_url(url) {
             errors.push(ValidationError::new(
                 format!("{prefix}.targets[{i}]"),
-                format!("Invalid upstream URL '{url}' — must start with http:// or https://"),
+                format!("Invalid upstream URL '{url}' — must start with http://, https://, ws:// or wss://"),
             ));
         }
     }
@@ -389,6 +389,31 @@ mod tests {
 
     use super::*;
     use crate::config::StickyConfig;
+
+    #[test]
+    fn upstream_url_accepts_ws_and_wss_as_http_and_https() {
+        // A WebSocket handshake is an HTTP request (RFC 6455 section 4.1), so `ws://` and `wss://` are accepted
+        // spellings of `http://` and `https://`.
+        for url in [
+            "http://a:1",
+            "https://a:1",
+            "ws://a:1",
+            "wss://a:1/socket",
+            "ws://[::1]:9001",
+        ] {
+            assert!(is_valid_upstream_url(url), "{url} must be accepted");
+        }
+        for url in [
+            "ftp://a:1",
+            "a:1",
+            "ws://",
+            "wss:///x",
+            "tcp://a:1",
+            "WS://a:1",
+        ] {
+            assert!(!is_valid_upstream_url(url), "{url} must be refused");
+        }
+    }
 
     /// A `tracing` writer that keeps everything it is given.
     #[derive(Clone, Default)]

@@ -32,7 +32,8 @@ use resolve::{
     decode_rel_path, find_file, has_dotfile, open_served, resolve_pre_compressed, Opened,
 };
 use serve::{
-    serve_full, serve_pre_compressed, serve_range, write_error, write_not_modified, RespCtx,
+    serve_full, serve_pre_compressed, serve_range, write_error, write_method_not_allowed,
+    write_not_modified, RespCtx,
 };
 
 /// Handler struct for static file responses.
@@ -114,6 +115,13 @@ pub async fn handle_static(session: &mut Session, handler: &StaticFileHandler) -
     let Some((root, file_path)) = find_file(roots, &rel, options).await else {
         return Ok(false);
     };
+
+    // A file that exists is read, not written: POST, PUT, DELETE and WebDAV's methods are refused with 405 and an `Allow`
+    // header (a request for a path with no file keeps its old answer, 404 or the fallback).
+    if !matches!(method.as_str(), "GET" | "HEAD" | "OPTIONS") {
+        write_method_not_allowed(session, extra).await?;
+        return Ok(true);
+    }
 
     // Open the file once, here, before anything is written (issue #618). `find_file` only looked at
     // the path; between that and now another process may have swapped the file for a link, replaced

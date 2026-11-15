@@ -212,3 +212,39 @@ fn tcp_proxy_site_does_not_disable_admin_api() {
         "Admin API must stay reachable, with the right token, for a tcp-only site"
     );
 }
+
+/// A TCP site runs no HTTP filters, so an access-control key on it must be refused, not silently ignored: an
+/// operator who adds `ipFilter` to a database port would believe it is protected (security review note N1).
+#[test]
+fn tcp_site_refuses_keys_that_would_be_ignored() {
+    for (key, value) in [
+        ("ipFilter", r#"{ "allow": ["10.0.0.0/8"] }"#),
+        ("rateLimit", r#"{ "windowSecs": 60, "limit": 10 }"#),
+        ("basicAuth", r#"{ "users": { "u": "p" } }"#),
+        ("apiKey", r#"{ "keys": ["k"] }"#),
+        (
+            "jwtAuth",
+            r#"{ "secret": "0123456789abcdef0123456789abcdef" }"#,
+        ),
+        (
+            "forwardAuth",
+            r#"{ "url": "http://auth.internal:9000/check" }"#,
+        ),
+    ] {
+        let json =
+            format!(r#"{{ "port": 5432, "tcp": {{ "targets": ["db:5432"] }}, "{key}": {value} }}"#);
+        let config = conduit::config::from_str(&json).expect("parses");
+        let errors = conduit::config::validate::validate(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path.ends_with(key) && e.message.contains("tcp site")),
+            "{key} on a tcp site was not refused: {errors:?}"
+        );
+    }
+    // the same site without the extra key is valid
+    let config =
+        conduit::config::from_str(r#"{ "port": 5432, "tcp": { "targets": ["db:5432"] } }"#)
+            .expect("parses");
+    assert!(conduit::config::validate::validate(&config).is_empty());
+}

@@ -309,6 +309,7 @@ pub(super) fn apply_upstream_path_transforms(
                 upstream_request,
                 strip_prefix.as_deref(),
                 rewrite.as_deref(),
+                ctx_ref.proxy.proxy_rewrite_destination,
             )?;
         }
         #[cfg(feature = "upload")]
@@ -327,7 +328,13 @@ fn apply_proxy_path_transforms(
     upstream_request: &mut RequestHeader,
     strip_prefix: Option<&str>,
     rewrite: Option<&[conduit_config::schema::RewriteRule]>,
+    rewrite_destination: bool,
 ) -> Result<()> {
+    if rewrite_destination {
+        // WebDAV opt-in (`rewriteDestination`): the URLs in `Destination` and `If` follow the request line.
+        let host = request_host_of(upstream_request);
+        super::destination::rewrite_webdav_headers(upstream_request, &host, strip_prefix, rewrite);
+    }
     let original = upstream_request.uri.path();
     let path = apply_path_strip(original, strip_prefix);
     let path = apply_path_rewrites(&path, rewrite);
@@ -346,6 +353,7 @@ fn apply_proxy_path_transforms(
     _upstream_request: &mut RequestHeader,
     _strip_prefix: Option<&str>,
     _rewrite: Option<&[conduit_config::schema::RewriteRule]>,
+    _rewrite_destination: bool,
 ) -> Result<()> {
     Ok(())
 }
