@@ -132,7 +132,7 @@ at startup. Pass secrets via `environment:` — never bake them into the image.
 git clone https://github.com/lopatnov/conduit
 cd conduit
 
-# Minimal image (default = ["proxy", "compression", "static", "hotreload"])
+# Minimal image (default = ["proxy", "compression", "static", "hotreload", "mimalloc"])
 docker build -f contrib/Dockerfile -t conduit:local .
 
 # Standard image (the published :latest-standard)
