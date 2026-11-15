@@ -110,6 +110,21 @@ def run_processor(port, observed):
 
     class Processor(services.ExternalProcessorServicer):
         def Process(self, request_iterator, context):
+            # One call is one request. Its response body is written to the observed file in one piece, when it is over
+            # (or the call ends), so that responses that are streamed at the same time never interleave in the file.
+            seen = []
+            try:
+                yield from self.exchange(request_iterator, seen)
+            finally:
+                self.record(seen)
+
+        def record(self, seen):
+            if seen:
+                with lock, open(observed, "ab") as out:
+                    out.write(b"".join(seen))
+                seen.clear()
+
+        def exchange(self, request_iterator, seen):
             for request in request_iterator:
                 kind = request.WhichOneof("request")
                 if kind == "request_headers":
@@ -156,8 +171,9 @@ def run_processor(port, observed):
                         )
                     )
                 elif kind == "response_body":
-                    with lock, open(observed, "ab") as out:
-                        out.write(request.response_body.body)
+                    seen.append(request.response_body.body)
+                    if request.response_body.end_of_stream:
+                        self.record(seen)
                     # an observed body is not answered
 
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
