@@ -44,10 +44,23 @@ Pushing a `v*` tag starts `.github/workflows/release.yml`, which:
 | --- | --- |
 | Build | Binaries for every supported platform and feature bundle |
 | Attest | Build-provenance attestations for every archive, the bare full binaries and the `.deb` packages |
-| GitHub Release | Release notes, an archive of every build, the bare full binaries, the `.deb` packages and `SHA256SUMS.txt` |
+| GitHub Release | Release notes, an archive of every build (each with `LICENSE` and `THIRD-PARTY-LICENSES.txt`), the bare full binaries, the `.deb` packages, `THIRD-PARTY-LICENSES.txt` and `SHA256SUMS.txt` |
 | crates.io | All `lopatnov-conduit-*` crates, in dependency order |
 | GHCR | Multi-architecture (amd64, arm64) Docker images (full as the plain tags; `-standard`, `-gateway`, `-static`), each architecture scanned with Trivy |
 | npm | `@lopatnov/conduit`: about 12 kB, no binary (the registry refused 208.7 MB, issue #712); a `checksums.json` for the download the package makes at install and at the first run |
+
+Third-party licence notices (issue #640): `THIRD-PARTY-LICENSES.txt` at the repository root lists every crate that can
+end up in a binary with the licence texts the crates ship. It is inside every archive, the `.deb`
+(`/usr/share/doc/conduit/THIRD-PARTY-LICENSES.txt.gz`) and the Docker image (`/licenses/`), and a release asset of its own; the npm
+package carries it gzipped (`THIRD-PARTY-LICENSES.txt.gz`, written by the publish job; the package must stay under 200 KiB unpacked). The `licenses` CI job fails when a dependency is outside the allow-list
+in `ci/license-policy.json` or when the file is not what `Cargo.lock` produces. After any dependency change run
+
+```bash
+python3 scripts/third_party_licenses.py --write THIRD-PARTY-LICENSES.txt
+```
+
+and commit the result. A crate with a licence the policy does not allow is a decision for the maintainer (change the
+dependency, or add the licence to the policy, or a `clarify` entry that names the string the crate declares now (`"declared"`) and the licence read from its licence file, with the reason).
 
 Required repository secrets: `CARGO_REGISTRY_TOKEN` (crates.io) and `NPM_TOKEN` (npm). The image
 push uses the workflow's own token.

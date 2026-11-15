@@ -834,6 +834,25 @@ Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before openin
 - **Questions and ideas** → [GitHub Discussions](https://github.com/lopatnov/conduit/discussions)
 - **Found it useful?** A star on GitHub helps others discover the project
 
+## Technologies stack
+
+Conduit is written in Rust. The main building blocks, all under permissive open-source licences (the complete list, including the one weak-copyleft crate, `smartstring` under MPL-2.0, is in [docs/technologies.md](docs/technologies.md)):
+
+| Technology | Role | Licence |
+|---|---|---|
+| [Cloudflare Pingora](https://github.com/cloudflare/pingora) | Proxy engine: connections, upstream pools, load balancing, caching | Apache-2.0 |
+| [Tokio](https://tokio.rs) | Asynchronous runtime | MIT |
+| [Axum](https://github.com/tokio-rs/axum) and [hyper](https://hyper.rs) | Admin API and upload listener | MIT |
+| [rustls](https://github.com/rustls/rustls) with [aws-lc-rs](https://github.com/aws/aws-lc-rs) | TLS 1.2 and 1.3 | Apache-2.0 OR ISC OR MIT |
+| [instant-acme](https://github.com/instant-labs/instant-acme) | Automatic certificates (ACME) | Apache-2.0 |
+| [Rhai](https://rhai.rs) and [Wasmtime](https://wasmtime.dev) | Script and WebAssembly middleware | MIT OR Apache-2.0; Apache-2.0 WITH LLVM-exception |
+| [Serde](https://serde.rs) | JSON and YAML configuration | MIT OR Apache-2.0 |
+| [Prometheus](https://github.com/tikv/rust-prometheus) and [OpenTelemetry](https://opentelemetry.io) | Metrics and traces | Apache-2.0 |
+
+The [full list with licences](docs/technologies.md) is in the documentation. Every crate that can end up in a binary,
+with its licence text, is in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt): it is inside every release archive,
+the Debian package, the npm package (gzipped) and the Docker image (`/licenses/`), and is attached to every release.
+
 ## License
 
 [Apache 2.0](LICENSE) © 2024–2026 [Oleksandr Lopatnov](https://github.com/lopatnov)

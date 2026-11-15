@@ -9,7 +9,8 @@
 #
 # Needs dpkg-deb, gzip and xz. Contents: /usr/bin/conduit; the systemd unit of contrib/conduit.service with the
 # binary path of a package; /etc/conduit/conduit.yaml (a conffile: kept on upgrade and remove, deleted on purge);
-# maintainer scripts that create the `conduit` account and its directories; the copyright file. The service is not
+# maintainer scripts that create the `conduit` account and its directories; the copyright file and the third-party
+# licence notices (THIRD-PARTY-LICENSES.txt.gz). The service is not
 # enabled and not started (see contrib/deb/postinst).
 set -euo pipefail
 
@@ -39,6 +40,9 @@ sed -e 's#^ExecStart=/usr/local/bin/conduit$#ExecStart=/usr/bin/conduit -c /etc/
 chmod 0644 "$STAGE/usr/lib/systemd/system/conduit.service"
 install -D -m 0640 "$HERE/contrib/deb/conduit.yaml" "$STAGE/etc/conduit/conduit.yaml"
 install -D -m 0644 "$HERE/contrib/deb/copyright" "$STAGE/usr/share/doc/conduit/copyright"
+# The licences of the crates compiled into the binary (issue #640): MIT, BSD and ISC need the text to travel with it.
+gzip -9n < "$HERE/THIRD-PARTY-LICENSES.txt" > "$STAGE/usr/share/doc/conduit/THIRD-PARTY-LICENSES.txt.gz"
+chmod 0644 "$STAGE/usr/share/doc/conduit/THIRD-PARTY-LICENSES.txt.gz"
 install -D -m 0644 "$HERE/contrib/deb/lintian-overrides" "$STAGE/usr/share/lintian/overrides/conduit"
 # A native package needs a changelog in Debian's format; the history of the project is the release notes.
 {

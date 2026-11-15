@@ -1216,6 +1216,15 @@ jobs:
       - name: Run it
         run: docker run --rm conduit:ci --version
 
+      # The image has no shell to `ls` with, so the notices are copied out of a stopped container and compared with
+      # the committed file (the `licenses` job checks that file is current).
+      - name: The image carries the third-party licence notices (#640)
+        run: |
+          id=$(docker create conduit:ci)
+          docker cp "$id:/licenses/THIRD-PARTY-LICENSES.txt" /tmp/image-licenses.txt
+          docker rm "$id" >/dev/null
+          cmp /tmp/image-licenses.txt THIRD-PARTY-LICENSES.txt
+
   # ── Cross-compile smoke tests for non-native architectures ──────────────────
   # Mirrors the `use_cross: true` targets in release.yml's build matrix, but
   # only exercises a release build (no test run / no artifact upload) — just
@@ -1578,6 +1587,33 @@ jobs:
 
       - name: cargo publish --workspace --dry-run
         run: cargo publish --workspace --dry-run
+
+  # ── Third-party licences (issue #640) ────────────────────────────────────────
+  # Every crate that can end up in a binary must be inside the allow-list in ci/license-policy.json, and
+  # THIRD-PARTY-LICENSES.txt (shipped with every release artifact) must be what the generator writes for the current
+  # Cargo.lock: a dependency change without a regenerated file fails here. Read-only, no token.
+  licenses:
+    name: Third-party licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+
+      - name: Fetch the crates (their licence files are read from the registry sources)
+        run: cargo fetch --locked
+
+      - name: Unit tests of the generator
+        run: python3 scripts/test_third_party_licenses.py
+
+      - name: Licence policy, and THIRD-PARTY-LICENSES.txt is current
+        run: python3 scripts/third_party_licenses.py --check THIRD-PARTY-LICENSES.txt
 
   # ── Config schema superset check (issue #496) ────────────────────────────────
   # schema/conduit.schema.json is hand-maintained, not generated from serde —

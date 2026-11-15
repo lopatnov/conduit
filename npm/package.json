@@ -46,7 +46,8 @@
   "files": [
     "bin/",
     "!bin/native/",
-    "Readme.md"
+    "Readme.md",
+    "THIRD-PARTY-LICENSES.txt.gz"
   ],
   "scripts": {
     "postinstall": "node bin/download.js",
