@@ -27,6 +27,12 @@ LOCATION = "http://app.test:8080/dav/created%20dir/"
 STATUS = {"PROPFIND": 207, "PROPPATCH": 207, "MKCOL": 201, "COPY": 201, "MOVE": 201, "LOCK": 200, "UNLOCK": 204, "DELETE": 204}
 
 
+def header_safe(value):
+    """A request value echoed in a response header: no line breaks and no control characters (response splitting)."""
+    value = value.replace("\r", "").replace("\n", "")
+    return "".join(c for c in value if " " <= c <= "~")
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -55,10 +61,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("DAV", "1, 2")
         self.send_header("Allow", "OPTIONS, GET, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK")
         # A receipt of what arrived, in headers, for the answers that have no body (204).
-        self.send_header("X-Seen-Method", self.command)
-        self.send_header("X-Seen-Target", self.path)
+        self.send_header("X-Seen-Method", header_safe(self.command))
+        self.send_header("X-Seen-Target", header_safe(self.path))
         for name in ("Lock-Token", "Depth", "Content-Type", "Host"):
-            self.send_header(f"X-Seen-{name}", self.headers.get(name, ""))
+            self.send_header(f"X-Seen-{name}", header_safe(self.headers.get(name, "")))
         if self.command == "MKCOL" and self.path == "/located":
             self.send_header("Location", LOCATION)
         if self.command == "LOCK":
