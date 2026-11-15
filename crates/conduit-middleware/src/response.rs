@@ -28,7 +28,8 @@ impl ResponseFilter for MiddlewareResponseFilter<'_> {
     /// the chain holding this filter runs through `block_in_place`. The one thing `apply` provably skips is a
     /// request-phase script; anything else — a response-phase script, a WASM plugin, a type this filter does not know —
     /// counts as blocking, so an entry kind added to `apply` later without touching this stays on the safe side. (An
-    /// `ext_proc` entry is skipped too: it has no response phase yet.)
+    /// `ext_proc` entry is skipped too: its response phase is asynchronous and runs in the runtime's
+    /// `upstream_response_filter`, through `conduit_middleware::ext_proc`.)
     fn may_block(&self) -> bool {
         self.middleware
             .iter()
@@ -113,7 +114,7 @@ impl ResponseFilter for MiddlewareResponseFilter<'_> {
 }
 
 /// A `script` entry whose phase is not `"response"` (the default is `"request"`) and every `ext_proc` entry (its
-/// response phase is not implemented) are skipped by [`MiddlewareResponseFilter::apply`], so they never run — and never
+/// response phase is asynchronous and runs in the runtime) are skipped by [`MiddlewareResponseFilter::apply`], so they never run — and never
 /// block — in the response phase.
 fn skipped_in_response_phase(entry: &MiddlewareEntry) -> bool {
     entry.r#type == "ext_proc"
@@ -276,7 +277,7 @@ mod tests {
                 entry("ext_proc", None),
                 entry("ext_proc", Some("response"))
             ]),
-            "an ext_proc entry has no response phase yet"
+            "an ext_proc entry is not run by this synchronous filter"
         );
         assert!(
             may_block_for(vec![entry("wasm", None)]),

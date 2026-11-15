@@ -51,7 +51,7 @@ pub fn validate_middleware(
                 errors.push(ValidationError::warning(
                     format!("{entry_prefix}.phase"),
                     format!(
-                        "phase \"{phase}\" has no effect on an ext_proc entry: it runs in the request phase (the response phase of the processor protocol is not implemented yet)"
+                        "phase \"{phase}\" has no effect on an ext_proc entry: its phases are chosen in its config (requestPhase, requestBody, responsePhase, responseBody)"
                     ),
                 ));
             } else if entry.r#type == "wasm" {

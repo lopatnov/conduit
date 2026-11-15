@@ -3904,9 +3904,11 @@ covers the request phase and isn't meant to be exhaustive.
 > **Requires** the `ext-proc` feature, part of `full`. A build without it **refuses to start** with a fail-closed
 > entry (the default); a `failOpen: true` entry is ignored with a warning.
 
-An `ext_proc` entry sends the headers of each request to an **external processor**, a gRPC service that speaks the
+An `ext_proc` entry sends a request to an **external processor**, a gRPC service that speaks the
 `envoy.service.ext_proc.v3.ExternalProcessor/Process` protocol of Envoy, and applies the answer: set or remove request
-headers, or answer the request itself.
+headers, rewrite the request body, change the response headers, replace the response, or answer the request itself. What
+is sent is chosen per entry: the request headers (default), the request body, the response headers, a copy of the
+response body.
 
 ```yaml
 # YAML
@@ -3932,12 +3934,28 @@ middleware:
 | `caFile` | bundled public roots | PEM file with the certificate authority that signed the processor's certificate (`grpcs://` only). Read when the first request connects, and again after a reload. |
 | `maxHeaderMutations` | `64` | The most header sets plus removals in one answer, up to 1024. |
 | `maxHeaderValueBytes` | `8192` | The longest header value the processor may set, up to 65536. |
+| `requestPhase` | `true` | `false`: the request headers are not sent (a processor that wants only bodies, or only the response). |
+| `requestBody` | `none` | `buffered`: the whole request body is held, sent as one message and replaced by the answer. `streamed`: every chunk is sent as it arrives and replaced by the answer to it. `none`: the body is not sent. |
+| `maxBodyBytes` | `1048576` | `buffered` only: the largest body that is held (1 to 16777216). A larger body is refused with **413** and never sent to the processor. |
+| `responsePhase` | `false` | `true`: the response headers (`:status` and the upstream's headers) are sent; the processor may change them or replace the response. |
+| `responseBody` | `none` | `observe`: every chunk of the response body is copied to the processor without waiting for it. |
 
 Unknown keys are an error: options that this version does not implement are not accepted and then ignored.
 
-**What is sent.** One `request_headers` message per request with the pseudo-headers `:method`, `:scheme`, `:authority`
-(the `Host`) and `:path` (path and query) followed by every request header, values as `raw_value`, and `end_of_stream`
-set when the request has no body. `:scheme` is `https` when the client connected over TLS to Conduit.
+**What is sent.** One stream per request, with the messages in step (a message is sent and its answer awaited, within
+`timeoutMs`), as in Envoy's protocol:
+
+1. `request_headers` (unless `requestPhase: false`): the pseudo-headers `:method`, `:scheme`, `:authority` (the `Host`)
+   and `:path` (path and query) followed by every request header, values as `raw_value`, and `end_of_stream` set when
+   the request has no body. `:scheme` is `https` when the client connected over TLS to Conduit.
+2. `request_body` (with `requestBody`): `buffered` is one message with the whole body and `end_of_stream: true` (an
+   empty body is sent too, as an empty one); `streamed` is one message per chunk, the last with `end_of_stream: true`.
+3. `response_headers` (with `responsePhase`): `:status` and the upstream's response headers, before the site's own
+   headers (CORS, security, `responseTransform`) are added, so a processor can neither see nor strip those.
+4. `response_body` (with `responseBody: observe`): a copy of each chunk, `end_of_stream` on the last.
+
+An entry that sends only the request headers (the default) uses one short stream per request; an entry with any later
+phase keeps its stream open until the request ends.
 
 **What is applied.**
 
@@ -3946,9 +3964,20 @@ set when the request has no body. `:scheme` is `https` when the client connected
   boolean still works: `false` means overwrite), then each `remove_headers` name. A set with an empty value is skipped
   unless `keep_empty_value` is set; for an overwrite that means the header is **removed** (Envoy's rule). Later middleware
   entries see the changed headers.
+- *A body mutation* (`request_body` answer): the `body` it carries replaces the body (or the chunk, when streamed);
+  `clear_body: true` empties it; an answer with no mutation keeps it. The request is then forwarded with **chunked
+  framing** (`Transfer-Encoding: chunked` to an HTTP/1.1 upstream, no `Content-Length` to an HTTP/2 one), because the
+  length of what is forwarded is no longer the length of what the client sent. A body mutation in a *headers* answer, a
+  header mutation in a *body* answer, and any answer to `response_body` are ignored and logged.
+- *A response-headers answer* (`responsePhase`): the same header rules as for the request, applied to the upstream's
+  response. Entries run in order, each shown the headers the one before left. The site's own response headers are added
+  afterwards.
 - *An immediate response*: the request ends there with the processor's status (200 to 599), headers and body; the
   site's CORS and security headers are added. One value per header name (a second `Set-Cookie`, even with an append
-  action, replaces the first). 204, 205 and 304 are sent without a body and without `Content-Length`.
+  action, replaces the first). 204, 205 and 304 are sent without a body and without `Content-Length`. In the
+  **response** phase an immediate response replaces the upstream's status, headers and body; when the upstream response
+  has no body to replace (a `HEAD` request, 204, 304, `Content-Length: 0`) the answer's status and headers are sent and its
+  body is not (logged once).
 - *Headers the processor may not touch*: pseudo-headers, `host`, `content-length`, `transfer-encoding`, `connection`,
   `keep-alive`, `proxy-connection`, `te`, `trailer` and `upgrade`. They frame or route the request, and changing them is
   the ingredient of request smuggling. A mutation of one is ignored and logged, as Envoy does by default.
@@ -3959,8 +3988,11 @@ set when the request has no body. `:scheme` is `https` when the client connected
 
 **When the processor fails** (it cannot be reached, closes the stream without answering, answers with a gRPC error, is
 later than `timeoutMs`, or sends an answer that is not accepted) the entry's policy decides: refused with
-`statusOnError`, or, with `failOpen: true`, the request continues unchanged. Each failure is logged at `warn` level on the
-`conduit::ext_proc` target with the reason.
+`statusOnError`, or, with `failOpen: true`, the request continues unchanged. A failure ends the stream: with `failOpen`
+the entry then does nothing for the rest of that request (a request body that was being held is forwarded as it was
+received); without it the request is refused, or, if the response is already being sent, the response is replaced by
+the refusal. Each failure is logged at `warn` level on the `conduit::ext_proc` target with the reason. `observe` never
+fails a request: a processor that cannot keep up (the 256-chunk queue is full) or is unreachable simply stops being fed.
 
 **Where it runs.** `ext_proc` entries run in `middleware` order, after the built-in guards (IP filter, rate limit,
 authentication, `forwardAuth`, redirects, fault injection), so the processor only sees requests that already passed
@@ -3969,8 +4001,13 @@ treats as identity, and a token it sets in `Authorization` is read, unverified, 
 (the `{{ jwt.<claim> }}` header templates). It receives every request header, `Authorization` and cookies included, so
 `grpc://` (plain text) belongs on loopback or a private network only. Do not point `grpc` at a service you do not control.
 
-**Not implemented yet** (the rest of issue #27): request and response bodies, the response-headers phase, trailers,
-streamed bodies and a per-route override. A `phase` on the entry has no effect (validation warns).
+**What is not there.** Trailers (`request_trailers`/`response_trailers`) are not sent; a processor that answers with one
+is refused (a failure). `response_body` is observe-only: the response body cannot be rewritten through `ext_proc` (the
+body hooks of the proxy are synchronous; use a WASM `on_response` plugin to replace a response body). There is no
+per-route override because Conduit has no per-route `middleware`: an entry belongs to a site (put the routes that need
+it on their own site). A `phase` on the entry has no effect (validation warns): the phases are the entry's own keys.
+`requestBody` and a retry: a request that is retried before its body was read is simply asked again; Conduit does not
+replay a processed body.
 
 **Connections.** One HTTP/2 channel per processor address is shared by all requests; it connects on the first request and
 reconnects on its own. A configuration reload drops the channels, so a moved processor or an edited `caFile` takes effect

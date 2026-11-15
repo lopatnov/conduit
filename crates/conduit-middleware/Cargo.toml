@@ -32,6 +32,7 @@ tokio                 = { workspace = true }
 tracing               = { workspace = true }
 pingora-core          = { workspace = true }
 pingora-http          = { workspace = true }
+pingora-proxy         = { workspace = true }
 lopatnov-conduit-core = { workspace = true }
 
 # Optional sibling crates — see src/lib.rs doc comment ("Depends on two

@@ -22,6 +22,26 @@ pub enum Behaviour {
     Close,
     /// Fail the call.
     Fail(tonic::Code, &'static str),
+    /// Keep the stream open and answer every message it carries with what the function says (the whole conversation of a
+    /// request: headers, body chunks, response headers, response body chunks).
+    Script(Script),
+}
+
+/// What a scripted processor does with one message.
+pub enum Reply {
+    Answer(ProcessingResponse),
+    /// Say nothing (the message is only observed).
+    Nothing,
+    /// End the stream.
+    Close,
+}
+
+/// The function of a [`Behaviour::Script`].
+pub type Script = Arc<dyn Fn(&ProcessingRequest) -> Reply + Send + Sync>;
+
+/// A scripted behaviour from a closure.
+pub fn script(f: impl Fn(&ProcessingRequest) -> Reply + Send + Sync + 'static) -> Behaviour {
+    Behaviour::Script(Arc::new(f))
 }
 
 #[derive(Clone)]
@@ -51,7 +71,31 @@ impl StreamingService<ProcessingRequest> for Process {
         let mock = self.0.clone();
         Box::pin(async move {
             let mut inbound = request.into_inner();
-            if let Some(first) = inbound.message().await? {
+            let first = inbound.message().await?;
+            if let Behaviour::Script(function) = &mock.behaviour {
+                let function = Arc::clone(function);
+                let seen = Arc::clone(&mock.seen);
+                let (tx, rx) = tokio::sync::mpsc::channel(16);
+                tokio::spawn(async move {
+                    let mut next = first;
+                    while let Some(message) = next {
+                        seen.lock().unwrap().push(message.clone());
+                        match function(&message) {
+                            Reply::Answer(answer) => {
+                                if tx.send(Ok(answer)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Reply::Nothing => {}
+                            Reply::Close => break,
+                        }
+                        next = inbound.message().await.ok().flatten();
+                    }
+                });
+                let stream: Answers = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
+                return Ok(tonic::Response::new(stream));
+            }
+            if let Some(first) = first {
                 mock.seen.lock().unwrap().push(first);
             }
             let stream: Answers = match mock.behaviour {
@@ -61,6 +105,7 @@ impl StreamingService<ProcessingRequest> for Process {
                 Behaviour::Fail(code, message) => {
                     return Err(tonic::Status::new(code, message));
                 }
+                Behaviour::Script(_) => unreachable!("handled above"),
             };
             Ok(tonic::Response::new(stream))
         })
@@ -93,7 +138,13 @@ impl Service<http::Request<tonic::body::Body>> for Mock {
 /// Start the mock; returns the `grpc://` address and what it has seen.
 pub async fn serve(behaviour: Behaviour) -> (String, Arc<Mutex<Vec<ProcessingRequest>>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = format!("grpc://{}", listener.local_addr().unwrap());
+    // The client keeps one channel per `grpc` string for the whole process, and a channel's worker lives on the runtime
+    // that created it. Every `#[tokio::test]` has a runtime of its own that ends with the test, and the operating system
+    // hands a freed port to the next test's server: a cached channel of the earlier test would then be dead. A trailing
+    // slash does not change the address (`endpoint()` ignores it) but makes the string, and so the channel, unique.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    let unique = "/".repeat(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let address = format!("grpc://{}{unique}", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mock = Mock {
         behaviour,

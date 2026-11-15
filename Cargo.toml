@@ -813,7 +813,7 @@ wasm = ["lopatnov-conduit-middleware/wasm"]
 # into `crates/conduit-middleware`'s own `ext-proc` feature, which switches on the gRPC client of
 # `crates/conduit-ext-proc` (tonic + prost) and gates the real dispatch arm. Without it a fail-closed `ext_proc` entry
 # is refused at validation (it would let every request through unchecked); a `failOpen` one only warns.
-ext-proc = ["lopatnov-conduit-middleware/ext-proc"]
+ext-proc = ["lopatnov-conduit-middleware/ext-proc", "lopatnov-conduit-runtime/ext-proc"]
 
 # ── Protocol extensions ────────────────────────────────────────────────────────
 # TCP passthrough proxy (type: "tcp" site config). `TcpConfig` moved to

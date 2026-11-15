@@ -9,10 +9,11 @@ mod common;
 mod support;
 
 use conduit_ext_proc::proto::{
-    append_action, processing_response, CommonResponse, HeaderMutation, HeaderValue,
-    HeaderValueOption, HttpStatus, ImmediateResponse, PhaseResponse, ProcessingResponse,
+    append_action, body_mutation, processing_request, processing_response, BodyMutation,
+    CommonResponse, HeaderMutation, HeaderValue, HeaderValueOption, HttpStatus, ImmediateResponse,
+    PhaseResponse, ProcessingRequest, ProcessingResponse,
 };
-use support::Behaviour;
+use support::{script, Behaviour, Reply};
 
 fn option(name: &str, value: &str, action: i32) -> HeaderValueOption {
     HeaderValueOption {
@@ -283,4 +284,509 @@ fn validate_names_the_field_of_a_bad_ext_proc_config() {
     );
     assert!(text.contains("middleware[0].config.grpc"), "{text}");
     assert!(text.contains("middleware[0].config.timeoutMs"), "{text}");
+}
+
+// ── Bodies and the response phase (issue #27, the rest of the protocol) ────────────────────────────────────────────
+
+/// What a body-aware upstream saw, as JSON: `{ method, path, headers, body }`; `/static` answers with a fixed body and a
+/// secret header instead, `/fail` with a 500.
+#[cfg(feature = "proxy")]
+fn start_body_upstream() -> u16 {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut first = String::new();
+                if reader.read_line(&mut first).unwrap_or(0) == 0 {
+                    return;
+                }
+                let mut parts = first.split_whitespace();
+                let method = parts.next().unwrap_or("").to_owned();
+                let path = parts.next().unwrap_or("").to_owned();
+                let mut headers = serde_json::Map::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((k, v)) = line.trim_end().split_once(": ") {
+                        headers.insert(
+                            k.to_ascii_lowercase(),
+                            serde_json::Value::String(v.to_owned()),
+                        );
+                    }
+                }
+                let mut body = Vec::new();
+                if let Some(len) = headers.get("content-length").and_then(|v| v.as_str()) {
+                    body.resize(len.parse().unwrap_or(0), 0);
+                    let _ = reader.read_exact(&mut body);
+                } else if headers.get("transfer-encoding").and_then(|v| v.as_str())
+                    == Some("chunked")
+                {
+                    loop {
+                        let mut size = String::new();
+                        if reader.read_line(&mut size).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        let n = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
+                        let mut chunk = vec![0u8; n];
+                        let _ = reader.read_exact(&mut chunk);
+                        let mut crlf = String::new();
+                        let _ = reader.read_line(&mut crlf);
+                        if n == 0 {
+                            break;
+                        }
+                        body.extend(chunk);
+                    }
+                }
+                let (status, extra, payload) = match path.as_str() {
+                    "/static" => (
+                        "200 OK",
+                        "X-Secret: s3\r\nX-Keep: 1\r\n",
+                        "upstream says hi".to_owned(),
+                    ),
+                    "/fail" => ("500 Internal Server Error", "", "boom".to_owned()),
+                    _ => (
+                        "200 OK",
+                        "",
+                        serde_json::json!({
+                            "method": method, "path": path, "headers": headers,
+                            "body": String::from_utf8_lossy(&body),
+                        })
+                        .to_string(),
+                    ),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            });
+        }
+    });
+    port
+}
+
+#[cfg(feature = "proxy")]
+fn start_body_site(entry_config: serde_json::Value) -> common::TestServer {
+    let upstream = start_body_upstream();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": format!("http://127.0.0.1:{upstream}"),
+                "middleware": [{ "type": "ext_proc", "config": entry_config }]
+            }]
+        }),
+    )
+}
+
+fn phase(request: bool, body: bool, common_response: CommonResponse) -> ProcessingResponse {
+    let phase = PhaseResponse {
+        response: Some(common_response),
+    };
+    ProcessingResponse {
+        response: Some(match (request, body) {
+            (true, false) => processing_response::Response::RequestHeaders(phase),
+            (true, true) => processing_response::Response::RequestBody(phase),
+            (false, false) => processing_response::Response::ResponseHeaders(phase),
+            (false, true) => processing_response::Response::ResponseBody(phase),
+        }),
+    }
+}
+
+fn replace_body(request: bool, text: &str) -> ProcessingResponse {
+    phase(
+        request,
+        true,
+        CommonResponse {
+            status: 0,
+            header_mutation: None,
+            body_mutation: Some(BodyMutation {
+                mutation: Some(body_mutation::Mutation::Body(text.as_bytes().to_vec())),
+            }),
+        },
+    )
+}
+
+fn deny(status: i32, body: &str) -> ProcessingResponse {
+    ProcessingResponse {
+        response: Some(processing_response::Response::ImmediateResponse(
+            ImmediateResponse {
+                status: Some(HttpStatus { code: status }),
+                headers: Some(HeaderMutation {
+                    set_headers: vec![option(
+                        "x-by",
+                        "processor",
+                        append_action::OVERWRITE_IF_EXISTS_OR_ADD,
+                    )],
+                    remove_headers: Vec::new(),
+                }),
+                body: body.as_bytes().to_vec(),
+                grpc_status: None,
+                details: String::new(),
+            },
+        )),
+    }
+}
+
+fn kinds(seen: &std::sync::Mutex<Vec<ProcessingRequest>>) -> Vec<&'static str> {
+    use processing_request::Request as R;
+    seen.lock()
+        .unwrap()
+        .iter()
+        .map(|m| match &m.request {
+            Some(R::RequestHeaders(_)) => "request-headers",
+            Some(R::RequestBody(_)) => "request-body",
+            Some(R::ResponseHeaders(_)) => "response-headers",
+            Some(R::ResponseBody(_)) => "response-body",
+            _ => "other",
+        })
+        .collect()
+}
+
+fn body_text(m: &ProcessingRequest) -> Option<String> {
+    use processing_request::Request as R;
+    match &m.request {
+        Some(R::RequestBody(b) | R::ResponseBody(b)) => {
+            Some(String::from_utf8_lossy(&b.body).into_owned())
+        }
+        _ => None,
+    }
+}
+
+/// A processor for the body tests: the headers pass, a body message is answered by `on_body`.
+fn body_processor(
+    on_body: impl Fn(&str) -> ProcessingResponse + Send + Sync + 'static,
+) -> Behaviour {
+    use processing_request::Request as R;
+    script(move |m| match &m.request {
+        Some(R::RequestHeaders(_)) => Reply::Answer(phase(true, false, CommonResponse::default())),
+        Some(R::ResponseHeaders(_)) => {
+            Reply::Answer(phase(false, false, CommonResponse::default()))
+        }
+        Some(R::RequestBody(b)) => Reply::Answer(on_body(&String::from_utf8_lossy(&b.body))),
+        _ => Reply::Nothing,
+    })
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_buffered_request_body_is_rewritten_by_the_processor_and_framed_as_chunked() {
+    let (processor, seen) = support::serve_in_background(body_processor(|body| {
+        replace_body(true, &body.to_uppercase())
+    }));
+    let server =
+        start_body_site(serde_json::json!({ "grpc": processor, "requestBody": "buffered" }));
+
+    let resp = common::local_client()
+        .post(server.url("/echo"))
+        .body("hello world")
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let upstream = echoed(resp);
+    assert_eq!(upstream["body"], "HELLO WORLD", "{upstream}");
+    assert!(
+        upstream["headers"].get("content-length").is_none(),
+        "{upstream}"
+    );
+    assert_eq!(upstream["headers"]["transfer-encoding"], "chunked");
+    assert_eq!(kinds(&seen), ["request-headers", "request-body"]);
+    assert_eq!(
+        body_text(&seen.lock().unwrap()[1]).as_deref(),
+        Some("hello world")
+    );
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_streamed_request_body_is_answered_chunk_by_chunk() {
+    let (processor, _) = support::serve_in_background(body_processor(|body| {
+        replace_body(true, &body.replace("secret", "******"))
+    }));
+    let server =
+        start_body_site(serde_json::json!({ "grpc": processor, "requestBody": "streamed" }));
+    let resp = common::local_client()
+        .post(server.url("/echo"))
+        .body("a secret and another secret")
+        .send()
+        .unwrap();
+    assert_eq!(echoed(resp)["body"], "a ****** and another ******");
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_processor_that_denies_a_body_ends_the_request_with_its_own_answer() {
+    let (processor, _) = support::serve_in_background(body_processor(|body| {
+        if body.contains("attack") {
+            deny(403, "blocked by policy\n")
+        } else {
+            replace_body(true, body)
+        }
+    }));
+    let server =
+        start_body_site(serde_json::json!({ "grpc": processor, "requestBody": "buffered" }));
+    let client = common::local_client();
+
+    let resp = client
+        .post(server.url("/echo"))
+        .body("an attack")
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    assert_eq!(resp.headers().get("x-by").unwrap(), "processor");
+    assert_eq!(resp.text().unwrap(), "blocked by policy\n");
+
+    // the next request on the same server is unaffected
+    let resp = client
+        .post(server.url("/echo"))
+        .body("fine")
+        .send()
+        .unwrap();
+    assert_eq!(echoed(resp)["body"], "fine");
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_buffered_body_over_max_body_bytes_is_refused_with_413() {
+    let (processor, seen) =
+        support::serve_in_background(body_processor(|body| replace_body(true, body)));
+    let server = start_body_site(
+        serde_json::json!({ "grpc": processor, "requestBody": "buffered", "maxBodyBytes": 8 }),
+    );
+    let resp = common::local_client()
+        .post(server.url("/echo"))
+        .body("0123456789abcdef")
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 413);
+    assert_eq!(
+        kinds(&seen),
+        ["request-headers"],
+        "the oversized body was never sent to the processor"
+    );
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_processor_that_drops_the_stream_in_the_middle_of_a_body_follows_the_policy() {
+    use processing_request::Request as R;
+    let behaviour = || {
+        script(|m| match &m.request {
+            Some(R::RequestHeaders(_)) => {
+                Reply::Answer(phase(true, false, CommonResponse::default()))
+            }
+            _ => Reply::Close,
+        })
+    };
+    let (processor, _) = support::serve_in_background(behaviour());
+    let closed =
+        start_body_site(serde_json::json!({ "grpc": processor, "requestBody": "buffered" }));
+    let resp = common::local_client()
+        .post(closed.url("/echo"))
+        .body("x")
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 503, "fail-closed by default");
+
+    let (processor, _) = support::serve_in_background(behaviour());
+    let open = start_body_site(
+        serde_json::json!({ "grpc": processor, "requestBody": "buffered", "failOpen": true }),
+    );
+    let resp = common::local_client()
+        .post(open.url("/echo"))
+        .body("kept as it was")
+        .send()
+        .unwrap();
+    assert_eq!(echoed(resp)["body"], "kept as it was");
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn the_request_headers_are_not_sent_when_request_phase_is_false() {
+    let (processor, seen) =
+        support::serve_in_background(body_processor(|body| replace_body(true, body)));
+    let server = start_body_site(serde_json::json!({
+        "grpc": processor, "requestPhase": false, "requestBody": "buffered"
+    }));
+    let resp = common::local_client()
+        .post(server.url("/echo"))
+        .body("only the body")
+        .send()
+        .unwrap();
+    assert_eq!(echoed(resp)["body"], "only the body");
+    assert_eq!(kinds(&seen), ["request-body"]);
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn the_response_headers_are_changed_by_the_processor() {
+    use processing_request::Request as R;
+    let (processor, seen) = support::serve_in_background(script(|m| match &m.request {
+        Some(R::RequestHeaders(_)) => Reply::Answer(phase(true, false, CommonResponse::default())),
+        Some(R::ResponseHeaders(_)) => Reply::Answer(phase(
+            false,
+            false,
+            CommonResponse {
+                status: 0,
+                header_mutation: Some(HeaderMutation {
+                    set_headers: vec![option(
+                        "x-seen",
+                        "by-processor",
+                        append_action::OVERWRITE_IF_EXISTS_OR_ADD,
+                    )],
+                    remove_headers: vec!["x-secret".into()],
+                }),
+                body_mutation: None,
+            },
+        )),
+        _ => Reply::Nothing,
+    }));
+    let server = start_body_site(serde_json::json!({ "grpc": processor, "responsePhase": true }));
+
+    let resp = common::get(server.url("/static")).unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers().get("x-seen").unwrap(), "by-processor");
+    assert!(
+        resp.headers().get("x-secret").is_none(),
+        "{:?}",
+        resp.headers()
+    );
+    assert_eq!(resp.headers().get("x-keep").unwrap(), "1");
+    assert_eq!(resp.text().unwrap(), "upstream says hi");
+
+    // the processor was told the upstream's status and headers
+    assert_eq!(kinds(&seen), ["request-headers", "response-headers"]);
+    let seen = seen.lock().unwrap();
+    let Some(R::ResponseHeaders(h)) = &seen[1].request else {
+        panic!("not response headers");
+    };
+    let sent: std::collections::HashMap<String, String> = h
+        .headers
+        .as_ref()
+        .unwrap()
+        .headers
+        .iter()
+        .map(|v| {
+            (
+                v.key.clone(),
+                String::from_utf8_lossy(&v.raw_value).into_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(sent[":status"], "200");
+    assert_eq!(sent["x-secret"], "s3");
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_processor_can_replace_the_response_it_is_shown() {
+    use processing_request::Request as R;
+    let (processor, _) = support::serve_in_background(script(|m| match &m.request {
+        Some(R::RequestHeaders(_)) => Reply::Answer(phase(true, false, CommonResponse::default())),
+        Some(R::ResponseHeaders(h)) => {
+            let status = h
+                .headers
+                .as_ref()
+                .and_then(|map| map.headers.iter().find(|v| v.key == ":status"))
+                .map(|v| String::from_utf8_lossy(&v.raw_value).into_owned());
+            if status.as_deref() == Some("500") {
+                Reply::Answer(deny(503, "{\"error\":\"masked\"}"))
+            } else {
+                Reply::Answer(phase(false, false, CommonResponse::default()))
+            }
+        }
+        _ => Reply::Nothing,
+    }));
+    let server = start_body_site(serde_json::json!({ "grpc": processor, "responsePhase": true }));
+
+    let resp = common::get(server.url("/fail")).unwrap();
+    assert_eq!(resp.status(), 503);
+    assert_eq!(resp.headers().get("x-by").unwrap(), "processor");
+    assert!(resp.headers().get("x-secret").is_none());
+    assert_eq!(
+        resp.text().unwrap(),
+        "{\"error\":\"masked\"}",
+        "the upstream's body is gone"
+    );
+
+    let resp = common::get(server.url("/static")).unwrap();
+    assert_eq!(
+        resp.text().unwrap(),
+        "upstream says hi",
+        "other responses are untouched"
+    );
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn an_observed_response_body_is_copied_to_the_processor_and_the_client_gets_it_unchanged() {
+    use processing_request::Request as R;
+    let (processor, seen) = support::serve_in_background(script(|m| match &m.request {
+        Some(R::RequestHeaders(_)) => Reply::Answer(phase(true, false, CommonResponse::default())),
+        _ => Reply::Nothing,
+    }));
+    let server =
+        start_body_site(serde_json::json!({ "grpc": processor, "responseBody": "observe" }));
+
+    let resp = common::get(server.url("/static")).unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().unwrap(), "upstream says hi");
+
+    let mut copied = String::new();
+    for _ in 0..100 {
+        copied = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| matches!(m.request, Some(R::ResponseBody(_))))
+            .filter_map(body_text)
+            .collect();
+        if copied == "upstream says hi" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(copied, "upstream says hi");
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_response_phase_failure_is_refused_or_ignored_by_the_policy() {
+    let (processor, _) = support::serve_in_background(script(|m| match &m.request {
+        Some(processing_request::Request::RequestHeaders(_)) => {
+            Reply::Answer(phase(true, false, CommonResponse::default()))
+        }
+        _ => Reply::Close,
+    }));
+    let closed = start_body_site(serde_json::json!({ "grpc": processor, "responsePhase": true }));
+    let resp = common::get(closed.url("/static")).unwrap();
+    assert_eq!(
+        resp.status(),
+        503,
+        "the processor ended the stream instead of answering: fail-closed"
+    );
+
+    let (processor, _) = support::serve_in_background(script(|m| match &m.request {
+        Some(processing_request::Request::RequestHeaders(_)) => {
+            Reply::Answer(phase(true, false, CommonResponse::default()))
+        }
+        _ => Reply::Close,
+    }));
+    let open = start_body_site(
+        serde_json::json!({ "grpc": processor, "responsePhase": true, "failOpen": true }),
+    );
+    let resp = common::get(open.url("/static")).unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().unwrap(), "upstream says hi");
 }

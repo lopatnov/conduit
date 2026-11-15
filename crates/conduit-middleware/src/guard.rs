@@ -37,6 +37,11 @@ pub struct MiddlewareGuard {
     pub headers: std::collections::HashMap<String, String>,
     /// Remote client IP (used by WASM plugins).
     pub client_ip: String,
+    /// Where an `ext_proc` entry with a later phase (a request body mode, `responsePhase`, `responseBody`) leaves its open
+    /// stream for the body and response hooks of this request. The runtime creates it for a request whose site has an
+    /// `ext_proc` entry and keeps the other half in the per-request state.
+    #[cfg(feature = "ext-proc")]
+    pub ext_proc: Option<std::sync::Arc<conduit_ext_proc::ExtProcSessions>>,
 }
 
 /// Backward-compatible type alias — existing code that names `ScriptGuard`
@@ -85,7 +90,7 @@ impl RequestFilter for MiddlewareGuard {
                 // ── External processor (request headers) ──────────────────────
                 #[cfg(feature = "ext-proc")]
                 "ext_proc" => {
-                    let ended = apply_ext_proc_entry(&mut headers, entry, ctx).await?;
+                    let ended = apply_ext_proc_entry(self, &mut headers, entry, ctx).await?;
                     if ended {
                         return Ok(FilterOutcome::Handled);
                     }
@@ -239,6 +244,7 @@ async fn apply_wasm_entry<'a>(
 /// ended (the processor's immediate response, or the refusal of a fail-closed entry whose processor failed).
 #[cfg(feature = "ext-proc")]
 async fn apply_ext_proc_entry<'a>(
+    guard: &MiddlewareGuard,
     headers: &mut std::collections::HashMap<String, String>,
     entry: &MiddlewareEntry,
     ctx: &mut FilterContext<'a>,
@@ -264,6 +270,12 @@ async fn apply_ext_proc_entry<'a>(
 
     let end_of_stream = ctx.session.is_body_empty();
     let secure = ctx.session.digest().is_some_and(|d| d.ssl_digest.is_some());
+    // An entry with a later phase keeps its stream open for the body and response hooks; one that only sends the request
+    // headers uses a short stream of its own.
+    let mut session = match (&guard.ext_proc, config.needs_session()) {
+        (Some(_), true) => Some(client.session()),
+        _ => None,
+    };
     let verdict = {
         let req = ctx.session.req_header();
         let authority = req
@@ -276,25 +288,30 @@ async fn apply_ext_proc_entry<'a>(
             .uri
             .path_and_query()
             .map_or_else(|| req.uri.path(), |pq| pq.as_str());
-        client
-            .process_request_headers(&RequestInfo {
-                method: req.method.as_str(),
-                scheme: if secure { "https" } else { "http" },
-                authority,
-                path,
-                headers: &req.headers,
-                end_of_stream,
-            })
-            .await
+        let info = RequestInfo {
+            method: req.method.as_str(),
+            scheme: if secure { "https" } else { "http" },
+            authority,
+            path,
+            headers: &req.headers,
+            end_of_stream,
+        };
+        match session.as_mut() {
+            Some(session) => session.request_headers(&info).await,
+            None => client.process_request_headers(&info).await,
+        }
     };
 
     match verdict {
         Verdict::Continue(changes) => {
-            apply_header_changes(ctx.session.req_header_mut(), headers, &changes);
+            crate::ext_proc::apply_request_changes(ctx.session.req_header_mut(), headers, &changes);
+            if let (Some(session), Some(sessions)) = (session, &guard.ext_proc) {
+                sessions.push(session).await;
+            }
             Ok(false)
         }
         Verdict::Respond(answer) => {
-            let extra = text_headers(&answer);
+            let extra = crate::ext_proc::text_headers(&answer);
             refuse(ctx, answer.status, answer.body, extra).await
         }
     }
@@ -310,260 +327,7 @@ async fn refuse<'a>(
 ) -> Result<bool> {
     let mut all = ctx.extra_headers.to_vec();
     all.extend(extra);
-    if matches!(status, 204 | 205 | 304) {
-        // These have no body, and a server must not send `Content-Length` with a 204 (RFC 9110 sections 8.6, 15.3.5,
-        // 15.3.6, 15.4.5), which `write_response` always does: the header is built here without it.
-        let resp = bodyless_response(status, all)?;
-        ctx.session
-            .write_response_header(Box::new(resp), true)
-            .await?;
-    } else {
-        conduit_core::handler::response::write_response(
-            ctx.session,
-            status,
-            "text/plain",
-            body,
-            &all,
-        )
-        .await?;
-    }
+    crate::ext_proc::write_answer(ctx.session, status, body, &all).await?;
     ctx.inflight.fetch_sub(1, Ordering::Relaxed);
     Ok(true)
-}
-
-/// The headers of a processor's immediate response as strings. A value that is not text cannot be passed on as a response
-/// header here (the writer takes strings), so it is left out.
-#[cfg(feature = "ext-proc")]
-fn text_headers(answer: &conduit_ext_proc::DirectResponse) -> Vec<(String, String)> {
-    answer
-        .headers
-        .iter()
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|v| (name.as_str().to_owned(), v.to_owned()))
-        })
-        .collect()
-}
-
-/// The header of a response that has no body (204, 205, 304): `headers` without a `Content-Length`, which `write_response`
-/// would add. A header the writer cannot take is left out, as `write_response` does.
-#[cfg(feature = "ext-proc")]
-fn bodyless_response(
-    status: u16,
-    headers: Vec<(String, String)>,
-) -> Result<pingora_http::ResponseHeader> {
-    let mut resp = pingora_http::ResponseHeader::build(status, Some(headers.len()))?;
-    for (name, value) in headers {
-        let _ = resp.insert_header(name, value);
-    }
-    Ok(resp)
-}
-
-/// Apply a processor's validated header changes to the request, and to the lower-cased view later entries read.
-#[cfg(feature = "ext-proc")]
-fn apply_header_changes(
-    request: &mut pingora_http::RequestHeader,
-    view: &mut std::collections::HashMap<String, String>,
-    changes: &conduit_ext_proc::HeaderChanges,
-) {
-    use conduit_ext_proc::SetMode;
-
-    for set in &changes.set {
-        let present = request.headers.contains_key(&set.name);
-        let write = match set.mode {
-            SetMode::Append | SetMode::Overwrite => true,
-            SetMode::AddIfAbsent => !present,
-            SetMode::OverwriteIfExists => present,
-        };
-        if !write {
-            continue;
-        }
-        let applied = if set.mode == SetMode::Append {
-            request.append_header(&set.name, set.value.clone())
-        } else {
-            request
-                .insert_header(&set.name, set.value.clone())
-                .map(|()| true)
-        };
-        if applied.is_err() {
-            continue;
-        }
-        let key = set.name.as_str().to_owned();
-        if let Ok(value) = set.value.to_str() {
-            match (set.mode, view.get_mut(&key)) {
-                (SetMode::Append, Some(existing)) => {
-                    existing.push_str(", ");
-                    existing.push_str(value);
-                }
-                _ => {
-                    view.insert(key, value.to_owned());
-                }
-            }
-        } else {
-            // A value that is not text cannot be put in the view, and the old one is no longer true: later entries must
-            // not decide on a stale header, so the header is left out of the view (it is not there for them).
-            view.remove(&key);
-        }
-    }
-    for name in &changes.remove {
-        request.remove_header(name);
-        view.remove(name.as_str());
-    }
-}
-
-#[cfg(all(test, feature = "ext-proc"))]
-mod ext_proc_tests {
-    use super::*;
-
-    #[test]
-    fn a_bodyless_response_has_the_given_headers_and_no_content_length() {
-        let headers = vec![
-            ("x-site".to_owned(), "a".to_owned()),
-            ("bad name".to_owned(), "dropped".to_owned()),
-        ];
-        let resp = bodyless_response(204, headers).unwrap();
-        assert_eq!(resp.status.as_u16(), 204);
-        assert_eq!(resp.headers.get("x-site").unwrap(), "a");
-        assert!(resp.headers.get("content-length").is_none());
-        assert_eq!(
-            resp.headers.len(),
-            1,
-            "a header the writer cannot take is left out"
-        );
-        assert!(
-            bodyless_response(99, Vec::new()).is_err(),
-            "a status outside 100 to 999 is an error, not a panic"
-        );
-    }
-
-    #[test]
-    fn only_text_values_of_an_immediate_response_become_response_headers() {
-        let headers = vec![
-            (
-                http::HeaderName::from_static("x-text"),
-                http::HeaderValue::from_static("yes"),
-            ),
-            (
-                http::HeaderName::from_static("x-binary"),
-                http::HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
-            ),
-        ];
-        let answer = conduit_ext_proc::DirectResponse {
-            status: 403,
-            headers,
-            body: Bytes::new(),
-        };
-        assert_eq!(
-            text_headers(&answer),
-            vec![("x-text".to_owned(), "yes".to_owned())]
-        );
-    }
-
-    use conduit_ext_proc::{HeaderChanges, HeaderSet, SetMode};
-    use http::{HeaderName, HeaderValue};
-    use pingora_http::RequestHeader;
-    use std::collections::HashMap;
-
-    fn set(name: &str, value: &str, mode: SetMode) -> HeaderSet {
-        HeaderSet {
-            name: HeaderName::from_bytes(name.as_bytes()).unwrap(),
-            value: HeaderValue::from_str(value).unwrap(),
-            mode,
-        }
-    }
-
-    fn request() -> RequestHeader {
-        let mut req = RequestHeader::build("GET", b"/", None).unwrap();
-        req.append_header("x-keep", "1").unwrap();
-        req.append_header("x-multi", "a").unwrap();
-        req.append_header("x-multi", "b").unwrap();
-        req.append_header("x-user", "ann").unwrap();
-        req
-    }
-
-    fn values(req: &RequestHeader, name: &str) -> Vec<String> {
-        req.headers
-            .get_all(name)
-            .iter()
-            .map(|v| v.to_str().unwrap().to_owned())
-            .collect()
-    }
-
-    #[test]
-    fn every_set_mode_does_what_its_name_says() {
-        let mut req = request();
-        let mut view = HashMap::from([("x-multi".to_owned(), "a, b".to_owned())]);
-        let changes = HeaderChanges {
-            set: vec![
-                set("x-multi", "c", SetMode::Append),
-                set("x-user", "bob", SetMode::Overwrite),
-                set("x-user", "carol", SetMode::AddIfAbsent), // present: no change
-                set("x-new", "1", SetMode::AddIfAbsent),      // absent: added
-                set("x-ghost", "1", SetMode::OverwriteIfExists), // absent: not created
-                set("x-keep", "2", SetMode::OverwriteIfExists), // present: replaced
-            ],
-            remove: Vec::new(),
-        };
-        apply_header_changes(&mut req, &mut view, &changes);
-
-        assert_eq!(values(&req, "x-multi"), ["a", "b", "c"]);
-        assert_eq!(values(&req, "x-user"), ["bob"]);
-        assert_eq!(values(&req, "x-new"), ["1"]);
-        assert!(req.headers.get("x-ghost").is_none());
-        assert_eq!(values(&req, "x-keep"), ["2"]);
-
-        // the view later entries read follows
-        assert_eq!(view["x-multi"], "a, b, c");
-        assert_eq!(view["x-user"], "bob");
-        assert_eq!(view["x-new"], "1");
-        assert!(!view.contains_key("x-ghost"));
-    }
-
-    #[test]
-    fn removals_apply_after_the_sets_and_clear_every_value() {
-        let mut req = request();
-        let mut view = HashMap::from([
-            ("x-multi".to_owned(), "a, b".to_owned()),
-            ("x-user".to_owned(), "ann".to_owned()),
-        ]);
-        let changes = HeaderChanges {
-            set: vec![set("x-user", "bob", SetMode::Overwrite)],
-            remove: vec![
-                HeaderName::from_static("x-user"),
-                HeaderName::from_static("x-multi"),
-            ],
-        };
-        apply_header_changes(&mut req, &mut view, &changes);
-        assert!(
-            req.headers.get("x-user").is_none(),
-            "a removal wins over a set of the same name"
-        );
-        assert!(req.headers.get("x-multi").is_none());
-        assert!(view.is_empty());
-        assert_eq!(values(&req, "x-keep"), ["1"]);
-    }
-
-    #[test]
-    fn a_header_overwritten_with_a_non_text_value_leaves_the_view_so_later_entries_do_not_read_a_stale_one(
-    ) {
-        let mut req = request();
-        let mut view = HashMap::from([("x-user".to_owned(), "ann".to_owned())]);
-        let binary = HeaderSet {
-            name: HeaderName::from_static("x-user"),
-            value: HeaderValue::from_bytes(b"\xff\xfe").unwrap(),
-            mode: SetMode::Overwrite,
-        };
-        let changes = HeaderChanges {
-            set: vec![binary],
-            remove: Vec::new(),
-        };
-        apply_header_changes(&mut req, &mut view, &changes);
-        assert_eq!(req.headers.get("x-user").unwrap().as_bytes(), b"\xff\xfe");
-        assert!(
-            !view.contains_key("x-user"),
-            "the view must not keep the old value: {view:?}"
-        );
-    }
 }

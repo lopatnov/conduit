@@ -7,6 +7,9 @@
 //!       grpc: grpc://filter-service:9000   # or grpcs:// for TLS
 //!       timeoutMs: 200                     # per exchange with the processor
 //!       failOpen: false                    # default: refuse the request when the processor fails
+//!       requestBody: buffered              # none (default) | buffered | streamed
+//!       responsePhase: true                # send the response headers too (default false)
+//!       responseBody: observe              # none (default) | observe
 //! ```
 //!
 //! Always compiled: see the crate root for why.
@@ -22,15 +25,48 @@ pub const DEFAULT_MAX_HEADER_MUTATIONS: usize = 64;
 /// How many bytes a header value set by the processor may have, when `maxHeaderValueBytes` is absent.
 pub const DEFAULT_MAX_HEADER_VALUE_BYTES: usize = 8192;
 
+/// The most bytes of a request body held for a processor in `buffered` mode, when `maxBodyBytes` is absent (1 MiB, like
+/// `limits.maxBodyBufferBytes`).
+pub const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
+
 /// The longest `timeoutMs` accepted (one minute): an exchange that long holds a connection of the proxy.
 pub const MAX_TIMEOUT_MS: u64 = 60_000;
 /// The largest `maxHeaderMutations` accepted.
 pub const MAX_HEADER_MUTATIONS_LIMIT: usize = 1024;
 /// The largest `maxHeaderValueBytes` accepted.
 pub const MAX_HEADER_VALUE_BYTES_LIMIT: usize = 65_536;
+/// The largest `maxBodyBytes` accepted (16 MiB): the body is held in memory once per request that carries one.
+pub const MAX_BODY_BYTES_LIMIT: usize = 16 * 1024 * 1024;
 
-/// The `config` of one `ext_proc` entry. Unknown keys are rejected: `responsePhase`, body modes and the other options of
-/// the later slices of issue #27 must not be accepted and then silently do nothing.
+/// What is done with the request body.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RequestBodyMode {
+    /// The body is not sent to the processor.
+    #[default]
+    None,
+    /// The whole body is held, up to `maxBodyBytes` (more is refused with 413), sent as one message, and replaced by the
+    /// processor's answer. The request is forwarded with chunked framing, because its length is not known up front.
+    Buffered,
+    /// Every chunk is sent as it arrives and replaced by the processor's answer to it (one answer per chunk, in step).
+    /// The request is forwarded with chunked framing.
+    Streamed,
+}
+
+/// What is done with the response body.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ResponseBodyMode {
+    /// The body is not sent to the processor.
+    #[default]
+    None,
+    /// Every chunk is copied to the processor without waiting for it; whatever the processor answers about the body is
+    /// ignored (Pingora's response body hooks are synchronous, so a remote call cannot hold the response).
+    Observe,
+}
+
+/// The `config` of one `ext_proc` entry. Unknown keys are rejected: a misspelt option must not be
+/// accepted and then silently do nothing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExtProcConfig {
@@ -57,6 +93,24 @@ pub struct ExtProcConfig {
     /// The most bytes a header value set by the processor may have. Absent: [`DEFAULT_MAX_HEADER_VALUE_BYTES`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_header_value_bytes: Option<usize>,
+    /// `false`: the request headers are not sent (a processor that wants only bodies, or only the response). Absent:
+    /// `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_phase: Option<bool>,
+    /// What is done with the request body. Absent: `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_body: Option<RequestBodyMode>,
+    /// `true`: the response headers are sent to the processor, which may change them or replace the response. Absent:
+    /// `false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_phase: Option<bool>,
+    /// What is done with the response body. Absent: `none`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body: Option<ResponseBodyMode>,
+    /// The most bytes of a request body held in `buffered` mode; a larger body is refused with 413. Absent:
+    /// [`DEFAULT_MAX_BODY_BYTES`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_body_bytes: Option<usize>,
 }
 
 /// The processor's address, split.
@@ -103,6 +157,39 @@ impl ExtProcConfig {
     pub fn max_header_value_bytes(&self) -> usize {
         self.max_header_value_bytes
             .unwrap_or(DEFAULT_MAX_HEADER_VALUE_BYTES)
+    }
+
+    /// `true` when the request headers are sent.
+    pub fn sends_request_headers(&self) -> bool {
+        self.request_phase.unwrap_or(true)
+    }
+
+    /// What is done with the request body.
+    pub fn request_body_mode(&self) -> RequestBodyMode {
+        self.request_body.unwrap_or_default()
+    }
+
+    /// `true` when the response headers are sent.
+    pub fn sends_response_headers(&self) -> bool {
+        self.response_phase.unwrap_or(false)
+    }
+
+    /// What is done with the response body.
+    pub fn response_body_mode(&self) -> ResponseBodyMode {
+        self.response_body.unwrap_or_default()
+    }
+
+    /// The most bytes of a request body held in `buffered` mode.
+    pub fn max_body_bytes(&self) -> usize {
+        self.max_body_bytes.unwrap_or(DEFAULT_MAX_BODY_BYTES)
+    }
+
+    /// `true` when the processor is told anything after the request headers: the stream then stays open for the whole
+    /// request, held in the per-request state, instead of ending after the answer to the headers.
+    pub fn needs_session(&self) -> bool {
+        self.request_body_mode() != RequestBodyMode::None
+            || self.sends_response_headers()
+            || self.response_body_mode() != ResponseBodyMode::None
     }
 
     /// The address split into scheme and authority; the error says what is wrong with `grpc`.
@@ -210,6 +297,28 @@ impl ExtProcConfig {
                 ));
             }
         }
+        if let Some(n) = self.max_body_bytes {
+            if n == 0 || n > MAX_BODY_BYTES_LIMIT {
+                out.push((
+                    "maxBodyBytes",
+                    format!(
+                        "maxBodyBytes is {n}, it must be from 1 to {MAX_BODY_BYTES_LIMIT} (16 MiB)"
+                    ),
+                ));
+            }
+            if self.request_body_mode() != RequestBodyMode::Buffered {
+                out.push((
+                    "maxBodyBytes",
+                    "maxBodyBytes only applies with requestBody: buffered".to_owned(),
+                ));
+            }
+        }
+        if !self.sends_request_headers() && !self.needs_session() {
+            out.push((
+                "requestPhase",
+                "requestPhase is false and no other phase is enabled (requestBody, responsePhase, responseBody): the entry would send nothing".to_owned(),
+            ));
+        }
         out
     }
 }
@@ -238,12 +347,19 @@ mod tests {
         assert!(ExtProcConfig::from_value(None)
             .unwrap_err()
             .contains("requires a \"config\""));
-        // `responsePhase` belongs to a later slice: accepting it would be a promise nothing keeps
+        // a misspelt option must not be accepted and then silently do nothing
         let err = ExtProcConfig::from_value(Some(
-            &serde_json::json!({ "grpc": "grpc://f:1", "responsePhase": true }),
+            &serde_json::json!({ "grpc": "grpc://f:1", "responsePhaze": true }),
         ))
         .unwrap_err();
-        assert!(err.contains("responsePhase"), "{err}");
+        assert!(err.contains("responsePhaze"), "{err}");
+        for (key, bad) in [("requestBody", "all"), ("responseBody", "buffered")] {
+            let err = ExtProcConfig::from_value(Some(
+                &serde_json::json!({ "grpc": "grpc://f:1", key: bad }),
+            ))
+            .unwrap_err();
+            assert!(err.contains(bad), "{err}");
+        }
         assert!(ExtProcConfig::from_value(Some(&serde_json::json!({}))).is_err());
     }
 
@@ -330,6 +446,81 @@ mod tests {
             cfg(serde_json::json!({ "grpc": "grpcs://f:1", "caFile": "ca.pem" }))
                 .problems()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_phases_default_to_the_request_headers_only() {
+        let c = cfg(serde_json::json!({ "grpc": "grpc://f:1" }));
+        assert!(c.sends_request_headers());
+        assert!(!c.sends_response_headers());
+        assert_eq!(c.request_body_mode(), RequestBodyMode::None);
+        assert_eq!(c.response_body_mode(), ResponseBodyMode::None);
+        assert_eq!(c.max_body_bytes(), 1_048_576);
+        assert!(
+            !c.needs_session(),
+            "the stream ends after the answer to the headers"
+        );
+    }
+
+    #[test]
+    fn any_later_phase_keeps_the_stream_open() {
+        for extra in [
+            serde_json::json!({ "requestBody": "buffered" }),
+            serde_json::json!({ "requestBody": "streamed" }),
+            serde_json::json!({ "responsePhase": true }),
+            serde_json::json!({ "responseBody": "observe" }),
+        ] {
+            let mut v = serde_json::json!({ "grpc": "grpc://f:1" });
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let c = cfg(v);
+            assert!(c.needs_session(), "{extra}");
+            assert!(c.problems().is_empty(), "{extra}: {:?}", c.problems());
+        }
+    }
+
+    #[test]
+    fn body_limits_and_an_entry_that_sends_nothing_are_listed_by_field() {
+        let fields = |v: serde_json::Value| {
+            let mut base = serde_json::json!({ "grpc": "grpc://f:1" });
+            base.as_object_mut()
+                .unwrap()
+                .extend(v.as_object().unwrap().clone());
+            cfg(base)
+                .problems()
+                .into_iter()
+                .map(|(f, _)| f)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            fields(serde_json::json!({ "requestBody": "buffered", "maxBodyBytes": 0 })),
+            ["maxBodyBytes"]
+        );
+        assert_eq!(
+            fields(serde_json::json!({ "requestBody": "buffered", "maxBodyBytes": 16_777_217 })),
+            ["maxBodyBytes"]
+        );
+        assert!(fields(
+            serde_json::json!({ "requestBody": "buffered", "maxBodyBytes": 16_777_216 })
+        )
+        .is_empty());
+        // a limit that nothing reads is a mistake, not a silent no-op
+        assert_eq!(
+            fields(serde_json::json!({ "maxBodyBytes": 1000 })),
+            ["maxBodyBytes"]
+        );
+        assert_eq!(
+            fields(serde_json::json!({ "requestBody": "streamed", "maxBodyBytes": 1000 })),
+            ["maxBodyBytes"]
+        );
+        assert_eq!(
+            fields(serde_json::json!({ "requestPhase": false })),
+            ["requestPhase"]
+        );
+        assert!(
+            fields(serde_json::json!({ "requestPhase": false, "responsePhase": true })).is_empty()
         );
     }
 

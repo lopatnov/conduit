@@ -61,7 +61,39 @@ pub(crate) async fn upstream_request_filter(
     // Traffic mirroring: fire-and-forget copy to the mirror backend.
     maybe_fire_mirror(session, upstream_request, ctx);
 
+    #[cfg(feature = "ext-proc")]
+    frame_rewritten_body(session, upstream_request, ctx);
+
     Ok(())
+}
+
+/// A request whose body an `ext_proc` entry reads or changes (issue #27) cannot keep the client's `Content-Length`: what is
+/// forwarded is what the processor answered, whose length is not known up front (a buffered body is held until the whole of it
+/// is sent to the processor, a streamed one is rewritten chunk by chunk). The body is then framed by the protocol: chunked for
+/// HTTP/1.1 (`Transfer-Encoding` does not exist in HTTP/2, whose frames carry the end of the body themselves). A request with no
+/// body keeps its headers, unless the method carries one (a processor may supply the body of an empty POST).
+#[cfg(feature = "ext-proc")]
+fn frame_rewritten_body(
+    session: &mut Session,
+    upstream_request: &mut RequestHeader,
+    ctx: &Option<RequestCtx>,
+) {
+    let rewrites = ctx
+        .as_ref()
+        .and_then(|c| c.ext_proc.as_ref())
+        .is_some_and(|s| s.rewrites_request_body());
+    if !rewrites {
+        return;
+    }
+    let method_has_body = matches!(upstream_request.method.as_str(), "POST" | "PUT" | "PATCH");
+    if session.is_body_empty() && !method_has_body {
+        return;
+    }
+    upstream_request.remove_header("content-length");
+    upstream_request.remove_header("transfer-encoding");
+    if upstream_request.version == http::Version::HTTP_11 {
+        let _ = upstream_request.insert_header("transfer-encoding", "chunked");
+    }
 }
 
 /// Bump the per-upstream active-connections gauge and the selection counters

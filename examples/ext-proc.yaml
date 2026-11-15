@@ -6,8 +6,9 @@
 #   • answer the request itself (an "immediate response": 403, a redirect, ...).
 #
 # It runs AFTER the built-in guards (IP filter, rate limit, auth, forwardAuth)
-# and before the request reaches the upstream. Only the request headers are
-# sent for now: no body, no response phase.
+# and before the request reaches the upstream. What is sent is chosen per entry:
+# the request headers (default), the request body (requestBody), the response
+# headers (responsePhase) and a copy of the response body (responseBody).
 #
 # Failure is closed by default: a processor that is down, late (timeoutMs) or
 # answers with something Conduit does not accept refuses the request with
@@ -34,3 +35,8 @@ middleware:
       # caFile: /etc/conduit/processor-ca.pem   # grpcs:// only
       maxHeaderMutations: 64      # the most sets + removals in one answer
       maxHeaderValueBytes: 8192   # the longest header value it may set
+      # requestPhase: true         # false: do not send the request headers
+      # requestBody: buffered      # none | buffered (whole body, <= maxBodyBytes, 413 above) | streamed
+      # maxBodyBytes: 1048576      # buffered only
+      # responsePhase: true        # send the response headers; the processor may change or replace them
+      # responseBody: observe      # none | observe (a copy of each chunk, never waited for)

@@ -69,6 +69,8 @@
 //! `RequestCtx` (which isn't reachable from here at all).
 
 pub mod config;
+#[cfg(feature = "ext-proc")]
+pub mod ext_proc;
 pub mod guard;
 pub mod response;
 pub mod validate;

@@ -73,6 +73,11 @@ pub struct RequestCtx {
     /// only safe for idempotent methods (GET/HEAD) in that case.
     pub body_too_large: bool,
 
+    /// The open streams of this request's `ext_proc` entries that have a later phase than the request headers (issue #27):
+    /// the request body hook and the response hooks use them. `None` for a request that has no such entry.
+    #[cfg(feature = "ext-proc")]
+    pub ext_proc: Option<Arc<conduit_ext_proc::ExtProcSessions>>,
+
     /// Per-request limits state — `actual_body_bytes`, `ip_conn_slot`
     /// (RAII per-IP connection slot, released on drop), and the slow-loris
     /// upload-rate leaky-bucket state (`upload_excess_bytes`/
@@ -115,6 +120,8 @@ impl RequestCtx {
             body_too_large: false,
             #[cfg(feature = "jwt")]
             jwt: None,
+            #[cfg(feature = "ext-proc")]
+            ext_proc: None,
             limits: conduit_limits::LimitsReqState::default(),
             #[cfg(feature = "cache")]
             cache: None,

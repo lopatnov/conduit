@@ -34,7 +34,10 @@ fn meter_traffic(proxy: &ConduitProxy, req_ctx: &RequestCtx, len: usize) {
 /// still happen but without body replay.
 pub(crate) async fn request_body_filter(
     proxy: &ConduitProxy,
+    #[cfg_attr(not(feature = "ext-proc"), allow(unused_variables))]
+    session: &mut pingora_proxy::Session,
     body: &mut Option<bytes::Bytes>,
+    #[cfg_attr(not(feature = "ext-proc"), allow(unused_variables))] end_of_stream: bool,
     ctx: &mut Option<RequestCtx>,
 ) -> pingora_core::Result<()> {
     let Some(req_ctx) = ctx.as_mut() else {
@@ -122,6 +125,40 @@ pub(crate) async fn request_body_filter(
     // chunk over `maxBodyBytes` or from a client below the minimum rate is discarded, and counting it
     // would inflate the upstream's rate and divert later requests from it.
     meter_traffic(proxy, req_ctx, chunk_len);
+
+    // External processing (#27): an `ext_proc` entry that reads or changes the request body sees the chunk after the size
+    // and rate checks above, and what it answers is what goes on (and what a retry would replay, below).
+    #[cfg(feature = "ext-proc")]
+    if let Some(sessions) = req_ctx
+        .ext_proc
+        .clone()
+        .filter(|s| s.rewrites_request_body())
+    {
+        use conduit_ext_proc::BodyVerdict;
+        match sessions.request_body(body.take(), end_of_stream).await {
+            BodyVerdict::Forward(next) => {
+                // `None` would tell Pingora the body is over: a chunk that is held back is an empty one instead.
+                *body = match next {
+                    Some(bytes) => Some(bytes),
+                    None if end_of_stream => None,
+                    None => Some(bytes::Bytes::new()),
+                };
+            }
+            BodyVerdict::Respond(answer) => {
+                conduit_middleware::ext_proc::write_direct(
+                    session,
+                    &answer,
+                    &req_ctx.extra_headers,
+                )
+                .await?;
+                // The answer is already on its way: status 0 tells `fail_to_proxy` not to write an error page over it.
+                return Err(pingora_core::Error::explain(
+                    pingora_core::ErrorType::HTTPStatus(0),
+                    "request ended by the external processor",
+                ));
+            }
+        }
+    }
 
     // Retry body buffering (separate from size enforcement).
     // Only buffer when retry is configured (otherwise wasteful).

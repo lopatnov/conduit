@@ -9,14 +9,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- External processing filter, slice 1 of #27: a `middleware` entry `type: "ext_proc"` (feature `ext-proc`, part of `full`)
-  sends the request headers to a gRPC processor that speaks Envoy's `ext_proc` protocol and applies its answer: header
-  sets and removals (Envoy's append actions, a fixed list of headers it may not touch, caps on count and value size) or an
-  immediate response that ends the request. Fail-closed by default: a processor that is unreachable, later than `timeoutMs`
-  (200 ms) or answers with something not accepted refuses the request with `statusOnError` (503); `failOpen: true` lets it
-  continue. A build without the feature refuses to start with a fail-closed entry. Request/response bodies, the response
-  phase and a per-route override are not implemented yet. Tested against an in-process gRPC processor; not yet against an
-  Envoy-based one (#27).
+- External processing filter (#27): a `middleware` entry `type: "ext_proc"` (feature `ext-proc`, part of `full`) talks to a
+  gRPC processor that speaks Envoy's `ext_proc` protocol. Per entry, what is sent is chosen: the request headers (default,
+  `requestPhase`), the request body (`requestBody: buffered` held up to `maxBodyBytes` and refused with 413 above it, or
+  `streamed` chunk by chunk), the response headers (`responsePhase`) and a copy of the response body
+  (`responseBody: observe`). The processor can set and remove headers (Envoy's append actions, a fixed list of headers it
+  may not touch, caps on count and value size), rewrite the request body, replace the response, or end the request with an
+  immediate response. A request whose body is rewritten is forwarded with chunked framing. Fail-closed by default: a
+  processor that is unreachable, later than `timeoutMs` (200 ms) or answers with something not accepted refuses the
+  request with `statusOnError` (503); `failOpen: true` lets it continue. A build without the feature refuses to start with
+  a fail-closed entry. Not implemented: trailers, rewriting the response body, a per-route override (Conduit has no
+  per-route middleware). Tested against an in-process processor and against a processor generated from Envoy's own
+  `.proto` files (`scripts/e2e/`).
 - The ACME time limits are configurable under `tls.acme`, with today's values as the defaults: `orderTimeoutSecs` (60),
   `validationTimeoutSecs` (180), `ariTimeoutSecs` (30), `retryAfterMinSecs` (300), `retryAfterMaxSecs` (86400) and
   `checkIntervalSecs` (43200). Each must be 1 to 86400 seconds (60 to 86400 for `retryAfterMinSecs`, 300 to 86400 for `checkIntervalSecs`, so that a CA that limits failed orders is not polled every few seconds) and the minimum must not exceed the maximum, otherwise

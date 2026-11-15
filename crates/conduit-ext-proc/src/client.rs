@@ -1,11 +1,13 @@
-//! The gRPC client: one exchange with the processor per request, and the policy for when it fails.
+//! The gRPC client: the channel to a processor, the request-headers exchange, the reading of the processor's answers, and
+//! the policy for when an exchange fails. The stream that stays open for the later phases is in [`crate::session`].
 //!
 //! One `tonic::transport::Channel` per processor address (and CA file) is shared by every request in the process, like the
 //! HTTP client of ForwardAuth: the channel connects lazily, multiplexes the exchanges over one HTTP/2 connection and
 //! reconnects by itself.
 //!
-//! Slice 1 of issue #27 sends the request headers and nothing else, so the request side of the stream is one message and
-//! the stream is half-closed right after it; the processor answers with one message.
+//! An entry that sends only the request headers (the default) uses one short stream per request: one message, then the
+//! end of the stream, and the processor answers with one message. An entry with a later phase keeps its stream open in an
+//! [`crate::session::ExtProcSession`].
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -17,13 +19,14 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 use crate::config::ExtProcConfig;
 use crate::mutation::{self, HeaderChanges, Limits};
-use crate::proto::{
-    self, processing_request, processing_response, HeaderMap as PbHeaderMap, HttpHeaders,
-    ProcessingRequest, ProcessingResponse,
-};
+use crate::proto::{self, processing_response, ProcessingRequest, ProcessingResponse};
+use crate::wire::request_message;
 
 /// How long a new connection to the processor may take to open. The exchange itself is bounded by `timeoutMs`.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How many messages may wait in the queue of an open stream (the request side of it).
+pub(crate) const STREAM_QUEUE: usize = 64;
 
 /// A request, as the processor is told about it.
 #[derive(Debug)]
@@ -60,6 +63,49 @@ pub enum Verdict {
     Continue(HeaderChanges),
     /// End it here with this answer.
     Respond(DirectResponse),
+}
+
+/// A response, as the processor is told about it.
+#[derive(Debug)]
+pub struct ResponseInfo<'a> {
+    /// `:status`.
+    pub status: u16,
+    /// The response headers.
+    pub headers: &'a HeaderMap,
+    /// `true` when no body follows the headers.
+    pub end_of_stream: bool,
+}
+
+/// The headers phase an answer belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Phase {
+    RequestHeaders,
+    ResponseHeaders,
+}
+
+/// What an answer to a body message says to do with the chunk.
+#[derive(Debug)]
+pub(crate) enum BodyAnswer {
+    /// Forward the chunk as it was.
+    Keep,
+    /// Forward these bytes instead (none at all: the chunk is dropped).
+    Replace(Bytes),
+    /// End the exchange with this answer to the client.
+    Respond(DirectResponse),
+}
+
+/// The failure for an answer that does not belong to the message the processor was sent.
+fn unexpected(answer: Option<&processing_response::Response>) -> Failure {
+    use processing_response::Response as R;
+    Failure::Unexpected(match answer {
+        Some(R::RequestHeaders(_)) => "a request headers answer",
+        Some(R::ResponseHeaders(_)) => "a response headers answer",
+        Some(R::RequestBody(_)) => "a request body answer",
+        Some(R::ResponseBody(_)) => "a response body answer",
+        Some(R::RequestTrailers(_) | R::ResponseTrailers(_)) => "a trailers answer",
+        Some(R::ImmediateResponse(_)) => "an immediate response",
+        None => "an empty answer",
+    })
 }
 
 /// Why an exchange did not produce a usable answer.
@@ -99,8 +145,8 @@ impl std::fmt::Display for Failure {
 pub struct ExtProcClient {
     /// The shared channel, or why there is none (a bad address, an unreadable `caFile`): every exchange then fails the
     /// way an unreachable processor does, so the entry's `failOpen` policy decides, not a panic or a skipped check.
-    channel: Result<Channel, String>,
-    config: ExtProcConfig,
+    pub(crate) channel: Result<Channel, String>,
+    pub(crate) config: ExtProcConfig,
 }
 
 /// The channels of the process, by `grpc` address and CA file.
@@ -193,6 +239,35 @@ impl ExtProcClient {
         }
     }
 
+    /// Open a stream that stays open: `first` is queued before the call, so a processor that waits for the first message
+    /// before it sends its response headers is not waited on. The sender ends the request side when it is dropped.
+    pub(crate) async fn open_stream(
+        &self,
+        first: ProcessingRequest,
+    ) -> Result<
+        (
+            tokio::sync::mpsc::Sender<ProcessingRequest>,
+            tonic::Streaming<ProcessingResponse>,
+        ),
+        Failure,
+    > {
+        let channel = self.channel.clone().map_err(Failure::Unreachable)?;
+        let (tx, queue) = tokio::sync::mpsc::channel(STREAM_QUEUE);
+        tx.try_send(first).map_err(|_| Failure::Closed)?;
+        let mut grpc = tonic::client::Grpc::new(channel);
+        grpc.ready()
+            .await
+            .map_err(|e| Failure::Unreachable(e.to_string()))?;
+        let codec = tonic_prost::ProstCodec::<ProcessingRequest, ProcessingResponse>::default();
+        let path = http::uri::PathAndQuery::from_static(proto::PROCESS_PATH);
+        let request = tonic::Request::new(tokio_stream::wrappers::ReceiverStream::new(queue));
+        let response = grpc
+            .streaming(request, path, codec)
+            .await
+            .map_err(|s| Failure::Status(describe(&s)))?;
+        Ok((tx, response.into_inner()))
+    }
+
     async fn exchange(&self, message: ProcessingRequest) -> Result<ProcessingResponse, Failure> {
         let channel = self.channel.clone().map_err(Failure::Unreachable)?;
         let mut grpc = tonic::client::Grpc::new(channel);
@@ -214,21 +289,38 @@ impl ExtProcClient {
         }
     }
 
-    /// The verdict for an answer, or why the answer cannot be used.
+    /// The verdict for an answer to the request headers, or why the answer cannot be used.
     fn verdict_of(&self, answer: ProcessingResponse) -> Result<Verdict, Failure> {
-        let limits = Limits {
+        self.headers_verdict(answer, Phase::RequestHeaders)
+    }
+
+    /// The limits on what the processor may change in headers.
+    pub(crate) fn limits(&self) -> Limits {
+        Limits {
             max_mutations: self.config.max_header_mutations(),
             max_value_bytes: self.config.max_header_value_bytes(),
-        };
-        match answer.response {
-            Some(processing_response::Response::RequestHeaders(phase)) => {
-                let Some(common) = phase.response else {
+        }
+    }
+
+    /// The verdict for an answer to the headers of `phase` (an answer for any other message is a failure), or why the
+    /// answer cannot be used.
+    pub(crate) fn headers_verdict(
+        &self,
+        answer: ProcessingResponse,
+        phase: Phase,
+    ) -> Result<Verdict, Failure> {
+        use processing_response::Response as R;
+        let limits = self.limits();
+        match (answer.response, phase) {
+            (Some(R::RequestHeaders(p)), Phase::RequestHeaders)
+            | (Some(R::ResponseHeaders(p)), Phase::ResponseHeaders) => {
+                let Some(common) = p.response else {
                     return Ok(Verdict::Continue(HeaderChanges::default()));
                 };
                 if common.body_mutation.is_some() {
                     tracing::warn!(
                         target: "conduit::ext_proc",
-                        "the processor sent a body mutation with the request headers: it is not applied (bodies are not sent to it yet)"
+                        "the processor sent a body mutation with the headers: it is not applied (a body is changed in the answer to a body message)"
                     );
                 }
                 let Some(mutation) = common.header_mutation else {
@@ -239,62 +331,94 @@ impl ExtProcClient {
                 note_ignored(&plan.ignored);
                 Ok(Verdict::Continue(plan.changes))
             }
-            Some(processing_response::Response::ImmediateResponse(immediate)) => {
-                let code = immediate.status.map_or(0, |s| s.code);
-                let status = u16::try_from(code)
-                    .ok()
-                    .filter(|c| (200..=599).contains(c))
-                    .ok_or_else(|| {
-                        Failure::Rejected(format!(
-                            "immediate response status {code} is not 200 to 599"
-                        ))
-                    })?;
-                let headers = match immediate.headers {
-                    Some(mutation) => {
-                        let plan = mutation::plan(&mutation, limits)
-                            .map_err(|r| Failure::Rejected(r.to_string()))?;
-                        note_ignored(&plan.ignored);
-                        plan.changes
-                            .set
-                            .into_iter()
-                            .map(|s| (s.name, s.value))
-                            .collect()
-                    }
-                    None => Vec::new(),
-                };
-                if !immediate.details.is_empty() {
-                    tracing::debug!(
-                        target: "conduit::ext_proc",
-                        status,
-                        details = %tidy(&immediate.details),
-                        "the external processor ended the request"
-                    );
-                }
-                Ok(Verdict::Respond(DirectResponse {
-                    status,
-                    headers,
-                    body: Bytes::from(immediate.body),
-                }))
+            (Some(R::ImmediateResponse(immediate)), _) => {
+                self.immediate(immediate).map(Verdict::Respond)
             }
-            Some(processing_response::Response::ResponseHeaders(_)) => {
-                Err(Failure::Unexpected("response headers"))
-            }
-            Some(processing_response::Response::RequestBody(_)) => {
-                Err(Failure::Unexpected("a request body answer"))
-            }
-            Some(processing_response::Response::ResponseBody(_)) => {
-                Err(Failure::Unexpected("a response body answer"))
-            }
-            Some(
-                processing_response::Response::RequestTrailers(_)
-                | processing_response::Response::ResponseTrailers(_),
-            ) => Err(Failure::Unexpected("a trailers answer")),
-            None => Err(Failure::Unexpected("an empty answer")),
+            (other, _) => Err(unexpected(other.as_ref())),
         }
     }
 
+    /// What an answer to a body message says to do with the chunk: the same bytes, other bytes, or an answer to the client.
+    /// `request` says which body was sent (an answer for the other one is a failure).
+    pub(crate) fn body_answer(
+        &self,
+        answer: ProcessingResponse,
+        request: bool,
+    ) -> Result<BodyAnswer, Failure> {
+        use processing_response::Response as R;
+        match answer.response {
+            Some(R::RequestBody(p)) if request => Ok(self.body_change(p)),
+            Some(R::ResponseBody(p)) if !request => Ok(self.body_change(p)),
+            Some(R::ImmediateResponse(immediate)) => {
+                self.immediate(immediate).map(BodyAnswer::Respond)
+            }
+            other => Err(unexpected(other.as_ref())),
+        }
+    }
+
+    fn body_change(&self, phase: proto::PhaseResponse) -> BodyAnswer {
+        let Some(common) = phase.response else {
+            return BodyAnswer::Keep;
+        };
+        if common.header_mutation.is_some() {
+            tracing::warn!(
+                target: "conduit::ext_proc",
+                "the processor sent a header mutation with a body answer: it is not applied (the headers are already on their way)"
+            );
+        }
+        match common.body_mutation.and_then(|m| m.mutation) {
+            Some(proto::body_mutation::Mutation::Body(bytes)) => {
+                BodyAnswer::Replace(Bytes::from(bytes))
+            }
+            Some(proto::body_mutation::Mutation::ClearBody(true)) => {
+                BodyAnswer::Replace(Bytes::new())
+            }
+            Some(proto::body_mutation::Mutation::ClearBody(false)) | None => BodyAnswer::Keep,
+        }
+    }
+
+    /// An `ImmediateResponse` as the answer to send to the client, or why it is not acceptable.
+    fn immediate(&self, immediate: proto::ImmediateResponse) -> Result<DirectResponse, Failure> {
+        let limits = self.limits();
+        let code = immediate.status.map_or(0, |s| s.code);
+        let status = u16::try_from(code)
+            .ok()
+            .filter(|c| (200..=599).contains(c))
+            .ok_or_else(|| {
+                Failure::Rejected(format!(
+                    "immediate response status {code} is not 200 to 599"
+                ))
+            })?;
+        let headers = match immediate.headers {
+            Some(mutation) => {
+                let plan = mutation::plan(&mutation, limits)
+                    .map_err(|r| Failure::Rejected(r.to_string()))?;
+                note_ignored(&plan.ignored);
+                plan.changes
+                    .set
+                    .into_iter()
+                    .map(|s| (s.name, s.value))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        if !immediate.details.is_empty() {
+            tracing::debug!(
+                target: "conduit::ext_proc",
+                status,
+                details = %tidy(&immediate.details),
+                "the external processor ended the request"
+            );
+        }
+        Ok(DirectResponse {
+            status,
+            headers,
+            body: Bytes::from(immediate.body),
+        })
+    }
+
     /// The entry's policy for a failed exchange.
-    fn on_failure(&self, failure: &Failure) -> Verdict {
+    pub(crate) fn on_failure(&self, failure: &Failure) -> Verdict {
         if self.config.fail_open() {
             tracing::warn!(
                 target: "conduit::ext_proc",
@@ -322,7 +446,7 @@ impl ExtProcClient {
 
 /// Text that came from the processor, made safe for a log line: escaped (no line breaks or control characters reach the
 /// log) and cut at 200 characters (a compromised processor could otherwise send megabytes on every request).
-fn tidy(text: &str) -> String {
+pub(crate) fn tidy(text: &str) -> String {
     const MAX: usize = 200;
     let escaped: String = text.escape_debug().take(MAX + 1).collect();
     if escaped.chars().count() > MAX {
@@ -333,7 +457,7 @@ fn tidy(text: &str) -> String {
     }
 }
 
-fn describe(status: &tonic::Status) -> String {
+pub(crate) fn describe(status: &tonic::Status) -> String {
     format!("{:?}: {}", status.code(), tidy(status.message()))
 }
 
@@ -344,36 +468,6 @@ fn note_ignored(ignored: &[String]) {
             headers = %tidy(&ignored.join(", ")),
             "the processor tried to change headers it may not change; ignored"
         );
-    }
-}
-
-/// The message that tells the processor about the request.
-fn request_message(info: &RequestInfo<'_>) -> ProcessingRequest {
-    let mut headers = Vec::with_capacity(4 + info.headers.len());
-    for (key, value) in [
-        (":method", info.method),
-        (":scheme", info.scheme),
-        (":authority", info.authority),
-        (":path", info.path),
-    ] {
-        headers.push(proto::HeaderValue {
-            key: key.to_owned(),
-            value: String::new(),
-            raw_value: value.as_bytes().to_vec(),
-        });
-    }
-    for (name, value) in info.headers {
-        headers.push(proto::HeaderValue {
-            key: name.as_str().to_owned(),
-            value: String::new(),
-            raw_value: value.as_bytes().to_vec(),
-        });
-    }
-    ProcessingRequest {
-        request: Some(processing_request::Request::RequestHeaders(HttpHeaders {
-            headers: Some(PbHeaderMap { headers }),
-            end_of_stream: info.end_of_stream,
-        })),
     }
 }
 
@@ -389,44 +483,5 @@ mod tests {
         assert_eq!(cut.chars().count(), 203);
         assert!(cut.ends_with("..."));
         assert_eq!(tidy("short"), "short");
-    }
-
-    #[test]
-    fn the_processor_is_told_the_pseudo_headers_and_every_header_value() {
-        let mut headers = HeaderMap::new();
-        headers.append("x-a", HeaderValue::from_static("1"));
-        headers.append("x-a", HeaderValue::from_static("2"));
-        headers.insert("cookie", HeaderValue::from_bytes(b"k=\xff").unwrap());
-        let message = request_message(&RequestInfo {
-            method: "POST",
-            scheme: "https",
-            authority: "example.com",
-            path: "/p?q=1",
-            headers: &headers,
-            end_of_stream: false,
-        });
-        let Some(processing_request::Request::RequestHeaders(h)) = message.request else {
-            panic!("not request headers");
-        };
-        assert!(!h.end_of_stream);
-        let sent: Vec<(String, Vec<u8>)> = h
-            .headers
-            .unwrap()
-            .headers
-            .into_iter()
-            .map(|v| (v.key, v.raw_value))
-            .collect();
-        assert_eq!(
-            sent,
-            [
-                (":method".to_owned(), b"POST".to_vec()),
-                (":scheme".to_owned(), b"https".to_vec()),
-                (":authority".to_owned(), b"example.com".to_vec()),
-                (":path".to_owned(), b"/p?q=1".to_vec()),
-                ("x-a".to_owned(), b"1".to_vec()),
-                ("x-a".to_owned(), b"2".to_vec()),
-                ("cookie".to_owned(), b"k=\xff".to_vec()),
-            ]
-        );
     }
 }

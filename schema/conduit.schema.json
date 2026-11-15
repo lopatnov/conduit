@@ -680,7 +680,7 @@
     },
     "ExtProcConfig": {
       "type": "object",
-      "description": "The config of a middleware entry of type \"ext_proc\": the request headers are sent to an external processor (Envoy's ext_proc protocol over gRPC), which may change them or answer the request itself. Requires --features ext-proc.",
+      "description": "The config of a middleware entry of type \"ext_proc\": the request headers, the request body, the response headers and a copy of the response body (each chosen per entry) are sent to an external processor (Envoy's ext_proc protocol over gRPC), which may change them, rewrite the request body, replace the response or answer the request itself. Requires --features ext-proc.",
       "required": ["grpc"],
       "properties": {
         "grpc": {
@@ -724,6 +724,35 @@
           "maximum": 65536,
           "default": 8192,
           "description": "The most bytes a header value set by the processor may have; an answer over it is refused as a whole."
+        },
+        "requestPhase": {
+          "type": "boolean",
+          "default": true,
+          "description": "false: the request headers are not sent to the processor (an entry that wants only bodies, or only the response)."
+        },
+        "requestBody": {
+          "type": "string",
+          "enum": ["none", "buffered", "streamed"],
+          "default": "none",
+          "description": "none: the request body is not sent. buffered: the whole body is held (up to maxBodyBytes, 413 above), sent as one message and replaced by the processor's answer. streamed: every chunk is sent as it arrives and replaced by the answer to it. A rewritten request is forwarded with chunked framing."
+        },
+        "maxBodyBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216,
+          "default": 1048576,
+          "description": "requestBody: buffered only. The largest request body held for the processor; a larger one is refused with 413 and never sent."
+        },
+        "responsePhase": {
+          "type": "boolean",
+          "default": false,
+          "description": "true: the response headers are sent to the processor, which may change them or replace the response."
+        },
+        "responseBody": {
+          "type": "string",
+          "enum": ["none", "observe"],
+          "default": "none",
+          "description": "observe: a copy of every chunk of the response body is sent to the processor without waiting for it; its answers about the body are ignored."
         }
       },
       "additionalProperties": false

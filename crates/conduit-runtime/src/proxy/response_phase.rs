@@ -149,6 +149,15 @@ pub(super) async fn upstream_response_filter(
         ));
     }
 
+    // External processing (#27): an `ext_proc` entry with `responsePhase` is told the upstream's response headers before
+    // anything of the site's is added (so a processor can neither see nor strip the site's CORS and security headers),
+    // and may change them or replace the response. An entry with `responseBody: observe` starts being sent the body here.
+    #[cfg(feature = "ext-proc")]
+    let ext_proc_body = match req_ctx.ext_proc.clone().filter(|s| s.handles_response()) {
+        Some(sessions) => ext_proc_response(&sessions, upstream_response).await,
+        None => None,
+    };
+
     let config = proxy.state.config.load();
     let chain = ResponseFilterChain::build(req_ctx, &config);
 
@@ -215,6 +224,14 @@ pub(super) async fn upstream_response_filter(
         }
     }
 
+    // The body of an `ext_proc` answer that replaced the response (#27) goes out in place of the upstream's.
+    #[cfg(feature = "ext-proc")]
+    if let Some(bytes) = ext_proc_body {
+        if let Some(req_ctx_mut) = ctx.as_mut() {
+            req_ctx_mut.replacement_body = Some(bytes);
+        }
+    }
+
     // Sticky-session Set-Cookie injection (#39): when `sticky.secret` is
     // configured the chosen upstream URL is HMAC-signed and returned to
     // the client so future requests pin to the same backend.
@@ -239,6 +256,29 @@ pub(super) async fn upstream_response_filter(
     }
 
     Ok(())
+}
+
+/// The response-headers phase of the `ext_proc` entries (issue #27). Returns the body to send in place of the upstream's
+/// when a processor's answer replaced the response.
+#[cfg(feature = "ext-proc")]
+async fn ext_proc_response(
+    sessions: &conduit_ext_proc::ExtProcSessions,
+    resp: &mut ResponseHeader,
+) -> Option<Bytes> {
+    // Whether a body follows is not known here; one that can be replaced is treated as one that exists.
+    let body_allowed = body_can_be_replaced(resp);
+    match conduit_middleware::ext_proc::response_headers(sessions, resp, !body_allowed).await {
+        Some(answer) => {
+            if !body_allowed && !answer.body.is_empty() {
+                warn_body_not_replaceable(answer.status);
+            }
+            conduit_middleware::ext_proc::replace_response(resp, &answer, body_allowed)
+        }
+        None => {
+            sessions.start_observing().await;
+            None
+        }
+    }
 }
 
 /// `true` when the response status can carry content (not `1xx`, `204`, `205`, `304`).
@@ -290,6 +330,19 @@ pub(super) fn upstream_response_body_filter(
     ctx: &mut Option<RequestCtx>,
     health: &conduit_upstream::health::UpstreamRegistry,
 ) -> Result<Option<std::time::Duration>> {
+    // External processing (#27): an entry with `responseBody: observe` is sent a copy of every chunk, without waiting for it.
+    #[cfg(feature = "ext-proc")]
+    if let Some(sessions) = ctx
+        .as_ref()
+        .and_then(|c| c.ext_proc.as_ref())
+        .filter(|s| s.handles_response())
+    {
+        match body.as_ref() {
+            Some(chunk) => sessions.observe_response_body(chunk, end_of_stream),
+            None if end_of_stream => sessions.observe_response_body(&Bytes::new(), true),
+            None => {}
+        }
+    }
     // `least-bandwidth` (issue #627): count what the upstream sent, before any replacement below.
     if let (Some(req_ctx), Some(chunk)) = (ctx.as_ref(), body.as_ref()) {
         if req_ctx.proxy.meters_traffic && !chunk.is_empty() {
