@@ -850,7 +850,7 @@ Conduit is written in Rust. The main building blocks, all under permissive open-
 
 The [full list with licences](docs/technologies.md) is in the documentation. Every crate that can end up in a binary,
 with its licence text, is in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt): it is inside every release archive,
-the Debian package and the Docker image (`/licenses/`), and is attached to every release.
+the Debian package, the npm package (gzipped) and the Docker image (`/licenses/`), and is attached to every release.
 
 ## License
 

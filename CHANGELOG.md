@@ -12,7 +12,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Third-party licence notices (#640). `THIRD-PARTY-LICENSES.txt` lists every crate that can end up in a binary with its
   licence and the licence and notice texts it ships (including the CDLA-Permissive-2.0 text of the bundled root
   certificates); it is inside every release archive (with `LICENSE`), the Debian package, the Docker image (`/licenses/`)
-  and a release asset, and the npm package links to it. `scripts/third_party_licenses.py` generates it and the new
+  and a release asset, and the npm package carries it gzipped. `scripts/third_party_licenses.py` generates it and the new
   `licenses` CI job checks the allow-list in `ci/license-policy.json` and that the file is current. The README has a
   "Technologies stack" section, and `docs/technologies.md` the longer list.
 

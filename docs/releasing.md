@@ -52,7 +52,7 @@ Pushing a `v*` tag starts `.github/workflows/release.yml`, which:
 Third-party licence notices (issue #640): `THIRD-PARTY-LICENSES.txt` at the repository root lists every crate that can
 end up in a binary with the licence texts the crates ship. It is inside every archive, the `.deb`
 (`/usr/share/doc/conduit/THIRD-PARTY-LICENSES.txt.gz`) and the Docker image (`/licenses/`), and a release asset of its own; the npm
-package only links to it (its size is limited). The `licenses` CI job fails when a dependency is outside the allow-list
+package carries it gzipped (`THIRD-PARTY-LICENSES.txt.gz`, written by the publish job; the package must stay under 200 KiB unpacked). The `licenses` CI job fails when a dependency is outside the allow-list
 in `ci/license-policy.json` or when the file is not what `Cargo.lock` produces. After any dependency change run
 
 ```bash

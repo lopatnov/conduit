@@ -968,6 +968,11 @@ jobs:
           print(json.dumps(sums, indent=2))
           PY
 
+      # The licence notices of the crates compiled into the binary the package downloads (issue #640). Gzipped
+      # (about 85 kB against 900 kB), because the size guard below is on the unpacked size.
+      - name: Add npm/THIRD-PARTY-LICENSES.txt.gz
+        run: gzip -9n < THIRD-PARTY-LICENSES.txt > npm/THIRD-PARTY-LICENSES.txt.gz
+
       # A regression guard: the package must stay small and carry no binary (issue #712).
       - name: Check that the package carries no binary
         working-directory: npm
@@ -980,6 +985,7 @@ jobs:
           print(f"{len(paths)} files, {info['unpackedSize']} bytes unpacked: {paths}")
           assert not [p for p in paths if p.startswith("bin/native")], "a binary is in the package"
           assert "bin/checksums.json" in paths, "checksums.json is missing from the package"
+          assert "THIRD-PARTY-LICENSES.txt.gz" in paths, "the third-party licence notices are missing from the package"
           assert info["unpackedSize"] < 200 * 1024, "the package is not small any more"
           PY
 

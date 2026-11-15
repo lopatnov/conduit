@@ -396,7 +396,7 @@ Found it useful? A star on GitHub helps others discover the project.
 2024–2026 [Oleksandr Lopatnov](https://github.com/lopatnov)
 
 The binary this package downloads contains third-party crates. Their licences are in
-[THIRD-PARTY-LICENSES.txt](https://github.com/lopatnov/conduit/releases/latest/download/THIRD-PARTY-LICENSES.txt),
-a file of every release (the archives, the Debian package and the Docker image carry it too). This package itself
-does not ship it, because the registry limits the size of a package (issue #712). Technologies and their licences:
+`THIRD-PARTY-LICENSES.txt.gz` in this package (gzipped to keep the package small, issue #712), and as
+[THIRD-PARTY-LICENSES.txt](https://github.com/lopatnov/conduit/releases/latest/download/THIRD-PARTY-LICENSES.txt)
+in every release, the archives, the Debian package and the Docker image. Technologies and their licences:
 [docs/technologies.md](https://github.com/lopatnov/conduit/blob/main/docs/technologies.md).
