@@ -20,7 +20,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   request with `statusOnError` (503); `failOpen: true` lets it continue. A build without the feature refuses to start with
   a fail-closed entry. Not implemented: trailers, rewriting the response body, a per-route override (Conduit has no
   per-route middleware). Tested against an in-process processor and against a processor generated from Envoy's own
-  `.proto` files (`scripts/e2e/`).
+  `.proto` files (`scripts/e2e/`). A guide of its own, `docs/ext-proc.md` (with a runnable sample processor in
+  `examples/ext-proc/`), sits beside the Rhai and WASM guides.
 - The ACME time limits are configurable under `tls.acme`, with today's values as the defaults: `orderTimeoutSecs` (60),
   `validationTimeoutSecs` (180), `ariTimeoutSecs` (30), `retryAfterMinSecs` (300), `retryAfterMaxSecs` (86400) and
   `checkIntervalSecs` (43200). Each must be 1 to 86400 seconds (60 to 86400 for `retryAfterMinSecs`, 300 to 86400 for `checkIntervalSecs`, so that a CA that limits failed orders is not polled every few seconds) and the minimum must not exceed the maximum, otherwise
