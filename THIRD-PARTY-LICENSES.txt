@@ -16,7 +16,7 @@ the licence files that the crate ships are included.
 NOTICE files (Apache-2.0 section 4(d)): the text of a crate's NOTICE file is reproduced below with its licence files,
 in this file, which is the documentation that travels with the binary. No crate in this build ships a NOTICE file.
 
-CRATES (534)
+CRATES (536)
 ------------------------------------------------------------
 addr2line 0.26.1  [Apache-2.0 OR MIT]  https://github.com/gimli-rs/addr2line
 adler2 2.0.1  [0BSD OR MIT OR Apache-2.0]  https://github.com/oyvindln/adler2
@@ -245,6 +245,7 @@ lazy_static 1.5.1  [MIT OR Apache-2.0]  https://github.com/rust-lang-nursery/laz
 leb128fmt 0.1.0  [MIT OR Apache-2.0]  https://github.com/bluk/leb128fmt
 libc 0.2.191  [MIT OR Apache-2.0]  https://github.com/rust-lang/libc
 libm 0.2.16  [MIT]  https://github.com/rust-lang/compiler-builtins
+libmimalloc-sys 0.1.49  [MIT]  https://github.com/purpleprotocol/mimalloc_rust/tree/master/libmimalloc-sys
 libz-ng-sys 1.1.29  [MIT OR Apache-2.0]  https://github.com/rust-lang/libz-sys
 linux-raw-sys 0.12.1  [Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT]  https://github.com/sunfishcode/linux-raw-sys
 litemap 0.8.3  [Unicode-3.0]  https://github.com/unicode-org/icu4x
@@ -259,6 +260,7 @@ matchit 0.8.4  [MIT AND BSD-3-Clause]  https://github.com/ibraheemdev/matchit
 memchr 2.8.3  [Unlicense OR MIT]  https://github.com/BurntSushi/memchr
 memfd 0.6.6  [MIT OR Apache-2.0]  https://github.com/lucab/memfd-rs
 memoffset 0.9.1  [MIT]  https://github.com/Gilnaa/memoffset
+mimalloc 0.1.52  [MIT]  https://github.com/purpleprotocol/mimalloc_rust
 mime 0.3.17  [MIT OR Apache-2.0]  https://github.com/hyperium/mime
 mime_guess 2.0.5  [MIT]  https://github.com/abonander/mime_guess
 minimal-lexical 0.2.1  [MIT/Apache-2.0]  https://github.com/Alexhuszagh/minimal-lexical
@@ -856,7 +858,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-LICENCE AND NOTICE TEXTS (285)
+LICENCE AND NOTICE TEXTS (287)
 ------------------------------------------------------------
 
 ==============================================================================
@@ -9570,6 +9572,64 @@ have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
 
 Copyright notices are retained in src/* files where relevant.
+
+==============================================================================
+Applies to: libmimalloc-sys 0.1.49, mimalloc 0.1.52
+Files: LICENSE.txt
+==============================================================================
+
+Copyright 2019 Octavian Oncescu
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+==============================================================================
+Applies to: libmimalloc-sys 0.1.49
+Files: LICENSE
+==============================================================================
+
+MIT License
+
+Copyright (c) 2018-2025 Microsoft Corporation, Daan Leijen
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ==============================================================================
 Applies to: libz-ng-sys 1.1.29

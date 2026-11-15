@@ -28,6 +28,7 @@ parts of it. The identifiers are [SPDX](https://spdx.org/licenses/) names.
 |---|---|---|
 | `pingora-core` | The proxy engine from Cloudflare: connection handling, the request phases, upstream pools, load balancing, caching (`pingora-proxy`, `pingora-cache` and the other `pingora-*` crates carry the same licence) | Apache-2.0 |
 | `tokio` | Asynchronous runtime for the Admin API, health checks, ACME, mirroring and everything outside the Pingora worker threads | MIT |
+| `mimalloc` | The memory allocator of the `conduit` binary (feature `mimalloc`, on by default). Its C sources are Microsoft's mimalloc, under MIT; the notice is in `THIRD-PARTY-LICENSES.txt` | MIT |
 | `hyper` | HTTP implementation under the Admin API, the upload handler and the HTTP clients | MIT |
 | `h2` | HTTP/2 | MIT |
 | `axum` | The Admin API and the upload listener | MIT |

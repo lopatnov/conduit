@@ -275,6 +275,12 @@ path = "src/lib.rs"
 pingora-core.workspace  = true
 pingora-proxy.workspace = true
 
+# --- Global allocator (issue #486) ---
+# One of the two replaces the system allocator of the `conduit` binary (not of the library crates); see the
+# `mimalloc` (default, built in its `secure` mode: encoded free lists, randomised addresses, double-free checks) and `jemalloc` features. `--no-default-features` builds with neither.
+mimalloc          = { version = "0.1", optional = true, default-features = false, features = ["secure"] }
+tikv-jemallocator = { version = "0.6", optional = true }
+
 # --- Conduit workspace member crates ---
 lopatnov-conduit-core.workspace        = true
 lopatnov-conduit-config-core.workspace = true
@@ -653,7 +659,7 @@ http.workspace      = true
 # features or use `full` for a batteries-included build; pass
 # `--no-default-features` for a build with none of proxying, compression,
 # static-file/fallback serving, or hot-reload.
-default = ["proxy", "compression", "static", "hotreload"]
+default = ["proxy", "compression", "static", "hotreload", "mimalloc"]
 
 # ── Proxy ────────────────────────────────────────────────────────────────────
 # Reverse proxying: `sites[].proxy`, `sites[].routes[].proxy`, `groups`.
@@ -815,6 +821,14 @@ wasm = ["lopatnov-conduit-middleware/wasm"]
 # is refused at validation (it would let every request through unchecked); a `failOpen` one only warns.
 ext-proc = ["lopatnov-conduit-middleware/ext-proc", "lopatnov-conduit-runtime/ext-proc"]
 
+# ── Global allocator (issue #486) ──────────────────────────────────────────────
+# `mimalloc` (secure mode; on by default and in every bundle) or `jemalloc` replaces the system allocator in the `conduit` binary
+# (`src/main.rs`). Not a configuration feature: nothing in a config file needs it, it is a build-time choice. With both
+# on, jemalloc is used (an explicit `--features jemalloc` must not be overridden by the default); `--no-default-features`
+# without either keeps the system allocator. See `docs/building.md` for what each costs in size and gains in speed.
+mimalloc = ["dep:mimalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+
 # ── Protocol extensions ────────────────────────────────────────────────────────
 # TCP passthrough proxy (type: "tcp" site config). `TcpConfig` moved to
 # `crates/conduit-tcp` (#114/#131) and is always a dependency (see the
@@ -957,13 +971,14 @@ standard = [
     "compression",
     "static",
     "hotreload",
+    "mimalloc",
 ]
 
 # Static-file server: no reverse proxying at all (`--no-default-features
 # --features static-server`). Static/fallback serving, response compression and
 # browser hot-reload — i.e. exactly `default` minus `proxy`. `sites[].proxy` and
 # `routes[].proxy` are ignored with a startup warning; see `docs/building.md`.
-static-server = ["static", "compression", "hotreload"]
+static-server = ["static", "compression", "hotreload", "mimalloc"]
 
 # API gateway: reverse proxying plus the auth stack, response caching and
 # auto-TLS, without static-file serving or hot-reload (`--no-default-features
@@ -978,9 +993,11 @@ gateway = [
     "disk-cache",
     "acme",
     "compression",
+    "mimalloc",
 ]
 
-# Full build: every optional feature enabled.
+# Full build: every optional feature enabled (`jemalloc` is the alternative to the `mimalloc` it already carries, so it is
+# not listed: `--features full,jemalloc` swaps the allocator).
 full = [
     "standard",
     "rhai", "wasm", "ext-proc",

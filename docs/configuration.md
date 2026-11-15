@@ -36,10 +36,10 @@ Conduit is compiled from Cargo **features**: a feature that is not compiled in i
 binary, so it cannot be attacked, and the binary is smaller. There are three kinds, and
 every name below is described in the tables that follow:
 
-1. **Baseline features**, on by default: `proxy`, `compression`, `static`, `hotreload`.
+1. **Baseline features**, on by default: `proxy`, `compression`, `static`, `hotreload`, `mimalloc`.
 2. **Optional features**, off unless you ask for them: `jwt`, `consumers`, `forward-auth`,
    `rhai`, `wasm`, `ext-proc`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`,
-   `otlp`, `tokio-metrics`, `kubernetes`.
+   `otlp`, `tokio-metrics`, `kubernetes`, `jemalloc`.
 3. **Bundles**, which are only a short name for a set of the above: `standard`, `gateway`,
    `static-server`, `full`. A bundle adds no code of its own.
 
@@ -72,8 +72,9 @@ conduit validate -c conduit.yaml   # prints a warning for every ignored section
 | `compression` | Response compression (brotli, gzip, deflate, zstd), negotiated with `Accept-Encoding`, for static files, fallback responses and the metrics page. Proxied responses are not compressed by Conduit (the upstream can do it). | [`compression`](#compression) | Responses are sent uncompressed. |
 | `static` | Static file serving and the fallback responses (404 page, single-page-app shell). | [`static`](#static-files), `fallback` | `static` and `fallback` are ignored: every unmatched request gets a plain `404 Not Found`. |
 | `hotreload` | Browser live reload: a Server-Sent Events stream and a file watcher that tells open pages to refresh when a served file changes. | `hotReload` | `hotReload` is ignored and `/__hot-reload__` is an ordinary unmatched path. |
+| `mimalloc` | The mimalloc memory allocator, in its hardened `secure` mode, in the `conduit` binary instead of the system one: about 4 % less CPU per proxied request in our measurement (see [building](building.md#allocator)). A build-time choice; nothing to configure. | no config key | The system allocator is used (`--no-default-features`); everything works, a little slower. |
 
-Without these four (`--no-default-features`) little is left: TLS, the always-on guards (IP
+Without these (`--no-default-features`) little is left: TLS, the always-on guards (IP
 filter, rate limits, CORS, security headers), redirects, the health endpoint, metrics and the
 Admin API.
 
@@ -97,6 +98,7 @@ Admin API.
 | `otlp` | Exports traces to an OpenTelemetry collector over OTLP. | [`global.otlp`](#opentelemetry-tracing) | `global.otlp` is ignored: no traces are exported. |
 | `tokio-metrics` | One more Prometheus gauge: `conduit_eventloop_lag_ms`, the scheduling delay of the admin runtime. | no config key | The gauge is absent. |
 | `kubernetes` | Reads the sites from `ConduitSite` resources in a cluster instead of a file. | `--kubernetes-namespace` (a command-line flag, not a config field) | The flag does not exist. |
+| `jemalloc` | The jemalloc memory allocator in the `conduit` binary, instead of mimalloc. Not in any bundle: mimalloc measured faster and smaller ([building](building.md#allocator)); jemalloc is for those who prefer its tuning and profiling. With both on, jemalloc is used. | no config key | mimalloc (the default) or the system allocator is used. |
 
 #### Bundles
 
@@ -108,6 +110,7 @@ A bundle is a name for several features. `✓` means the bundle includes the fea
 | `compression` | ✓ | ✓ | ✓ | ✓ |
 | `static` | ✓ | | ✓ | ✓ |
 | `hotreload` | ✓ | | ✓ | ✓ |
+| `mimalloc` | ✓ | ✓ | ✓ | ✓ |
 | `jwt`, `consumers`, `forward-auth`, `cache`, `disk-cache`, `acme` | ✓ | ✓ | | ✓ |
 | `rhai`, `wasm`, `ext-proc`, `tcp`, `upload`, `redis`, `fault-injection`, `otlp`, `tokio-metrics`, `kubernetes` | | | | ✓ |
 
@@ -3047,7 +3050,7 @@ See [`examples/consumers.yaml`](../examples/consumers.yaml)
 ## Rate Limiting
 
 In-memory rate limiting requires no feature flag — available in every build,
-including the minimal `default = ["proxy", "compression", "static", "hotreload"]`. `store: "redis://..."` requires `--features redis`.
+including the minimal `default = ["proxy", "compression", "static", "hotreload", "mimalloc"]`. `store: "redis://..."` requires `--features redis`.
 
 ### Site-level
 

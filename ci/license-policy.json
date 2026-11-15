@@ -4,5 +4,8 @@
     "ISC", "MIT", "MIT-0", "MPL-2.0", "Unicode-3.0", "Unicode-DFS-2016", "Unlicense", "Zlib"
   ],
   "allow_exceptions": ["LLVM-exception"],
-  "clarify": {}
+  "clarify": {},
+  "bundled_notices": {
+    "libmimalloc-sys": ["c_src/mimalloc/v2/LICENSE"]
+  }
 }
