@@ -133,13 +133,15 @@ code=$(curl -sS --max-time 10 -o "$WORK/body" -w '%{http_code}' "$B/fail")
 ok "response headers: changed, and a 500 replaced by the processor's own response"
 
 # 7. Response body, observed: the processor is sent a copy and the client gets the body unchanged.
-# The observation of the earlier /static response runs in the background: let it reach the file before the reset.
-for _ in $(seq 100); do [ "$(cat "$WORK/observed")" = "upstream says hi" ] && break; sleep 0.1; done
-: >"$WORK/observed"
-curl -sS --max-time 10 -o "$WORK/body" "$B/static"
-for _ in $(seq 100); do [ "$(cat "$WORK/observed")" = "upstream says hi" ] && break; sleep 0.1; done
-[ "$(cat "$WORK/observed")" = "upstream says hi" ] || fail "the processor was shown: '$(cat "$WORK/observed")'"
-[ "$(cat "$WORK/body")" = "upstream says hi" ] || fail "the client's body changed: $(cat "$WORK/body")"
+# The processor appends every response body of this Conduit to the file in the background, so the file also holds the
+# earlier responses and may still be growing: nothing is reset or counted. The request carries a marker of its own, and the
+# processor must be shown exactly the body the client received.
+marker="marker-$$-$RANDOM"
+curl -sS --max-time 10 -o "$WORK/body" "$B/echo?$marker"
+grep -qF -- "$marker" "$WORK/body" || fail "the client's body lost the marker: $(cat "$WORK/body")"
+for _ in $(seq 100); do grep -qF -- "$marker" "$WORK/observed" && break; sleep 0.1; done
+grep -qF -- "$marker" "$WORK/observed" || fail "the processor was never shown the response of $marker"
+grep -qF -- "$(cat "$WORK/body")" "$WORK/observed" || fail "the processor was shown something else than the client got: '$(cat "$WORK/observed")'"
 ok "response body: the processor sees a copy, the client gets it unchanged"
 
 # 8. The processor goes away: fail-closed by default, the request continues with failOpen.

@@ -81,7 +81,9 @@ fn a_header_mutation_of_the_processor_reaches_the_upstream() {
                 append_action::OVERWRITE_IF_EXISTS_OR_ADD,
             ),
         ],
-        remove_headers: vec!["x-remove-me".into()],
+        // `x-user` is removed AND set: removals run first (Envoy `applyHeaderMutations`), so the set value is what the upstream
+        // gets, not nothing and not the client's own.
+        remove_headers: vec!["x-remove-me".into(), "x-user".into()],
     }));
     let server = start(serde_json::json!({ "grpc": processor }));
 
