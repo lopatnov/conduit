@@ -1585,6 +1585,33 @@ jobs:
   # schema update. scripts/check_schema_superset.py is a best-effort net, not a
   # guarantee (see its own docstring for exactly what it can't check — untagged
   # enums, #[serde(flatten)] fields, defs inlined into a parent instead of named).
+  # ── Third-party licences (issue #640) ────────────────────────────────────────
+  # Every crate that can end up in a binary must be inside the allow-list in ci/license-policy.json, and
+  # THIRD-PARTY-LICENSES.txt (shipped with every release artifact) must be what the generator writes for the current
+  # Cargo.lock: a dependency change without a regenerated file fails here. Read-only, no token.
+  licenses:
+    name: Third-party licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+
+      - name: Fetch the crates (their licence files are read from the registry sources)
+        run: cargo fetch --locked
+
+      - name: Unit tests of the generator
+        run: python3 scripts/test_third_party_licenses.py
+
+      - name: Licence policy, and THIRD-PARTY-LICENSES.txt is current
+        run: python3 scripts/third_party_licenses.py --check THIRD-PARTY-LICENSES.txt
+
   schema-superset-check:
     name: Config schema superset check
     runs-on: ubuntu-latest
