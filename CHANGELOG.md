@@ -78,6 +78,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A `tcp` site that also had `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` or `middleware` was
+  accepted and the key silently ignored, so an operator could believe a database port was protected. Validation now
+  refuses it, with a message that points to a firewall or network policy (behaviour change).
 - Static files and fallback `file:` responses use the media types of adaptive streaming: `.m3u8` is
   `application/vnd.apple.mpegurl` (was `audio/x-mpegurl`), `.m3u` `audio/mpegurl`, `.ts` `video/mp2t` (was
   `video/vnd.dlna.mpeg-tts`), `.m4s` `video/iso.segment` and `.mpd` `application/dash+xml` (RFC 8216 section 4, IANA).

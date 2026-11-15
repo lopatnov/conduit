@@ -527,7 +527,7 @@ http2:
 | ---------------------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `maxConcurrentStreams` | number | `100`   | Max parallel streams per connection                                                                                                                    |
 | `initialWindowSize`    | number | `65535` | Flow-control window in bytes                                                                                                                           |
-| `h2c`                  | bool   | `false` | Allow HTTP/2 upgrade on **plaintext** connections (h2c). For TLS ports HTTP/2 is negotiated via ALPN regardless. Useful for internal gRPC without TLS. |
+| `h2c`                  | bool   | `false` | Serve HTTP/2 on **plaintext** connections (h2c): a client that starts with the HTTP/2 preface, as gRPC clients do (prior knowledge), works (tested in `scripts/e2e/grpc.sh`); the HTTP/1.1 `Upgrade: h2c` handshake is not covered by a test. For TLS ports HTTP/2 is negotiated via ALPN regardless. See [gRPC](protocols.md#grpc). |
 
 ---
 
@@ -4126,8 +4126,9 @@ sites:
 > features on the same site. Use a separate port/site for HTTP traffic.
 
 > **Not supported on a TCP site:** TLS termination (TLS passes through untouched and the client verifies the
-> upstream's certificate), the PROXY protocol (the upstream sees Conduit's address), an IP filter, an idle timeout
-> or a connection limit, UDP, and port ranges. See the [guide](protocols.md#what-a-tcp-site-does-and-does-not-do).
+> upstream's certificate), the PROXY protocol (the upstream sees Conduit's address), an idle timeout
+> or a connection limit, UDP, and port ranges. `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` and
+> `middleware` next to `tcp` are refused at validation (they would be ignored). See the [guide](protocols.md#what-a-tcp-site-does-and-does-not-do).
 
 ---
 

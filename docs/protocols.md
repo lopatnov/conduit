@@ -43,8 +43,10 @@ sites:
   PostgreSQL's `SSLRequest` pass through.
 - It adds nothing to the stream: the upstream sees Conduit's address as the client, because there is no PROXY protocol
   support. Anything that decides by client address on the backend (`pg_hba.conf`, mail relay rules, fail2ban) sees Conduit.
-- None of the HTTP features apply: no IP filter, rate limit, authentication or metrics per route. Put access control in
-  front of the port (a firewall or network policy) or on the backend.
+- None of the HTTP features apply: no IP filter, rate limit, authentication or metrics per route. Conduit refuses a
+  configuration that puts `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` or `middleware` on a `tcp`
+  site (it would be silently ignored and look like protection). Put access control in front of the port (a firewall or
+  network policy) or on the backend.
 - There is no idle timeout and Conduit sets no limit on the number of connections: a connection lives until one side closes it
   (the operating system's limits on open files still apply).
 - No UDP. Port ranges are not supported: one `sites` entry is one port.
@@ -106,13 +108,15 @@ gRPC is HTTP/2 with trailers. Both sides of Conduit must speak HTTP/2:
 | --- | ------- |
 | Client → Conduit over TLS | `tls:` and `http2: {}` on the site (HTTP/2 is negotiated through ALPN) |
 | Client → Conduit without TLS | `http2: {h2c: true}` on the site (prior knowledge, no upgrade) |
-| Conduit → upstream over TLS | `http2: true` on the route (ALPN `h2`); `upstreamTls: {verify: false}` for a self-signed upstream |
+| Conduit → upstream over TLS | `http2: true` on the route (ALPN `h2`); `upstreamTls: {verify: false}` for a self-signed upstream (this switches certificate verification off, so the connection can be intercepted: only on a network you trust, otherwise give the upstream a certificate the system trusts) |
 | Conduit → upstream **without TLS** | **`http2: h2c`** on the route |
 
 `http2: true` is not enough for a plaintext upstream: HTTP/2 is negotiated through ALPN, which does not exist without TLS,
 so Conduit would speak HTTP/1.1 to it (the control case in the test shows gRPC failing that way). `http2: h2c` makes it use
 HTTP/2 with prior knowledge ([RFC 9113 §3.3](https://www.rfc-editor.org/rfc/rfc9113#section-3.3)), as nginx
-`grpc_pass grpc://`, Envoy and Traefik (`h2c://`) do. Over TLS `h2c` behaves like `true`.
+`grpc_pass grpc://`, Envoy and Traefik (`h2c://`) do. Over TLS `h2c` behaves like `true`. One consequence of Pingora's connection pool: an `h2c` route and an `http2: true` route that
+point at the same plaintext `host:port` can share one HTTP/2 connection (requests stay separate streams), so give two routes
+that need different behaviour different upstream addresses.
 
 ```yaml
 sites:
@@ -282,7 +286,7 @@ If Conduit's own host needs SSH on port 22, put Conduit on another port (`ssh -p
 These are gaps rather than choices; each is a candidate feature:
 
 - UDP proxying (WebRTC media, QUIC, DNS, syslog).
-- TLS termination for TCP sites, the PROXY protocol, an IP filter, an idle timeout and a connection limit on TCP sites.
+- TLS termination for TCP sites, the PROXY protocol, an access filter (IP allow/deny), an idle timeout and a connection limit on TCP sites.
 - Port ranges (FTP passive ports need one site each).
 - Active health probes for `h2c` and TLS upstreams, or a TCP-level probe for TCP sites.
 - A custom CA for `upstreamTls` (only `verify: false` or the system roots).

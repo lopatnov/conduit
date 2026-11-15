@@ -147,4 +147,26 @@ fn validate_tcp_site(
             "tcp cannot be combined with static on the same site",
         ));
     }
+    // A TCP site relays bytes and runs no filter chain, so an access-control or traffic-control key on it would be
+    // silently ignored: an operator who adds `ipFilter` to a database port would believe it is protected. Refuse it.
+    let ignored = [
+        ("ipFilter", site.ip_filter.is_some()),
+        ("rateLimit", site.rate_limit.is_some()),
+        ("basicAuth", site.basic_auth.is_some()),
+        ("apiKey", site.api_key.is_some()),
+        ("consumers", site.consumers.is_some()),
+        ("limits", site.limits.is_some()),
+        ("middleware", site.middleware.is_some()),
+    ];
+    for (key, present) in ignored {
+        if present {
+            errors.push(ValidationError::new(
+                format!("{prefix}.{key}"),
+                format!(
+                    "{key} does not apply to a tcp site (it relays bytes and runs no HTTP filters): remove it and \
+                     restrict who can reach the port with a firewall or network policy"
+                ),
+            ));
+        }
+    }
 }
