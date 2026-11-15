@@ -3759,6 +3759,14 @@ Do not set `verify: false` to work around a name mismatch: it also turns off the
 certificate was issued by a trusted authority. Use the name from the certificate in the target URL, or set
 `serverName` to it.
 
+**The host needs a CA bundle even with `verify: false`.** Conduit loads the system CA store (or the file named by the
+`SSL_CERT_FILE` environment variable, or the directory in `SSL_CERT_DIR`) and the TLS library builds its verifier from it
+before the setting is applied. On a host or container image without any CA certificates, such as a minimal base image, every
+HTTPS upstream fails with `no root trust anchors were provided` (HTTP 502), whatever `verify` says. Install the
+`ca-certificates` package, or point `SSL_CERT_FILE` at a bundle that holds at least one certificate (checked with a TLS
+gRPC upstream in `scripts/e2e/grpc.sh`: `verify: false` with an empty root store gives 502, with a one-certificate
+`SSL_CERT_FILE` it works).
+
 ---
 
 ## mTLS — Client Certificate Authentication

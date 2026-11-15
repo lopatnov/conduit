@@ -57,6 +57,9 @@ sites:
     proxy:
       "/": {targets: ["http://grpc.test:50051"], http2: h2c}
 YAML
+# The Conduit image has no CA bundle, and Conduit (Pingora) needs a non-empty root store to build its verifier even when a
+# route sets `upstreamTls.verify: false`: without one every HTTPS upstream answers 502 ("no root trust anchors were provided").
+E2E_CONDUIT_DOCKER_ARGS="-e SSL_CERT_FILE=/conf/cert.pem"
 e2e_start_conduit "$WORK/scenario.yaml" https://app.test:8443/
 for _ in $(seq 1 40); do client sh -c 'nc -z -w 1 grpc.test 50051 && nc -z -w 1 grpcb.test 50051 && nc -z -w 1 grpcs.test 50052' && up=1 && break; sleep 0.5; done
 [ -n "${up:-}" ] || fail "the gRPC servers do not accept connections"

@@ -87,11 +87,12 @@ e2e_network() {
 
 # e2e_start_conduit CONFIG: copy CONFIG to $WORK/conduit.yaml and start the binary on it; /conf in the container is $WORK
 # (the certificate is /conf/cert.pem and /conf/key.pem). Returns when conduit answers on URL (the second argument); more
-# arguments are given to the curl that waits (a client certificate, for instance).
+# arguments are given to the curl that waits (a client certificate, for instance). E2E_CONDUIT_DOCKER_ARGS adds arguments to
+# the `docker run` of Conduit (an environment variable, for instance).
 e2e_start_conduit() {
   cp "$1" "$WORK/conduit.yaml"
   docker run -d --name "$APP" --network "$NET" --ip 192.0.2.20 --network-alias app.test \
-    -v "$BIN:/usr/local/bin/conduit:ro" -v "$WORK:/conf:ro" "$CONDUIT_IMAGE" \
+    -v "$BIN:/usr/local/bin/conduit:ro" -v "$WORK:/conf:ro" ${E2E_CONDUIT_DOCKER_ARGS:-} "$CONDUIT_IMAGE" \
     conduit -c /conf/conduit.yaml >/dev/null
   local up=""
   for _ in $(seq 1 50); do

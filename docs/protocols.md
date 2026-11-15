@@ -110,7 +110,7 @@ gRPC is HTTP/2 with trailers. Both sides of Conduit must speak HTTP/2:
 | --- | ------- |
 | Client → Conduit over TLS | `tls:` and `http2: {}` on the site (HTTP/2 is negotiated through ALPN) |
 | Client → Conduit without TLS | `http2: {h2c: true}` on the site (prior knowledge, no upgrade) |
-| Conduit → upstream over TLS | `http2: true` on the route (ALPN `h2`); `upstreamTls: {verify: false}` for a self-signed upstream (this switches certificate verification off, so the connection can be intercepted: only on a network you trust, otherwise give the upstream a certificate the system trusts) |
+| Conduit → upstream over TLS | `http2: true` on the route (ALPN `h2`); `upstreamTls: {verify: false}` for a self-signed upstream (this switches certificate verification off, so the connection can be intercepted: only on a network you trust, otherwise give the upstream a certificate the system trusts); the host still needs a CA bundle, see [Upstream TLS verification](configuration.md#upstream-tls-verification) |
 | Conduit → upstream **without TLS** | **`http2: h2c`** on the route |
 
 `http2: true` is not enough for a plaintext upstream: HTTP/2 is negotiated through ALPN, which does not exist without TLS,
@@ -291,4 +291,4 @@ These are gaps rather than choices; each is a candidate feature:
 - TLS termination for TCP sites, the PROXY protocol, an access filter (IP allow/deny), an idle timeout and a connection limit on TCP sites.
 - Port ranges (FTP passive ports need one site each).
 - Active health probes for `h2c` and TLS upstreams, or a TCP-level probe for TCP sites.
-- A custom CA for `upstreamTls` (only `verify: false` or the system roots).
+- A per-route custom CA for `upstreamTls` (only `verify: false` or the process-wide roots: the system store, or the file in `SSL_CERT_FILE`). The host needs a non-empty root store even with `verify: false`; see [Upstream TLS verification](configuration.md#upstream-tls-verification).
