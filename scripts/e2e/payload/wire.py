@@ -20,6 +20,11 @@ import sys
 import threading
 
 
+def bind_address():
+    """The address of this container: the servers listen there and not on every interface (BIND_ADDRESS overrides)."""
+    return os.environ.get("BIND_ADDRESS") or socket.gethostbyname(socket.gethostname())
+
+
 def recv_exact(sock, n):
     buf = b""
     while len(buf) < n:
@@ -194,7 +199,7 @@ class Ftp(socketserver.StreamRequestHandler):
                 listener = socket.socket()
                 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 port = int(os.environ["PASV_PORT"])
-                listener.bind(("0.0.0.0", port))
+                listener.bind((bind_address(), port))
                 listener.listen(1)
                 host = socket.gethostbyname(os.environ["PASV_HOST"]).replace(".", ",")
                 shown = int(os.environ.get("PASV_ADVERTISE_PORT", port))  # the port a client is told to connect to
@@ -327,7 +332,7 @@ CLIENTS = {"redis": client_redis, "mqtt": client_mqtt, "postgres": client_postgr
 
 if __name__ == "__main__":
     if len(sys.argv) >= 4 and sys.argv[1] == "server" and sys.argv[2] in HANDLERS:
-        Server(("0.0.0.0", int(sys.argv[3])), HANDLERS[sys.argv[2]]).serve_forever()
+        Server((bind_address(), int(sys.argv[3])), HANDLERS[sys.argv[2]]).serve_forever()
     elif len(sys.argv) >= 5 and sys.argv[1] == "client" and sys.argv[2] in CLIENTS:
         print(json.dumps(CLIENTS[sys.argv[2]](sys.argv[3], int(sys.argv[4]))))
     else:

@@ -27,6 +27,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
+def bind_address():
+    """The address of this container: the servers listen there and not on every interface (BIND_ADDRESS overrides)."""
+    return os.environ.get("BIND_ADDRESS") or socket.gethostbyname(socket.gethostname())
+
+
+def tls_context():
+    """A client context that trusts CA_FILE and speaks TLS 1.2 or newer."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_verify_locations(cafile=os.environ.get("CA_FILE"))
+    return context
+
+
 # ── Server-Sent Events ────────────────────────────────────────────────────────────────────────────────────────────
 class SseHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -72,7 +85,7 @@ class SseHandler(BaseHTTPRequestHandler):
 def sse_client(url, max_seconds, headers=()):
     parts = urllib.parse.urlparse(url)
     cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
-    kwargs = {"context": ssl.create_default_context(cafile=os.environ.get("CA_FILE"))} if parts.scheme == "https" else {}
+    kwargs = {"context": tls_context()} if parts.scheme == "https" else {}
     conn = cls(parts.hostname, parts.port, timeout=max_seconds, **kwargs)
     start = time.monotonic()
     out = {"events": [], "error": None}
@@ -235,7 +248,7 @@ def ws_client(url, steps, extra_headers=""):
     raw = socket.create_connection((parts.hostname, port), timeout=10)
     sock = raw
     if parts.scheme == "wss":
-        sock = ssl.create_default_context(cafile=os.environ.get("CA_FILE")).wrap_socket(raw, server_hostname=parts.hostname)
+        sock = tls_context().wrap_socket(raw, server_hostname=parts.hostname)
     key = base64.b64encode(os.urandom(16)).decode()
     path = parts.path or "/"
     extra = extra_headers
@@ -299,11 +312,11 @@ def ws_client(url, steps, extra_headers=""):
 def main(argv):
     cmd = argv[1]
     if cmd == "sse-server":
-        server = ThreadingHTTPServer(("0.0.0.0", int(argv[2])), SseHandler)
+        server = ThreadingHTTPServer((bind_address(), int(argv[2])), SseHandler)
         server.daemon_threads = True
         server.serve_forever()
     elif cmd == "ws-server":
-        ThreadingTCP(("0.0.0.0", int(argv[2])), WsHandler).serve_forever()
+        ThreadingTCP((bind_address(), int(argv[2])), WsHandler).serve_forever()
     elif cmd == "sse-client":
         max_seconds, headers, rest = 20.0, [], argv[3:]
         while rest:

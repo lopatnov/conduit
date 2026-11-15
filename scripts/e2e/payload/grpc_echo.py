@@ -11,6 +11,8 @@ streaming: replies with the total length of what it got), `Fail` (ends with stat
 Needs the `grpcio` package (Debian: python3-grpcio).
 """
 import json
+import os
+import socket
 import sys
 import time
 from concurrent import futures
@@ -46,6 +48,11 @@ def slow(request, context):
     return b"done"
 
 
+def bind_address():
+    """The address of this container: the server listens there and not on every interface (BIND_ADDRESS overrides)."""
+    return os.environ.get("BIND_ADDRESS") or socket.gethostbyname(socket.gethostname())
+
+
 def serve(port, tls):
     handlers = {
         "Unary": grpc.unary_unary_rpc_method_handler(unary, **IDENTITY),
@@ -58,9 +65,9 @@ def serve(port, tls):
     server.add_generic_rpc_handlers((grpc.method_handlers_generic_handler("e2e.Echo", handlers),))
     if tls:
         creds = grpc.ssl_server_credentials([(open(tls[1], "rb").read(), open(tls[0], "rb").read())])
-        server.add_secure_port(f"0.0.0.0:{port}", creds)
+        server.add_secure_port(f"{bind_address()}:{port}", creds)
     else:
-        server.add_insecure_port(f"0.0.0.0:{port}")
+        server.add_insecure_port(f"{bind_address()}:{port}")
     server.start()
     server.wait_for_termination()
 
