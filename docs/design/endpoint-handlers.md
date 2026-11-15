@@ -213,8 +213,13 @@ in declaration order wins".
 - *An import interface* `conduit:handler/request-context` (`route()`, `params()`, `client-ip()`, …). Typed and
   unforgeable, but every language needs bindings for it.
 
-**Recommendation:** headers in the first phase (they cost nothing to the guest author), the WIT interface when the
-`conduit:*` interfaces are added for SQLite anyway.
+**Decided by the owner, 2026-11-15: both, headers first.** Headers ship in phase 1: they cost nothing to the guest
+author and keep a component portable. The `conduit:handler/request-context` interface ships in phase 2, with the
+`identity` grant: JWT claims and the consumer are structured data that headers carry badly (size limits, escaping,
+nested claims), and a typed import cannot be confused with a header a framework rewrote. Phase 2 also publishes the
+WIT package and ready guest bindings for Rust, JavaScript (`jco`) and Python (`componentize-py`), so using it is one
+import, not hand-written glue. The headers stay after that; a guest uses whichever it likes, and a component that
+imports nothing from `conduit:*` still runs in Spin or wasmCloud. Phase 3 adds `conduit:sqlite` to the same package.
 
 **Routing inside the handler.** A handler on `/app/{*rest}` receives everything under `/app/` and may route by itself.
 This works today in Rust: the Bytecode Alliance's `wstd-axum` crate runs an ordinary `axum::Router` inside a
@@ -626,7 +631,7 @@ webapp       = ["handler-wasm", "handler-rhai", "kv-redb", "sqlite", "static", "
 | Authoring | edit a `.rhai` file, no build | any language with a WASI HTTP toolchain |
 | Request body | whole, bounded | stream, bounded |
 | Response body | whole | stream |
-| Route data | `req.params`, `req.rest`, `req.route` | `conduit-*` headers (later a WIT interface) |
+| Route data | `req.params`, `req.rest`, `req.route` | `conduit-*` headers (phase 1) and `conduit:handler/request-context` (phase 2) |
 | KV, files, secrets, config | same capabilities, Rhai modules | same capabilities, WASI interfaces |
 | Outbound HTTP | blocking call on the handler pool | async, does not hold a thread |
 | SQL | `sql::*` | `conduit:sqlite` |
@@ -655,11 +660,12 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
    hello-world component pass the same e2e test; the handler guide has a JavaScript example and a `jco` template.
 2. **State.** `global.resources` and `sites[].resources` with the scope rules above; KV (`memory`, `redb`,
    `redis`) through `wasi:keyvalue` and `kv::*`; read-only files;
-   secrets; `identity` grant. `lawyer` review of `redb`.
+   secrets; `identity` grant; the `conduit:handler/request-context` WIT (route, params, client IP, request id,
+   identity) with guest bindings for Rust, JavaScript and Python. `lawyer` review of `redb`.
 3. **Outbound and SQL.** `fetch` with the allowlist, SSRF checks and `upstream:` targets; SQLite through
    `conduit:sqlite` and `sql::*`; the `webapp` bundle and, if the size allows, the `conduit-webapp` artifact.
    `lawyer` review of `rusqlite`/SQLite.
-4. **Later, on demand.** WASI 0.3 components and instance reuse; Postgres; a `conduit:handler/request-context` WIT;
+4. **Later, on demand.** WASI 0.3 components and instance reuse; Postgres;
    streaming request bodies to Rhai; a `conduit new handler` scaffold command.
 
 ---
@@ -672,7 +678,7 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
 | 2 | Rhai handlers in phase 1? | with WASM in phase 1 · after WASM | **phase 1 — decided by the owner, 2026-11-15** (cheap, and it keeps parity from the start) |
 | 3 | A broken handler | fail closed (`500`) · fail open (`404`/fall through to the next route) | **fail closed — decided by the owner, 2026-11-15** |
 | 4 | Path parameter syntax | `{id}`/`{*rest}` (Axum 0.8) · `:id`/`...` (Spin) | **`{id}`/`{*rest}` — decided by the owner, 2026-11-15** |
-| 5 | Route data to WASM | reserved headers · a WIT interface · both | **headers first, WIT later** (open) |
+| 5 | Route data to WASM | reserved headers · a WIT interface · both | **both — decided by the owner, 2026-11-15**: headers in phase 1, the WIT interface in phase 2 |
 | 6 | Where resources are declared | `global.resources` · per site · both | **both — decided by the owner, 2026-11-15**: global as defaults, a site overrides a label or adds its own ([Resource scopes](#resource-scopes)) |
 | 7 | `conduit-webapp` | separate release artifact · only a feature set in `full` | **decide after the phase-1 size measurement** |
 | 8 | Phase-1 scope | stateless only (as above) · stateless plus KV | **stateless only — decided by the owner, 2026-11-15**: the routing and fail-closed plumbing is the part that touches the hot path |
