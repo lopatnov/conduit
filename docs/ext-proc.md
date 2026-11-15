@@ -175,7 +175,8 @@ phase keeps its stream open until the request ends.
   length of what is forwarded is no longer the length of what the client sent. A body mutation in a *headers* answer, a
   header mutation in a *body* answer, and any answer to `response_body` are ignored and logged. A request with no body and a
   method that carries none (`GET`, `HEAD`, `DELETE`) is not shown to the body phases at all (the headers phase already
-  said `end_of_stream`); an empty `POST`, `PUT` or `PATCH` is, and a processor may supply its body.
+  said `end_of_stream`), so an entry that only reads bodies (`requestPhase: false`) does not apply to such a request, even when
+  its processor is down; an empty `POST`, `PUT` or `PATCH` is shown, and a processor may supply its body.
 - *A response-headers answer* (`responsePhase`): the same header rules as for the request, applied to the upstream's
   response. Entries run in order, each shown the headers the one before left. The site's own response headers are added
   afterwards.
