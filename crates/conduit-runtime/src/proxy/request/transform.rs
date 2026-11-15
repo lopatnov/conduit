@@ -198,16 +198,20 @@ pub(super) fn request_host(session: &Session) -> String {
 
 /// The header-only core of [`request_host`] — testable without a Pingora session.
 fn request_host_of(req: &RequestHeader) -> String {
+    request_host_ref(req).to_owned()
+}
+
+/// [`request_host_of`] borrowed from the request: the same value, no `String` (a request reads it several times, #486).
+fn request_host_ref(req: &RequestHeader) -> &str {
     req.headers
         .get("host")
         .and_then(|v| v.to_str().ok())
-        .map(str::to_owned)
-        .or_else(|| req.uri.authority().map(|a| a.as_str().to_owned()))
+        .or_else(|| req.uri.authority().map(|a| a.as_str()))
         .unwrap_or_default()
 }
 
 pub(super) fn extract_host(session: &Session) -> String {
-    host_without_port(&request_host(session)).to_owned()
+    host_without_port(request_host_ref(session.req_header())).to_owned()
 }
 
 /// `X-Forwarded-For` value: the client's address appended to any chain already present.
@@ -269,9 +273,9 @@ pub(super) fn append_forwarded_headers(
     upstream_request.insert_header("x-forwarded-proto", proto)?;
 
     // X-Forwarded-Host: original Host (or h2 `:authority`) so the upstream can reconstruct URLs.
-    let client_host = request_host(session);
+    let client_host = request_host_ref(session.req_header());
     if !client_host.is_empty() {
-        upstream_request.insert_header("x-forwarded-host", client_host.as_str())?;
+        upstream_request.insert_header("x-forwarded-host", client_host)?;
     }
 
     // No `host` is restored here for an h2 client: an HTTP/1.1 upstream needs one, and Pingora sets it from the

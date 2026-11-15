@@ -74,6 +74,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Fewer allocations on every proxied request (#486), with no change to what a request sees: the guards that would answer
+  `Continue` and nothing else (health bypass, redirect, middleware) are not built for a request that does not need them, the
+  guard list is sized once, the request authority is read once, routing no longer formats a key per candidate route, and an
+  empty runtime-override table is not queried. Measured with `scripts/bench/cachegrind.sh` (instructions per request, one
+  worker, 2000 and 6000 requests): bare site 152 537 → 148 329 (−2.8 %), a site with `securityHeaders` and `responseTime`
+  180 014 → 174 933 (−2.8 %).
 - Smaller binaries, same speed (#516): the crates that never run per proxied request (config schema and parsing, CLI, Admin
   API, ACME, Kubernetes, the file watcher, and `clap`, `serde_yaml` and `dialoguer` behind the CLI) are compiled with
   `opt-level = "s"` through `[profile.release.package.*]`. The release binary with `--no-default-features` goes from

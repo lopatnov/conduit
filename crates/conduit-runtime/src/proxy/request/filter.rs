@@ -38,7 +38,7 @@ use crate::filter::rate_limit;
 use crate::filter::{cors, redirects, security_headers};
 use crate::handler::response;
 use crate::proxy::ctx::{AcceptEncoding, RequestCtx};
-use crate::proxy::request::transform::{extract_host, request_host};
+use crate::proxy::request::transform::request_host;
 use crate::proxy::request::{handler_kind_of, GuardCtx, HandlerKind};
 use crate::proxy::router;
 use crate::proxy::service::ConduitProxy;
@@ -102,6 +102,9 @@ impl ConduitProxy {
         // an owned `Arc` (cheap refcount bump, no alloc) that is safe to hold
         // across the guard-chain `.await` below, unlike a `load()` guard.
         let config = self.state.config.load_full();
+        // The request authority (with a port, as the client sent it), read once: routing uses it without the port, the
+        // `allowedHosts` guard below uses it as it is (#486).
+        let incoming_host = request_host(session);
         let (
             mut req_ctx,
             ip_cfg,
@@ -126,7 +129,7 @@ impl ConduitProxy {
             consumers_cfg,
             site_label,
         ) = {
-            let host = extract_host(session);
+            let host = conduit_core::util::host::host_without_port(&incoming_host);
             let path_and_query = session
                 .req_header()
                 .uri
@@ -158,7 +161,7 @@ impl ConduitProxy {
 
             let req_ctx = router::route_request(
                 &config,
-                &host,
+                host,
                 &path,
                 &method,
                 &session.req_header().headers,
@@ -288,10 +291,6 @@ impl ConduitProxy {
         let handler_kind = handler_kind_of(&req_ctx.upstream);
 
         // ── Guard filters (ip, cors, limits, auth, redirects, scripts) ──────────
-        // Extract Host header once for AllowedHostsGuard. `request_host` also
-        // reads the h2 `:authority` (stored by Pingora in `uri.authority()`)
-        // because browsers on HTTP/2 send no `host` header at all.
-        let incoming_host = request_host(session);
 
         // A site with an `ext_proc` entry gets a place for the streams its entries keep open for the body and response hooks.
         #[cfg(feature = "ext-proc")]
@@ -440,7 +439,11 @@ impl ConduitProxy {
         }
 
         // 3. Health / ACME / hot-reload bypass — skips all remaining guards.
-        chain = chain.push(HealthBypass { bypass: is_bypass });
+        // Only a bypassing request needs the guard: with `bypass: false` it answers `Continue` and nothing else, so
+        // the box and its future are not built for an ordinary request (#486). The position in the chain is the same.
+        if is_bypass {
+            chain = chain.push(HealthBypass { bypass: true });
+        }
 
         // 3a. AllowedHosts: Host header allowlist (after bypass so health is exempt).
         chain = chain.push(AllowedHostsGuard {
@@ -513,9 +516,12 @@ impl ConduitProxy {
         }
 
         // 7. Redirects.
-        chain = chain.push(RedirectGuard {
-            result: guards.redirect_result,
-        });
+        // No redirect matched: the guard would answer `Continue` and nothing else (#486).
+        if guards.redirect_result.is_some() {
+            chain = chain.push(RedirectGuard {
+                result: guards.redirect_result,
+            });
+        }
 
         // 8. Fault injection (chaos testing — disabled in production).
         #[cfg(feature = "fault-injection")]
@@ -524,16 +530,19 @@ impl ConduitProxy {
         }
 
         // 9. Middleware pipeline: Rhai scripts + WASM plugins in declared order.
-        chain = chain.push(MiddlewareGuard {
-            middleware: guards.middleware,
-            req_path: guards.script_path,
-            method: guards.script_method,
-            query: guards.script_query,
-            headers: guards.script_headers,
-            client_ip: guards.client_ip.clone(),
-            #[cfg(feature = "ext-proc")]
-            ext_proc: guards.ext_proc,
-        });
+        // A site without middleware entries: the guard loops over nothing and answers `Continue` (#486).
+        if !guards.middleware.is_empty() {
+            chain = chain.push(MiddlewareGuard {
+                middleware: guards.middleware,
+                req_path: guards.script_path,
+                method: guards.script_method,
+                query: guards.script_query,
+                headers: guards.script_headers,
+                client_ip: guards.client_ip.clone(),
+                #[cfg(feature = "ext-proc")]
+                ext_proc: guards.ext_proc,
+            });
+        }
 
         let mut ctx = FilterContext {
             session,
