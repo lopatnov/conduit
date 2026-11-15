@@ -133,5 +133,15 @@ mod tests {
             example.contains(&format!("apiVersion: {group}/v1")),
             "contrib/k8s/example-site.yaml must use `apiVersion: {group}/v1`"
         );
+        // A typo in either of these is silent: the CRD is named `<plural>.<group>`, and a Role that
+        // names another group is a 403 on the first list.
+        assert!(
+            manifest.contains(&format!("name: conduitsites.{group}")),
+            "the CRD must be named `conduitsites.{group}`"
+        );
+        assert!(
+            example.contains(&format!("apiGroups: [{group}]")),
+            "the Role in example-site.yaml must grant `apiGroups: [{group}]`"
+        );
     }
 }
