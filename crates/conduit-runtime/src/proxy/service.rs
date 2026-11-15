@@ -354,15 +354,26 @@ impl ProxyHttp for ConduitProxy {
 
     async fn request_body_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         body: &mut Option<Bytes>,
-        _end_of_stream: bool,
+        end_of_stream: bool,
         ctx: &mut Self::CTX,
     ) -> pingora_core::Result<()>
     where
         Self::CTX: Send + Sync,
     {
-        request::request_body_filter(self, body, ctx).await
+        request::request_body_filter(self, session, body, end_of_stream, ctx).await
+    }
+
+    /// A request ended by the external processor from the body hook (`request_body_filter`, issue #27) is answered already;
+    /// the error that stops Pingora's proxy loop carries status 0 for `fail_to_proxy`, and is not an error to log.
+    fn suppress_error_log(
+        &self,
+        _session: &Session,
+        _ctx: &Self::CTX,
+        error: &pingora_core::Error,
+    ) -> bool {
+        matches!(error.etype(), pingora_core::ErrorType::HTTPStatus(0))
     }
 
     async fn upstream_request_filter(

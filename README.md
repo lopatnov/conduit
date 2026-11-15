@@ -98,7 +98,7 @@ Where each group is documented in detail:
 | TLS | [TLS / HTTPS](docs/configuration.md#tls--https) · [mTLS](docs/configuration.md#mtls--client-certificate-authentication) · [HTTP/2](docs/configuration.md#http2) |
 | Authentication | [Basic](docs/configuration.md#basic-auth) · [API key](docs/configuration.md#api-key) · [JWT](docs/configuration.md#jwt-auth) · [Forward auth](docs/configuration.md#forward-auth) · [Consumers](docs/configuration.md#consumers) |
 | Traffic control | [Rate limiting](docs/configuration.md#rate-limiting) · [Limits](docs/configuration.md#limits) · [Priority routing](docs/configuration.md#priority-routing) · [IP filter](docs/configuration.md#ip-filter) |
-| Scripting | [Rhai guide](docs/rhai.md) · [WebAssembly guide](docs/wasm.md) |
+| Scripting | [Rhai guide](docs/rhai.md) · [WebAssembly guide](docs/wasm.md) · [External processing guide](docs/ext-proc.md) |
 | Observability | [Logging](docs/configuration.md#logging) · [Metrics](docs/configuration.md#metrics) · [OpenTelemetry](docs/configuration.md#opentelemetry-tracing) · [Response time](docs/configuration.md#response-time-header) · [Server-Timing](docs/configuration.md#server-timing-header) |
 | Operations | [Hot reload](docs/configuration.md#hot-reload) · [Admin API](docs/admin.md) |
 | Developer tools | [CLI](docs/cli.md) · [JSON Schema for editors](#editor-integration-json-schema) |
@@ -316,7 +316,7 @@ true
 ```
 
 Scripts and plugins fail open, so keep your real access checks in the auth guards.
-**→ Guides:** [Rhai](docs/rhai.md) · [WebAssembly](docs/wasm.md)
+**→ Guides:** [Rhai](docs/rhai.md) · [WebAssembly](docs/wasm.md) · [External processing](docs/ext-proc.md)
 
 ### Observability
 
@@ -592,6 +592,7 @@ config cannot be loaded.
 | `forward-auth`    | Delegate auth to an external HTTP service (`forwardAuth`)                  |
 | `rhai`            | Rhai scripting middleware (`type: "script"`)                               |
 | `wasm`            | WebAssembly plugin middleware (`type: "wasm"`) through Wasmtime            |
+| `ext-proc`        | External processor over gRPC (`type: "ext_proc"`, Envoy's ext_proc protocol) |
 | `tcp`             | Raw TCP proxy mode (`type: "tcp"` site)                                    |
 | `upload`          | Multipart file upload handler (`upload:` site config)                      |
 | `redis`           | Redis-backed rate limiting and caching                                     |

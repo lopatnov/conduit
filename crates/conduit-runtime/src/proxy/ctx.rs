@@ -73,6 +73,17 @@ pub struct RequestCtx {
     /// only safe for idempotent methods (GET/HEAD) in that case.
     pub body_too_large: bool,
 
+    /// The open streams of this request's `ext_proc` entries that have a later phase than the request headers (issue #27):
+    /// the request body hook and the response hooks use them. `None` for a request that has no such entry.
+    #[cfg(feature = "ext-proc")]
+    pub ext_proc: Option<Arc<conduit_ext_proc::ExtProcSessions>>,
+    /// Whether the request body hook shows this request to an `ext_proc` entry that reads or changes the body, decided once
+    /// when the upstream request is framed (`frame_rewritten_body`) and read by `request_body_filter`. It is not worked out
+    /// again at the last chunk: Pingora's `is_body_empty()` turns `true` once a chunked body turns out to hold no data
+    /// (`0\r\n\r\n`), which would leave a request that was framed and announced as having a body without its body exchange.
+    #[cfg(feature = "ext-proc")]
+    pub ext_proc_body_processable: Option<bool>,
+
     /// Per-request limits state — `actual_body_bytes`, `ip_conn_slot`
     /// (RAII per-IP connection slot, released on drop), and the slow-loris
     /// upload-rate leaky-bucket state (`upload_excess_bytes`/
@@ -115,6 +126,10 @@ impl RequestCtx {
             body_too_large: false,
             #[cfg(feature = "jwt")]
             jwt: None,
+            #[cfg(feature = "ext-proc")]
+            ext_proc: None,
+            #[cfg(feature = "ext-proc")]
+            ext_proc_body_processable: None,
             limits: conduit_limits::LimitsReqState::default(),
             #[cfg(feature = "cache")]
             cache: None,

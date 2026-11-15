@@ -40,7 +40,7 @@ const VALIDATE_GOLDEN: &str = include_str!("testdata/validate.golden");
 const VALIDATORS_GOLDEN: &str = include_str!("testdata/validators.golden");
 
 /// Every root feature whose state can change what the two functions emit.
-const FEATURES: [&str; 16] = [
+const FEATURES: [&str; 17] = [
     "proxy",
     "compression",
     "static",
@@ -50,6 +50,7 @@ const FEATURES: [&str; 16] = [
     "forward-auth",
     "rhai",
     "wasm",
+    "ext-proc",
     "tcp",
     "upload",
     "redis",
@@ -70,6 +71,7 @@ fn enabled(feature: &str) -> bool {
         "forward-auth" => cfg!(feature = "forward-auth"),
         "rhai" => cfg!(feature = "rhai"),
         "wasm" => cfg!(feature = "wasm"),
+        "ext-proc" => cfg!(feature = "ext-proc"),
         "tcp" => cfg!(feature = "tcp"),
         "upload" => cfg!(feature = "upload"),
         "redis" => cfg!(feature = "redis"),

@@ -5,11 +5,11 @@
 //! (issue #114/#141, and the correction recorded on issue #141 itself plus
 //! the follow-up issue #392 tracking it as a deferred question).
 
-#[cfg(any(feature = "rhai", feature = "wasm"))]
+#[cfg(any(feature = "rhai", feature = "wasm", feature = "ext-proc"))]
 use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
-#[cfg(feature = "rhai")]
+#[cfg(any(feature = "rhai", feature = "ext-proc"))]
 use bytes::Bytes;
 use conduit_core::filter::chain::{FilterContext, FilterOutcome, RequestFilter};
 use pingora_core::Result;
@@ -21,6 +21,8 @@ use crate::config::MiddlewareEntry;
 /// Dispatches by `entry.r#type`:
 /// - `"script"` → Rhai scripting (always available)
 /// - `"wasm"`   → WASM plugin (requires `--features wasm`; skipped with a warning if disabled)
+/// - `"ext_proc"` → external processor over gRPC, Envoy's protocol (requires `--features ext-proc`; a fail-closed entry is
+///   refused at validation time in a build without it)
 /// - other      → skipped (unknown types are rejected at config validation time)
 ///
 /// This struct replaces the former `ScriptGuard` so that Rhai and WASM entries
@@ -35,6 +37,11 @@ pub struct MiddlewareGuard {
     pub headers: std::collections::HashMap<String, String>,
     /// Remote client IP (used by WASM plugins).
     pub client_ip: String,
+    /// Where an `ext_proc` entry with a later phase (a request body mode, `responsePhase`, `responseBody`) leaves its open
+    /// stream for the body and response hooks of this request. The runtime creates it for a request whose site has an
+    /// `ext_proc` entry and keeps the other half in the per-request state.
+    #[cfg(feature = "ext-proc")]
+    pub ext_proc: Option<std::sync::Arc<conduit_ext_proc::ExtProcSessions>>,
 }
 
 /// Backward-compatible type alias — existing code that names `ScriptGuard`
@@ -45,14 +52,17 @@ pub type ScriptGuard = MiddlewareGuard;
 impl RequestFilter for MiddlewareGuard {
     async fn apply<'a>(
         &self,
-        #[cfg_attr(not(any(feature = "rhai", feature = "wasm")), allow(unused_variables))]
+        #[cfg_attr(
+            not(any(feature = "rhai", feature = "wasm", feature = "ext-proc")),
+            allow(unused_variables)
+        )]
         ctx: &mut FilterContext<'a>,
     ) -> Result<FilterOutcome> {
         // The header view the next entry sees. A WASM entry's added/removed request headers are
         // folded in as it returns, so a later Rhai or WASM entry reads what the earlier one
         // left, not the original request (issue #395).
-        #[cfg(any(feature = "rhai", feature = "wasm"))]
-        #[cfg_attr(not(feature = "wasm"), allow(unused_mut))]
+        #[cfg(any(feature = "rhai", feature = "wasm", feature = "ext-proc"))]
+        #[cfg_attr(not(any(feature = "wasm", feature = "ext-proc")), allow(unused_mut))]
         let mut headers = self.headers.clone();
         for entry in &self.middleware {
             match entry.r#type.as_str() {
@@ -75,6 +85,23 @@ impl RequestFilter for MiddlewareGuard {
                     if apply_wasm_entry(self, &mut headers, path, entry, ctx).await? {
                         return Ok(FilterOutcome::Handled);
                     }
+                }
+
+                // ── External processor (request headers) ──────────────────────
+                #[cfg(feature = "ext-proc")]
+                "ext_proc" => {
+                    let ended = apply_ext_proc_entry(self, &mut headers, entry, ctx).await?;
+                    if ended {
+                        return Ok(FilterOutcome::Handled);
+                    }
+                }
+
+                #[cfg(not(feature = "ext-proc"))]
+                "ext_proc" => {
+                    // Only a `failOpen: true` entry gets here: validation refuses a fail-closed one in this build.
+                    tracing::warn!(
+                        "ext_proc middleware entry ignored — rebuild with --features ext-proc"
+                    );
                 }
 
                 // ── Feature disabled: warn and skip ───────────────────────────
@@ -211,4 +238,96 @@ async fn apply_wasm_entry<'a>(
             Ok(true)
         }
     }
+}
+
+/// Send the request headers to an `ext_proc` entry's processor and apply the answer. Returns `true` if the request was
+/// ended (the processor's immediate response, or the refusal of a fail-closed entry whose processor failed).
+#[cfg(feature = "ext-proc")]
+async fn apply_ext_proc_entry<'a>(
+    guard: &MiddlewareGuard,
+    headers: &mut std::collections::HashMap<String, String>,
+    entry: &MiddlewareEntry,
+    ctx: &mut FilterContext<'a>,
+) -> Result<bool> {
+    use conduit_ext_proc::{ExtProcClient, ExtProcConfig, RequestInfo, Verdict};
+
+    // `validate` refuses a config that does not parse, so this is a config that changed under a running guard or a build
+    // that skipped validation: fail closed, never let the request through unchecked.
+    let config = match ExtProcConfig::from_value(entry.config.as_ref()) {
+        Ok(config) => config,
+        Err(message) => {
+            tracing::warn!(target: "conduit::ext_proc", error = %message, "invalid ext_proc config; the request is refused");
+            return refuse(
+                ctx,
+                503,
+                Bytes::from_static(b"external processing failed\n"),
+                Vec::new(),
+            )
+            .await;
+        }
+    };
+    let client = ExtProcClient::new(&config);
+
+    let end_of_stream = ctx.session.is_body_empty();
+    let secure = ctx.session.digest().is_some_and(|d| d.ssl_digest.is_some());
+    // An entry with a later phase keeps its stream open for the body and response hooks; one that only sends the request
+    // headers uses a short stream of its own.
+    let mut session = match (&guard.ext_proc, config.needs_session()) {
+        (Some(_), true) => Some(client.session()),
+        _ => None,
+    };
+    let verdict = {
+        let req = ctx.session.req_header();
+        let authority = req
+            .headers
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| req.uri.authority().map(|a| a.as_str()))
+            .unwrap_or("");
+        let path = req
+            .uri
+            .path_and_query()
+            .map_or_else(|| req.uri.path(), |pq| pq.as_str());
+        let info = RequestInfo {
+            method: req.method.as_str(),
+            scheme: if secure { "https" } else { "http" },
+            authority,
+            path,
+            headers: &req.headers,
+            end_of_stream,
+        };
+        match session.as_mut() {
+            Some(session) => session.request_headers(&info).await,
+            None => client.process_request_headers(&info).await,
+        }
+    };
+
+    match verdict {
+        Verdict::Continue(changes) => {
+            crate::ext_proc::apply_request_changes(ctx.session.req_header_mut(), headers, &changes);
+            if let (Some(session), Some(sessions)) = (session, &guard.ext_proc) {
+                sessions.push(session).await;
+            }
+            Ok(false)
+        }
+        Verdict::Respond(answer) => {
+            let extra = crate::ext_proc::text_headers(&answer);
+            refuse(ctx, answer.status, answer.body, extra).await
+        }
+    }
+}
+
+/// End the request with `status`: the headers of the site (CORS, security) plus `extra`, which win by name.
+#[cfg(feature = "ext-proc")]
+async fn refuse<'a>(
+    ctx: &mut FilterContext<'a>,
+    status: u16,
+    body: Bytes,
+    extra: Vec<(String, String)>,
+) -> Result<bool> {
+    let mut all = ctx.extra_headers.to_vec();
+    all.extend(extra);
+    crate::ext_proc::write_answer(ctx.session, status, body, &all).await?;
+    ctx.inflight.fetch_sub(1, Ordering::Relaxed);
+    Ok(true)
 }

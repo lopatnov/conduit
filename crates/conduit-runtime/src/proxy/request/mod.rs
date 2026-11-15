@@ -93,6 +93,9 @@ pub(crate) struct GuardCtx {
     /// after the built-in filters and redirects.
     middleware: Vec<MiddlewareEntry>,
     handler_kind: HandlerKind,
+    /// Where the `ext_proc` entries of the site leave their open streams (issue #27).
+    #[cfg(feature = "ext-proc")]
+    ext_proc: Option<std::sync::Arc<conduit_ext_proc::ExtProcSessions>>,
     is_preflight: bool,
     sec_only: Vec<(String, String)>,
     origin: Option<String>,

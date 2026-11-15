@@ -3,6 +3,8 @@ pub mod chain;
 pub mod logging;
 pub mod rate_limit;
 pub mod response_chain;
+#[cfg(feature = "ext-proc")]
+mod response_ext_proc;
 pub mod response_time;
 
 // Paths the moved files use through `crate::filter::…` (facades over Layer-1 crates in the root crate).

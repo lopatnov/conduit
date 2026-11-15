@@ -293,7 +293,15 @@ impl ConduitProxy {
         // because browsers on HTTP/2 send no `host` header at all.
         let incoming_host = request_host(session);
 
+        // A site with an `ext_proc` entry gets a place for the streams its entries keep open for the body and response hooks.
+        #[cfg(feature = "ext-proc")]
+        let ext_proc_sessions = middleware
+            .iter()
+            .any(|entry| entry.r#type == "ext_proc")
+            .then(conduit_ext_proc::ExtProcSessions::new);
         let guards = GuardCtx {
+            #[cfg(feature = "ext-proc")]
+            ext_proc: ext_proc_sessions.clone(),
             ip_cfg,
             limits_cfg,
             security_cfg: security_cfg.clone(),
@@ -323,6 +331,13 @@ impl ConduitProxy {
         };
         if self.run_guard_filters(session, guards).await? {
             return Ok(true);
+        }
+
+        // Keep the streams only when something later needs them: the request body or the response.
+        #[cfg(feature = "ext-proc")]
+        {
+            req_ctx.ext_proc =
+                ext_proc_sessions.filter(|s| s.rewrites_request_body() || s.handles_response());
         }
 
         // Resolve the matched site from the same snapshot used for routing, so
@@ -516,6 +531,8 @@ impl ConduitProxy {
             query: guards.script_query,
             headers: guards.script_headers,
             client_ip: guards.client_ip.clone(),
+            #[cfg(feature = "ext-proc")]
+            ext_proc: guards.ext_proc,
         });
 
         let mut ctx = FilterContext {

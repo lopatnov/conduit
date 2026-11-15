@@ -52,6 +52,7 @@ lopatnov-conduit-auth-jwt         = { workspace = true }
 lopatnov-conduit-cache            = { workspace = true }
 lopatnov-conduit-compression      = { workspace = true }
 lopatnov-conduit-cors             = { workspace = true }
+lopatnov-conduit-ext-proc         = { workspace = true }
 lopatnov-conduit-faults           = { workspace = true }
 lopatnov-conduit-hotreload        = { workspace = true }
 lopatnov-conduit-ipfilter         = { workspace = true }
@@ -100,3 +101,5 @@ acme = ["lopatnov-conduit-acme/acme"]
 fault-injection = ["lopatnov-conduit-faults/fault-injection"]
 otlp = ["dep:opentelemetry"]
 tokio-metrics = []
+# External processing filter (type: "ext_proc", issue #27): the per-request streams, the request body and response phases.
+ext-proc = ["lopatnov-conduit-middleware/ext-proc", "lopatnov-conduit-ext-proc/ext-proc"]

@@ -34,7 +34,10 @@ fn meter_traffic(proxy: &ConduitProxy, req_ctx: &RequestCtx, len: usize) {
 /// still happen but without body replay.
 pub(crate) async fn request_body_filter(
     proxy: &ConduitProxy,
+    #[cfg_attr(not(feature = "ext-proc"), allow(unused_variables))]
+    session: &mut pingora_proxy::Session,
     body: &mut Option<bytes::Bytes>,
+    #[cfg_attr(not(feature = "ext-proc"), allow(unused_variables))] end_of_stream: bool,
     ctx: &mut Option<RequestCtx>,
 ) -> pingora_core::Result<()> {
     let Some(req_ctx) = ctx.as_mut() else {
@@ -122,6 +125,84 @@ pub(crate) async fn request_body_filter(
     // chunk over `maxBodyBytes` or from a client below the minimum rate is discarded, and counting it
     // would inflate the upstream's rate and divert later requests from it.
     meter_traffic(proxy, req_ctx, chunk_len);
+
+    // External processing (#27): an `ext_proc` entry that reads or changes the request body sees the chunk after the size
+    // and rate checks above, and what it answers is what goes on (and what a retry would replay, below).
+    #[cfg(feature = "ext-proc")]
+    //
+    // Not for an upgraded connection (WebSocket): the bytes that pass through this hook after the upgrade are the tunnel, not a
+    // request body; holding them back or rewriting them would break the protocol. The test is the state of the connection
+    // (`was_upgraded`: the upstream answered 101), not the request: any client can add an `Upgrade` header to a request that
+    // has a real body, and that must not switch the processor off.
+    if let Some(sessions) = req_ctx
+        .ext_proc
+        .clone()
+        .filter(|s| s.rewrites_request_body() && !session.was_upgraded())
+    {
+        use conduit_ext_proc::BodyVerdict;
+        // The decision made when the request was framed: `is_body_empty()` is not asked again, it turns `true` for a
+        // chunked body that holds no data once its terminating chunk is read, after the request was sent as having one.
+        let processable = match req_ctx.ext_proc_body_processable {
+            Some(decided) => decided,
+            None => {
+                let body_is_empty = session.is_body_empty();
+                super::transform::body_can_be_processed(
+                    session.req_header().method.as_str(),
+                    body_is_empty,
+                )
+            }
+        };
+        let verdict = if processable {
+            sessions.request_body(body.take(), end_of_stream).await
+        } else {
+            // A request with no body and a method that carries none has nothing to exchange (and the upstream request is
+            // not framed for a body): the request body is done, so that a `responseBody: observe` entry may start.
+            sessions.request_body_is_done().await;
+            BodyVerdict::Forward(body.take())
+        };
+        match verdict {
+            BodyVerdict::Forward(next) => {
+                // `None` would tell Pingora the body is over: a chunk that is held back is an empty one instead.
+                *body = match next {
+                    Some(bytes) => Some(bytes),
+                    None if end_of_stream => None,
+                    None => Some(bytes::Bytes::new()),
+                };
+                // The time spent in the processor is not the client's upload time: the next chunk is measured from here, so a
+                // slow processor does not cost the client its credit against `minUploadRateBytesPerSec`.
+                if let Some(last) = req_ctx.limits.upload_last_chunk.as_mut() {
+                    *last = std::time::Instant::now();
+                }
+            }
+            BodyVerdict::Respond(answer) => {
+                // The upstream may already have started its response (it answered before the body was complete): a second
+                // final response cannot be written over it, so the connection is dropped instead. An interim response does not
+                // count: pingora-core 0.9.1's HTTP/1 session records the `100 Continue` it forwards for `Expect: 100-continue`
+                // as the written response (its doc says "final", its code stores any), and the refusal must still follow it
+                // (`a_refusal_after_100_continue_...` sends a real 100). Only a final response (not 1xx) or a `101` blocks it.
+                if !session
+                    .response_written()
+                    .is_some_and(|h| !h.status.is_informational() || h.status.as_u16() == 101)
+                {
+                    // The connection is closed right after: say so, or a client that reuses it for its next request
+                    // finds it gone (a reset, `IncompleteMessage`) instead of being told to open a new one.
+                    // (Pingora writes `Connection: close` itself once keep-alive is off.)
+                    session.set_keepalive(None);
+                    conduit_middleware::ext_proc::write_direct(
+                        session,
+                        &answer,
+                        &req_ctx.extra_headers,
+                    )
+                    .await?;
+                }
+                // The answer is already on its way: status 0 tells `fail_to_proxy` not to write an error page over it.
+                return Err(pingora_core::Error::explain(
+                    pingora_core::ErrorType::HTTPStatus(0),
+                    "request ended by the external processor",
+                ));
+            }
+        }
+    }
 
     // Retry body buffering (separate from size enforcement).
     // Only buffer when retry is configured (otherwise wasteful).

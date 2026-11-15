@@ -30,6 +30,10 @@ const _: () = assert!(
     "`conduit-middleware`'s `rhai` feature and the root crate's `rhai` feature must be enabled together"
 );
 const _: () = assert!(
+    conduit_middleware::warnings::EXT_PROC_COMPILED == cfg!(feature = "ext-proc"),
+    "`conduit-middleware`'s `ext-proc` feature and the root crate's `ext-proc` feature must be enabled together"
+);
+const _: () = assert!(
     conduit_proxy_http::warnings::COMPILED == cfg!(feature = "proxy"),
     "`conduit-proxy-http`'s `proxy` feature and the root crate's `proxy` feature must be enabled together"
 );
