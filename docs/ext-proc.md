@@ -167,7 +167,8 @@ phase keeps its stream open until the request ends.
   `append: true`, which adds a value (Envoy's `append` defaults to false in this message); an entry that names an
   `append_action` other than the default (`ADD_IF_ABSENT`, `OVERWRITE_IF_EXISTS_OR_ADD`, `OVERWRITE_IF_EXISTS`) gets
   exactly that. A set with an empty value is skipped
-  unless `keep_empty_value` is set; for an overwrite that means the header is **removed** (Envoy's rule). Later middleware
+  unless `keep_empty_value` is set; for an overwrite that means the header is **removed** (Envoy's rule), and it takes the
+  entries for the same name that came before it with it (the later ones are applied after the removal). Later middleware
   entries see the changed headers.
 - *A body mutation* (`request_body` answer): the `body` it carries replaces the body (or the chunk, when streamed);
   `clear_body: true` empties it; an answer with no mutation keeps it. The request is then forwarded with **chunked
@@ -268,7 +269,8 @@ answer (`remove_headers=["x-user"]`) so that only your value reaches the upstrea
 **Mask an upstream error.** Set `responsePhase: true`. The processor is sent `:status` and the upstream's headers; answer
 a `500` with an immediate response of your own (`refuse(503, "try again later")`) and the client never sees the
 upstream's answer. The site's own CORS and security headers are added afterwards, and a route's `retry` does not retry a
-response that the processor replaced.
+response that the processor replaced; the rest of the site's response handling still applies to it (`maskErrors` masks a
+replaced `5xx` like any other).
 
 **Count what leaves.** Set `responseBody: observe`: every chunk of the response body is copied to the processor, which
 can count bytes or scan for secrets and raise an alarm. Nothing it answers is acted on, and a processor that cannot keep up

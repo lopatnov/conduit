@@ -142,10 +142,20 @@ impl<'a> ResponseFilterChain<'a> {
         resp: &mut ResponseHeader,
         req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
+        self.offload(resp, req_ctx, false)
+    }
+
+    /// [`run_offloading`](Self::run_offloading) with the choice of [`run_dropping_retry`](Self::run_dropping_retry).
+    fn offload(
+        &self,
+        resp: &mut ResponseHeader,
+        req_ctx: &dyn ResponseCtx,
+        drop_retry: bool,
+    ) -> Result<ResponseFilterOutcome> {
         if self.may_block {
-            tokio::task::block_in_place(|| self.run(resp, req_ctx))
+            tokio::task::block_in_place(|| self.run_dropping_retry(resp, req_ctx, drop_retry))
         } else {
-            self.run(resp, req_ctx)
+            self.run_dropping_retry(resp, req_ctx, drop_retry)
         }
     }
 
@@ -163,12 +173,9 @@ impl<'a> ResponseFilterChain<'a> {
             stage.apply(resp, &mut state).await?;
         }
         let body_replaceable = crate::proxy::response_phase::body_can_be_replaced(resp);
-        let outcome = match self.run_offloading(resp, req_ctx)? {
-            ResponseFilterOutcome::RetryUpstream if state.replaced => {
-                ResponseFilterOutcome::Continue
-            }
-            other => other,
-        };
+        // A replaced response is final: the filters after the retry one (the 5xx mask, the site's middleware) still run on
+        // it, only the retry is not raised.
+        let outcome = self.offload(resp, req_ctx, state.replaced)?;
         Ok(ChainRun {
             outcome,
             state,
@@ -185,9 +192,21 @@ impl<'a> ResponseFilterChain<'a> {
         resp: &mut ResponseHeader,
         req_ctx: &dyn ResponseCtx,
     ) -> Result<ResponseFilterOutcome> {
+        self.run_dropping_retry(resp, req_ctx, false)
+    }
+
+    /// [`run`](Self::run); with `drop_retry` a `RetryUpstream` is ignored and the filters after it still run, for a
+    /// response that must not be retried (one that an `ext_proc` answer replaced) but is otherwise treated as any other.
+    fn run_dropping_retry(
+        &self,
+        resp: &mut ResponseHeader,
+        req_ctx: &dyn ResponseCtx,
+        drop_retry: bool,
+    ) -> Result<ResponseFilterOutcome> {
         for filter in &self.filters {
             match filter.apply(resp, req_ctx)? {
                 ResponseFilterOutcome::Continue => continue,
+                ResponseFilterOutcome::RetryUpstream if drop_retry => continue,
                 other => return Ok(other),
             }
         }
@@ -1100,6 +1119,66 @@ mod tests {
                 "replaced={replaced}"
             );
         }
+    }
+
+    /// A replaced 5xx is not retried, but the filters after the retry one still run on it: the 5xx mask is raised and the
+    /// site's later filters (here a tagging stage, standing for the middleware) see the response.
+    #[tokio::test]
+    async fn a_replaced_response_is_not_retried_but_the_later_filters_still_run() {
+        let retry_filter = || RetryOnErrorFilter {
+            retry: Some(RetrySpec {
+                has_attempts_left: true,
+                has_5xx_condition: true,
+            }),
+            stale_on_error: false,
+        };
+        // Replaced: no retry, the mask is reached.
+        let chain = ResponseFilterChain::new()
+            .push_async(Stage {
+                replaced: true,
+                ..Stage::tagged("a")
+            })
+            .push(retry_filter())
+            .push(ErrorMaskFilter { mask_enabled: true });
+        let mut resp = make_resp(503);
+        let run = chain.run_async(&mut resp, &dummy_ctx()).await.unwrap();
+        assert!(
+            matches!(run.outcome, ResponseFilterOutcome::MaskBody),
+            "a replaced 503 with retry available must still be masked"
+        );
+
+        // Not replaced: the retry ends the chain before the mask, as before.
+        let chain = ResponseFilterChain::new()
+            .push(retry_filter())
+            .push(ErrorMaskFilter { mask_enabled: true });
+        let mut resp = make_resp(503);
+        let run = chain.run_async(&mut resp, &dummy_ctx()).await.unwrap();
+        assert!(matches!(run.outcome, ResponseFilterOutcome::RetryUpstream));
+
+        // Replaced, and a filter after the retry one: it ran.
+        let chain = ResponseFilterChain::new()
+            .push_async(Stage {
+                replaced: true,
+                ..Stage::tagged("a")
+            })
+            .push(retry_filter())
+            .push(SyncStage {
+                tag: "s",
+                outcome: continue_,
+                drop_content_length: false,
+            });
+        let mut resp = make_resp(503);
+        let run = chain.run_async(&mut resp, &dummy_ctx()).await.unwrap();
+        assert!(matches!(run.outcome, ResponseFilterOutcome::Continue));
+        assert!(
+            resp.headers
+                .get("x-order")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with('s'),
+            "the filter after the retry one was skipped"
+        );
     }
 
     #[tokio::test]
