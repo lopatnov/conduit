@@ -89,12 +89,24 @@ fn frame_rewritten_body(
         return;
     }
     let body_is_empty = session.is_body_empty();
-    // Remembered for the body hook: the same answer must hold at the last chunk (see `ext_proc_body_processable`).
-    req_ctx.ext_proc_body_processable = Some(body_can_be_processed(
+    // Decided on the first attempt and kept: the body hook must see the same answer at the last chunk, and an upstream retry
+    // runs this function again, when a chunked body that held no data already reads as empty (see `ext_proc_body_processable`).
+    let processable = decide_body_processing(
+        &mut req_ctx.ext_proc_body_processable,
         upstream_request.method.as_str(),
         body_is_empty,
-    ));
-    reframe_request(upstream_request, body_is_empty);
+    );
+    if processable {
+        // A request that is shown to the body phases is framed for a body, whatever `is_body_empty()` says now.
+        reframe_request(upstream_request, false);
+    }
+}
+
+/// The decision of [`body_can_be_processed`], made once per request: the first call stores it in `slot`, later calls (an
+/// upstream retry) return what was stored.
+#[cfg(feature = "ext-proc")]
+fn decide_body_processing(slot: &mut Option<bool>, method: &str, body_is_empty: bool) -> bool {
+    *slot.get_or_insert_with(|| body_can_be_processed(method, body_is_empty))
 }
 
 /// `true` when a request can carry a body after an `ext_proc` entry: it has one, or its method is one that carries one (a
@@ -609,6 +621,20 @@ mod tests {
         reframe_request(&mut req, true);
         assert_eq!(req.headers.get("content-length").unwrap(), "0");
         assert!(req.headers.get("transfer-encoding").is_none());
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn the_body_decision_is_made_once_and_survives_an_upstream_retry() {
+        // First attempt: a chunked GET that announced a body is processed. On a retry the same body reads as empty (its
+        // terminating chunk was read), and the decision must not flip.
+        let mut slot = None;
+        assert!(decide_body_processing(&mut slot, "GET", false));
+        assert!(decide_body_processing(&mut slot, "GET", true));
+        // A request that was left out stays out when it later reads as non-empty.
+        let mut slot = None;
+        assert!(!decide_body_processing(&mut slot, "GET", true));
+        assert!(!decide_body_processing(&mut slot, "GET", false));
     }
 
     #[cfg(feature = "ext-proc")]
