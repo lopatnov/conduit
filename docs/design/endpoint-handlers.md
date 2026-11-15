@@ -366,6 +366,20 @@ engine bug cannot reach the proxy. Its costs are on the developer's side (a buil
 and in per-request time, which phase 1 measures. JS is a first-class language of the handler docs from phase 1, with
 a worked example and an e2e test, not a side note.
 
+**QuickJS crates** (crates.io and the repositories, checked 2026-11-15), for J2 or for knowing what the jco QuickJS
+backend contains:
+
+| Crate | Engine | State | Fit |
+| --- | --- | --- | --- |
+| `rquickjs` 0.14 | **quickjs-ng** (the maintained fork; `sys/quickjs` submodule) | active, released 2026-09, ~3.9 M recent downloads; async Rust integration, `embed` of bytecode, interrupt handler and memory limit | **the choice** for a native embed; also what `componentize-qjs` (jco's QuickJS backend) embeds, and what AWS LLRT is built on |
+| `quickjs_runtime` 0.18 | QuickJS (via its own `hirofa_utils` stack) | active, small user base (~3 k recent downloads) | a heavier runtime layer (promises, modules, utils) Conduit would not use |
+| `quick-js` 0.4.1 | Bellard's QuickJS | last release 2021-03 | not maintained: no |
+| `javy` 8.1 | QuickJS compiled to WASM (Bytecode Alliance) | active | a JS-to-*core*-module toolchain with a stdin/stdout ABI; already rejected for #187, and `jco --backend quickjs` covers the WASM case for components |
+| `llrt_modules` | modules on top of `rquickjs` (AWS LLRT) | pre-1.0 | a source of Node-style modules if a native JS handler ever wants them |
+
+So whichever path is taken, the QuickJS underneath is `rquickjs` over quickjs-ng: inside a component (J1 with
+`--backend quickjs`) or inside Conduit (J2).
+
 **J2 stays possible, through #187.** If "edit a `.js` file and reload, no build" turns out to matter, #187 (QuickJS
 *middleware*, already decided) brings `rquickjs` into Conduit, and a `handler: { js: ./x.js }` on top of the same
 handler plumbing is then a small addition (phase 4, on demand). Boa is not proposed: slower than QuickJS, larger, and
