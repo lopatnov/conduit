@@ -1033,7 +1033,7 @@ Routes each request to the upstream with the **lowest measured latency** from
 the most recent active health probe. Falls back to round-robin during the
 warm-up phase before any probe has completed.
 
-Latency is measured by the health-check prober (HEAD request to `healthCheck.path`).
+Latency is measured by the health-check prober (a `HEAD` request to `healthCheck.path` for a plaintext upstream, the TCP connect time for a TLS one: `https://`, `wss://`).
 Upstreams without probe data are ranked last (`u64::MAX`).
 
 **Use when:** upstreams have meaningfully different hardware or geographic

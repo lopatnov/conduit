@@ -144,8 +144,9 @@ combination in the table.
 
 - Route by service with a path prefix: gRPC paths are `/package.Service/Method`, so `"/orders.Orders/"` is a prefix.
 - The idle `timeout.readMs` applies to streaming calls as well (tested for SSE and WebSocket, the same code path): raise it for calls that can be silent.
-- **Active health probes speak plaintext HTTP/1.1** (a TLS upstream, `https://` or `wss://`, is probed by connecting only), which a gRPC server does not answer; with a `healthCheck` on such a route the
+- **Active health probes of a plaintext upstream (`http://`, `ws://`) speak HTTP/1.1**, which a plaintext gRPC server does not answer; with a `healthCheck` on such a route the
   upstream is marked unhealthy (observed with the Python gRPC server). Use `outlierDetection` (judges real calls) instead.
+  A TLS upstream (`https://`) is probed by connecting only, so this does not apply to it.
 - gRPC-Web (HTTP/1.1 from a browser) is plain HTTP and needs no `h2c`, but is not part of the test.
 
 ## GraphQL
