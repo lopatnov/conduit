@@ -34,12 +34,6 @@ use account::{fnv1a_64, load_or_create_account, stored_account_exists};
 use http01::ChallengeServer;
 use storage::{cached_pair_matches, pair_paths, unsupported_key_format, PendingPair};
 
-/// How long one request of an order may take. instant-acme's HTTP client has no timeout of its own, so a CA that
-/// accepts the connection and never answers would hold the sequential renewal loop (and startup) forever.
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
-/// How long the validation phase (authorizations, challenge, polling until the order is ready) may take in all.
-const VALIDATION_TIMEOUT: Duration = Duration::from_secs(180);
-
 /// `true` when a failed `newOrder` that named the old certificate may be tried once more without it: only when the
 /// CA answered with an ACME problem document that identifies the `replaces` link as the cause (RFC 9773 §5). That is
 /// `alreadyReplaced`, or `malformed`/`unauthorized` whose detail names the link (the stem "replace": `replaces`,
@@ -346,9 +340,13 @@ async fn run_acme_order(
         .unwrap_or_else(|| LetsEncrypt::Production.url())
         .to_owned();
 
+    // How long one request of an order, and the validation phase, may take: `tls.acme.orderTimeoutSecs` and
+    // `validationTimeoutSecs` (issue #746). instant-acme's HTTP client has no timeout of its own, so a CA that accepts
+    // the connection and never answers would hold the sequential renewal loop (and startup) forever without them.
+    let timings = acme_cfg.timings();
     let account = bounded(
         "ACME account setup",
-        STEP_TIMEOUT,
+        timings.order,
         load_or_create_account(acme_cfg, &directory_url),
     )
     .await?;
@@ -368,11 +366,13 @@ async fn run_acme_order(
     // that names `replaces`). A CA may also refuse the link itself (RFC 9773 section 5: the certificate was already
     // replaced, or is not ours to replace): the order is then tried once more without it.
     let replaces = match previous_cert {
-        Some(pem) => ari::advice(&account, pem, unix_now()).await.map(|a| a.id),
+        Some(pem) => ari::advice(&account, pem, unix_now(), &timings)
+            .await
+            .map(|a| a.id),
         None => None,
     };
     let place_order = |replaces| async {
-        bounded("ACME new-order request", STEP_TIMEOUT, async {
+        bounded("ACME new-order request", timings.order, async {
             account
                 .new_order(&build_order(replaces))
                 .await
@@ -410,7 +410,7 @@ async fn run_acme_order(
     let mut our_tokens: Vec<String> = Vec::new();
     let retry = RetryPolicy::default();
     let flow_result: anyhow::Result<()> =
-        bounded("ACME challenge validation", VALIDATION_TIMEOUT, async {
+        bounded("ACME challenge validation", timings.validation, async {
             let mut authorizations = order.authorizations();
             while let Some(authz_result) = authorizations.next().await {
                 let mut authz = authz_result.context("ACME authorizations fetch failed")?;
@@ -460,14 +460,14 @@ async fn run_acme_order(
     // Finalize the order: instant-acme generates a fresh ECDSA key-pair and CSR
     // internally (via the `rcgen` feature), then sends the CSR to the CA.
     // Returns the private key as PEM.
-    let key_pem = bounded("ACME finalize", STEP_TIMEOUT, async {
+    let key_pem = bounded("ACME finalize", timings.order, async {
         order.finalize().await.map_err(anyhow::Error::new)
     })
     .await
     .context("ACME finalize failed")?;
 
     // Retrieve the issued certificate chain (polls until the CA makes it available).
-    let cert_chain_pem = bounded("ACME certificate fetch", STEP_TIMEOUT, async {
+    let cert_chain_pem = bounded("ACME certificate fetch", timings.order, async {
         order
             .poll_certificate(&retry)
             .await
@@ -560,6 +560,44 @@ mod tests {
             instant_acme::Error::Str("connection reset")
         )));
         assert!(!may_retry_without_replaces(&anyhow::anyhow!("other")));
+    }
+
+    /// `orderTimeoutSecs` (issue #746) bounds each request of an order: a CA that accepts the connection and never
+    /// answers fails the order after the configured time, not the default one.
+    #[tokio::test(start_paused = true)]
+    async fn the_configured_order_timeout_bounds_a_ca_that_never_answers() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // accept and hold every connection without answering
+        let hold = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = AcmeConfig {
+            email: "ops@example.com".to_string(),
+            directory: Some(format!("https://{addr}/directory")),
+            storage: Some(dir.path().to_string_lossy().into_owned()),
+            order_timeout_secs: Some(7),
+            ..Default::default()
+        };
+        let started = tokio::time::Instant::now();
+        let err = run_acme_order(
+            &cfg,
+            "example.com",
+            &Arc::new(DashMap::new()),
+            ChallengeSource::Shared,
+            None,
+        )
+        .await
+        .expect_err("a CA that never answers");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("timed out after 7 s"), "got: {msg}");
+        assert_eq!(started.elapsed(), Duration::from_secs(7));
+        hold.abort();
     }
 
     #[test]
@@ -758,6 +796,7 @@ mod tests {
             storage: None,
             challenge: None,
             profile: None,
+            ..Default::default()
         };
         let paths = load_or_obtain_certificate(
             &cfg,
@@ -836,6 +875,7 @@ mod tests {
             storage: None,
             challenge: None,
             profile: None,
+            ..Default::default()
         }
     }
 

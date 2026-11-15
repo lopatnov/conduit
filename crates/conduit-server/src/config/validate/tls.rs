@@ -125,6 +125,15 @@ pub(super) fn validate_acme_host(
             "tls.acme.profile must not be empty: leave it out to get the CA's default profile",
         ));
     }
+    // The order timeouts, the Retry-After clamps and the check interval (issue #746)
+    if let Some(acme) = tls.acme.as_ref() {
+        for (field, message) in acme.problems() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.tls.acme.{field}"),
+                message,
+            ));
+        }
+    }
     let Some(host) = host else {
         errors.push(ValidationError::new(
             format!("{prefix}.host"),

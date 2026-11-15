@@ -14,19 +14,16 @@ use instant_acme::{Account, CertificateIdentifier};
 use x509_parser::extensions::ParsedExtension;
 use x509_parser::pem::parse_x509_pem;
 
-/// How long one ARI request may take. The CA is asked on every renewal tick; a hung endpoint must not hold the
-/// sequential renewal loop (and with it every other certificate).
-const ASK_TIMEOUT: Duration = Duration::from_secs(15);
+use crate::config::AcmeTimings;
 
-/// How long the whole ARI probe may take: restoring the stored account (instant-acme fetches the directory again,
-/// with an HTTP client that has no timeout of its own) and then the request above. Without it a CA that accepts the
-/// connection and never answers would block the sequential renewal loop, and every other certificate with it.
-pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// The CA's `Retry-After` is the earliest it wants to be asked again (RFC 9773 section 4.3.2). Clamped so that a
-/// careless value (seconds, years) can neither make the loop hammer the CA nor silence the check.
-const MIN_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
-const MAX_RETRY_AFTER: Duration = Duration::from_secs(24 * 3600);
+// The durations come from `tls.acme` (see `AcmeTimings`; issue #746):
+// - `ari_ask`: one ARI request. The CA is asked on every renewal tick; a hung endpoint must not hold the sequential
+//   renewal loop (and with it every other certificate).
+// - `ari_probe`: the whole probe, restoring the stored account (instant-acme fetches the directory again, with an
+//   HTTP client that has no timeout of its own) and then the request above.
+// - `retry_after_min`/`retry_after_max`: the CA's `Retry-After` is the earliest it wants to be asked again (RFC 9773
+//   section 4.3.2), clamped so that a careless value (seconds, years) can neither make the loop hammer the CA nor
+//   silence the check.
 
 /// What the CA said about one certificate.
 pub(super) struct Advice {
@@ -35,7 +32,7 @@ pub(super) struct Advice {
     pub id: CertificateIdentifier<'static>,
     /// The suggested window asks for a renewal now (see [`window_says_renew`]).
     pub renew_now: bool,
-    /// When to ask again, from the CA's `Retry-After` and clamped to 5 minutes .. 24 hours.
+    /// When to ask again, from the CA's `Retry-After` and clamped to `retry_after_min` .. `retry_after_max` (5 minutes .. 24 hours by default).
     pub ask_again_in: Duration,
 }
 
@@ -104,10 +101,15 @@ pub(super) fn window_says_renew(
 /// Ask the CA what it thinks of `cert_pem`. `None` when there is no usable answer (the directory has no ARI, the
 /// request failed or timed out, the window is invalid, the certificate has no identifier): the caller then relies on
 /// the lifetime rule.
-pub(super) async fn advice(account: &Account, cert_pem: &str, now: i64) -> Option<Advice> {
+pub(super) async fn advice(
+    account: &Account,
+    cert_pem: &str,
+    now: i64,
+    timings: &AcmeTimings,
+) -> Option<Advice> {
     let id = certificate_identifier(cert_pem)?;
     let seed = super::fnv1a_64(id.serial.as_bytes());
-    match tokio::time::timeout(ASK_TIMEOUT, account.renewal_info(&id)).await {
+    match tokio::time::timeout(timings.ari_ask, account.renewal_info(&id)).await {
         Ok(Ok((info, retry_after))) => {
             let window = info.suggested_window;
             let (start, end) = (window.start.unix_timestamp(), window.end.unix_timestamp());
@@ -117,7 +119,10 @@ pub(super) async fn advice(account: &Account, cert_pem: &str, now: i64) -> Optio
                 );
                 return None;
             }
-            let ask_again_in = retry_after.clamp(MIN_RETRY_AFTER, MAX_RETRY_AFTER);
+            // `max` then `min`, not `clamp`: that panics when the minimum is above the maximum
+            let ask_again_in = retry_after
+                .max(timings.retry_after_min)
+                .min(timings.retry_after_max);
             // a window that closes before the CA wants to be asked again counts as open
             let renew_now = window_says_renew(
                 start,
