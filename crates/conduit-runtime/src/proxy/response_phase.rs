@@ -235,7 +235,10 @@ pub(super) async fn upstream_response_filter(
 
     // The response is final now (it is not retried): an entry with `responseBody: observe` starts being sent the body.
     #[cfg(feature = "ext-proc")]
-    if let (Some(sessions), false) = (&ext_proc_sessions, ext_proc_replaced) {
+    if let (Some(sessions), true) = (
+        &ext_proc_sessions,
+        should_observe_body(upstream_response, ext_proc_replaced),
+    ) {
         sessions.start_observing().await;
     }
 
@@ -296,6 +299,14 @@ async fn ext_proc_response(
         }
         None => (false, None),
     }
+}
+
+/// `true` when the body that follows is an HTTP response body a `responseBody: observe` entry may be sent: not the answer a
+/// processor replaced (its own text, already seen) and not the tunnel after `101 Switching Protocols`, whose bytes pass
+/// through the body hooks too (WebSocket frames are not a response body).
+#[cfg(feature = "ext-proc")]
+fn should_observe_body(resp: &pingora_http::ResponseHeader, replaced: bool) -> bool {
+    !replaced && resp.status != pingora_http::StatusCode::SWITCHING_PROTOCOLS
 }
 
 /// `true` when the response status can carry content (not `1xx`, `204`, `205`, `304`).
@@ -614,6 +625,16 @@ mod tests {
         ctx.mask_upstream_body = true;
         super::place_ext_proc_body(&mut ctx, bytes::Bytes::from_static(b"processor"));
         assert!(ctx.replacement_body.is_none());
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn a_body_is_observed_unless_the_answer_was_replaced_or_the_connection_was_upgraded() {
+        use super::should_observe_body;
+        assert!(should_observe_body(&resp_with(200, None), false));
+        assert!(should_observe_body(&resp_with(500, None), false));
+        assert!(!should_observe_body(&resp_with(200, None), true));
+        assert!(!should_observe_body(&resp_with(101, None), false));
     }
 
     #[test]

@@ -162,16 +162,20 @@ phase keeps its stream open until the request ends.
 ### What is applied
 
 
-- *A header mutation* (`request_headers` answer): each `set_headers` entry by its `append_action`
-  (`APPEND_IF_EXISTS_OR_ADD`, `ADD_IF_ABSENT`, `OVERWRITE_IF_EXISTS_OR_ADD`, `OVERWRITE_IF_EXISTS`; the older `append`
-  boolean still works: `false` means overwrite), then each `remove_headers` name. A set with an empty value is skipped
+- *A header mutation* (`request_headers` answer): each `remove_headers` name first, then each `set_headers` entry (so a
+  header that is removed and set again stays set, as in Envoy). A set replaces an existing value unless the entry says
+  `append: true`, which adds a value (Envoy's `append` defaults to false in this message); an entry that names an
+  `append_action` other than the default (`ADD_IF_ABSENT`, `OVERWRITE_IF_EXISTS_OR_ADD`, `OVERWRITE_IF_EXISTS`) gets
+  exactly that. A set with an empty value is skipped
   unless `keep_empty_value` is set; for an overwrite that means the header is **removed** (Envoy's rule). Later middleware
   entries see the changed headers.
 - *A body mutation* (`request_body` answer): the `body` it carries replaces the body (or the chunk, when streamed);
   `clear_body: true` empties it; an answer with no mutation keeps it. The request is then forwarded with **chunked
   framing** (`Transfer-Encoding: chunked` to an HTTP/1.1 upstream, no `Content-Length` to an HTTP/2 one), because the
   length of what is forwarded is no longer the length of what the client sent. A body mutation in a *headers* answer, a
-  header mutation in a *body* answer, and any answer to `response_body` are ignored and logged.
+  header mutation in a *body* answer, and any answer to `response_body` are ignored and logged. A request with no body and a
+  method that carries none (`GET`, `HEAD`, `DELETE`) is not shown to the body phases at all (the headers phase already
+  said `end_of_stream`); an empty `POST`, `PUT` or `PATCH` is, and a processor may supply its body.
 - *A response-headers answer* (`responsePhase`): the same header rules as for the request, applied to the upstream's
   response. Entries run in order, each shown the headers the one before left. The site's own response headers are added
   afterwards.
@@ -304,8 +308,10 @@ reference for what a processor can rely on.
 
 ## Stability
 
-The protocol is Envoy's. What Conduit does not implement ([What is not there](#what-is-not-there): trailers, per-route
-overrides, rewriting the response body) is refused when a processor asks for it, not silently ignored. The messages are hand-written to Envoy's field numbers and pinned by tests against Envoy's own generated messages.
+The protocol is Envoy's. What Conduit does not implement ([What is not there](#what-is-not-there)) is refused when a
+processor asks for it (trailers), is not offered (per-route overrides), or, for the response body, is **ignored and logged**:
+`responseBody: observe` never fails a request and never changes the body, so an answer that tries to redact it has no
+effect (rewrite a response body with a WASM `on_response` plugin). The messages are hand-written to Envoy's field numbers and pinned by tests against Envoy's own generated messages.
 The configuration keys of this guide are what this release ships; like the rest of the 2.x configuration they change only
 with a note in [CHANGELOG.md](../CHANGELOG.md).
 

@@ -214,6 +214,12 @@ impl ExtProcSession {
         }
     }
 
+    /// No request body is left to exchange (the request has none, and its method carries none): the response may be
+    /// observed.
+    pub fn request_body_is_done(&mut self) {
+        self.body_done = true;
+    }
+
     /// `buffered`: hold the chunks (up to `maxBodyBytes`), send the whole body at the end, forward the answer.
     async fn buffered_body(&mut self, chunk: Option<Bytes>, end: bool) -> BodyVerdict {
         if let Some(chunk) = &chunk {
@@ -492,6 +498,13 @@ impl ExtProcSessions {
         match sessions.get_mut(index) {
             Some(session) => session.response_headers(info).await,
             None => Verdict::Continue(HeaderChanges::default()),
+        }
+    }
+
+    /// No request body is left to exchange for any entry: see [`ExtProcSession::request_body_is_done`].
+    pub async fn request_body_is_done(&self) {
+        for session in self.inner.lock().await.iter_mut() {
+            session.request_body_is_done();
         }
     }
 

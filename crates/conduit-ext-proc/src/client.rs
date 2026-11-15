@@ -166,7 +166,7 @@ pub fn clear_channels() {
     }
 }
 
-fn channel_for(config: &ExtProcConfig) -> Result<Channel, String> {
+pub(crate) fn channel_for(config: &ExtProcConfig) -> Result<Channel, String> {
     let address = config.endpoint()?;
     let key = format!(
         "{}\0{}",

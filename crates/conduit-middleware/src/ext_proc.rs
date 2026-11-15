@@ -84,6 +84,10 @@ fn writes(mode: SetMode, present: bool) -> bool {
 
 /// Apply a processor's validated header changes to the response.
 pub fn apply_response_changes(resp: &mut ResponseHeader, changes: &HeaderChanges) {
+    // removals first, as Envoy does: a header that is removed and set again stays set
+    for name in &changes.remove {
+        resp.remove_header(name);
+    }
     for set in &changes.set {
         if !writes(set.mode, resp.headers.contains_key(&set.name)) {
             continue;
@@ -94,9 +98,6 @@ pub fn apply_response_changes(resp: &mut ResponseHeader, changes: &HeaderChanges
             resp.insert_header(&set.name, set.value.clone())
         };
     }
-    for name in &changes.remove {
-        resp.remove_header(name);
-    }
 }
 
 /// Apply a processor's validated header changes to the request, and to the lower-cased view later entries read.
@@ -105,6 +106,11 @@ pub fn apply_request_changes(
     view: &mut std::collections::HashMap<String, String>,
     changes: &HeaderChanges,
 ) {
+    // removals first, as Envoy does: a header that is removed and set again stays set
+    for name in &changes.remove {
+        request.remove_header(name);
+        view.remove(name.as_str());
+    }
     for set in &changes.set {
         if !writes(set.mode, request.headers.contains_key(&set.name)) {
             continue;
@@ -120,26 +126,33 @@ pub fn apply_request_changes(
             continue;
         }
         let key = set.name.as_str().to_owned();
-        if let Ok(value) = set.value.to_str() {
-            match (set.mode, view.get_mut(&key)) {
-                (SetMode::Append, Some(existing)) => {
-                    existing.push_str(", ");
-                    existing.push_str(value);
-                }
-                _ => {
-                    view.insert(key, value.to_owned());
-                }
-            }
+        // The view is rebuilt from the request itself after an append: the view the runtime builds at the start keeps
+        // one value of a repeated header, so extending it would drop the others.
+        let text = if set.mode == SetMode::Append {
+            joined_values(request, set.name.as_str())
         } else {
+            set.value.to_str().ok().map(str::to_owned)
+        };
+        match text {
+            Some(value) => {
+                view.insert(key, value);
+            }
             // A value that is not text cannot be put in the view, and the old one is no longer true: later entries must
             // not decide on a stale header, so the header is left out of the view (it is not there for them).
-            view.remove(&key);
+            None => {
+                view.remove(&key);
+            }
         }
     }
-    for name in &changes.remove {
-        request.remove_header(name);
-        view.remove(name.as_str());
+}
+
+/// Every value of header `name` in the request joined with `, `, or `None` when one of them is not text.
+fn joined_values(request: &pingora_http::RequestHeader, name: &str) -> Option<String> {
+    let mut values = Vec::new();
+    for value in request.headers.get_all(name) {
+        values.push(value.to_str().ok()?);
     }
+    Some(values.join(", "))
 }
 
 /// The response-headers phase of every entry that has one, in order, each told the headers as the one before left them.
@@ -244,10 +257,19 @@ mod tests {
         assert_eq!(resp.headers.get("x-keep").unwrap(), "2");
         assert_eq!(resp.headers.get("x-new").unwrap(), "1");
         assert!(resp.headers.get("x-ghost").is_none());
-        assert!(
-            resp.headers.get("x-multi").is_none(),
-            "a removal wins over an append of the same name"
+        assert_eq!(
+            values_of(&resp, "x-multi"),
+            ["b"],
+            "the removal runs first, so the append that follows stays"
         );
+    }
+
+    fn values_of(resp: &ResponseHeader, name: &str) -> Vec<String> {
+        resp.headers
+            .get_all(name)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_owned())
+            .collect()
     }
 
     fn answer(status: u16, body: &str) -> DirectResponse {
@@ -343,7 +365,8 @@ mod tests {
     #[test]
     fn every_set_mode_does_what_its_name_says() {
         let mut req = request();
-        let mut view = HashMap::from([("x-multi".to_owned(), "a, b".to_owned())]);
+        // the view the runtime builds at the start keeps ONE value of a repeated header (the last one)
+        let mut view = HashMap::from([("x-multi".to_owned(), "b".to_owned())]);
         let changes = HeaderChanges {
             set: vec![
                 set("x-multi", "c", SetMode::Append),
@@ -363,7 +386,7 @@ mod tests {
         assert!(req.headers.get("x-ghost").is_none());
         assert_eq!(values(&req, "x-keep"), ["2"]);
 
-        // the view later entries read follows
+        // the view later entries read follows, and an append keeps the values the view had lost
         assert_eq!(view["x-multi"], "a, b, c");
         assert_eq!(view["x-user"], "bob");
         assert_eq!(view["x-new"], "1");
@@ -371,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn removals_apply_after_the_sets_and_clear_every_value() {
+    fn removals_apply_before_the_sets_and_clear_every_value() {
         let mut req = request();
         let mut view = HashMap::from([
             ("x-multi".to_owned(), "a, b".to_owned()),
@@ -385,12 +408,14 @@ mod tests {
             ],
         };
         apply_request_changes(&mut req, &mut view, &changes);
-        assert!(
-            req.headers.get("x-user").is_none(),
-            "a removal wins over a set of the same name"
+        assert_eq!(
+            values(&req, "x-user"),
+            ["bob"],
+            "a header that is removed and set stays set (Envoy removes first)"
         );
+        assert_eq!(view["x-user"], "bob");
         assert!(req.headers.get("x-multi").is_none());
-        assert!(view.is_empty());
+        assert!(!view.contains_key("x-multi"));
         assert_eq!(values(&req, "x-keep"), ["1"]);
     }
 

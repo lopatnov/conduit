@@ -133,6 +133,8 @@ code=$(curl -sS --max-time 10 -o "$WORK/body" -w '%{http_code}' "$B/fail")
 ok "response headers: changed, and a 500 replaced by the processor's own response"
 
 # 7. Response body, observed: the processor is sent a copy and the client gets the body unchanged.
+# The observation of the earlier /static response runs in the background: let it reach the file before the reset.
+for _ in $(seq 100); do [ "$(cat "$WORK/observed")" = "upstream says hi" ] && break; sleep 0.1; done
 : >"$WORK/observed"
 curl -sS --max-time 10 -o "$WORK/body" "$B/static"
 for _ in $(seq 100); do [ "$(cat "$WORK/observed")" = "upstream says hi" ] && break; sleep 0.1; done

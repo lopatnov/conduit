@@ -88,11 +88,18 @@ fn frame_rewritten_body(
     reframe_request(upstream_request, session.is_body_empty());
 }
 
+/// `true` when a request can carry a body after an `ext_proc` entry: it has one, or its method is one that carries one (a
+/// processor may supply the body of an empty POST). Any other request that has none (a GET) is not shown to the body phases:
+/// the upstream request is not framed for a body, so what a processor generated would be dropped by the writer.
+#[cfg(feature = "ext-proc")]
+pub(super) fn body_can_be_processed(method: &str, body_is_empty: bool) -> bool {
+    !body_is_empty || matches!(method, "POST" | "PUT" | "PATCH")
+}
+
 /// The header half of [`frame_rewritten_body`], apart from the session so that it can be tested.
 #[cfg(feature = "ext-proc")]
 fn reframe_request(upstream_request: &mut RequestHeader, body_is_empty: bool) {
-    let method_has_body = matches!(upstream_request.method.as_str(), "POST" | "PUT" | "PATCH");
-    if body_is_empty && !method_has_body {
+    if !body_can_be_processed(upstream_request.method.as_str(), body_is_empty) {
         return;
     }
     upstream_request.remove_header("content-length");
@@ -593,6 +600,21 @@ mod tests {
         reframe_request(&mut req, true);
         assert_eq!(req.headers.get("content-length").unwrap(), "0");
         assert!(req.headers.get("transfer-encoding").is_none());
+    }
+
+    #[cfg(feature = "ext-proc")]
+    #[test]
+    fn only_a_request_that_can_carry_a_body_is_shown_to_the_body_phases() {
+        // a body that is there is always processed; an empty one only for a method that carries a body, where a processor
+        // may supply it. An empty GET has nothing to process, and the writer would drop what a processor made up.
+        assert!(body_can_be_processed("GET", false));
+        assert!(body_can_be_processed("POST", false));
+        assert!(body_can_be_processed("POST", true));
+        assert!(body_can_be_processed("PUT", true));
+        assert!(body_can_be_processed("PATCH", true));
+        assert!(!body_can_be_processed("GET", true));
+        assert!(!body_can_be_processed("HEAD", true));
+        assert!(!body_can_be_processed("DELETE", true));
     }
 
     // ── forwarded_for_value / via_header_value ───────────────────────────────

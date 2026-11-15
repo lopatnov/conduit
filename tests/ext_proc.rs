@@ -554,6 +554,66 @@ fn a_streamed_request_body_is_answered_chunk_by_chunk() {
     assert_eq!(echoed(resp)["body"], "a ****** and another ******");
 }
 
+/// The body of a chunked POST sent as two chunks back to back on a raw socket, then the answer's status line and body.
+#[cfg(feature = "proxy")]
+fn post_two_chunks(port: u16, first: &str, second: &str) -> (String, String) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(20)))
+        .unwrap();
+    let chunk = |data: &str| format!("{:x}\r\n{data}\r\n", data.len());
+    let request = format!(
+        "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{}{}0\r\n\r\n",
+        chunk(first),
+        chunk(second)
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    let status = answer.lines().next().unwrap_or("").to_owned();
+    let body = answer.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
+    (status, body)
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn the_time_a_processor_takes_is_not_charged_to_the_clients_upload_rate() {
+    // minUploadRateBytesPerSec = 1000: a client that sent 1000 bytes has one second of credit, and the next chunk may come
+    // up to a second later. The processor holds the first chunk for 3 s while the second is already waiting in the socket;
+    // measured from the arrival of the first chunk that would be 3 s late and a 408, measured from the end of the
+    // exchange it is on time.
+    let (processor, _) = support::serve_in_background(body_processor(|body| {
+        if body.starts_with('A') {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        }
+        replace_body(true, body)
+    }));
+    let upstream = start_body_upstream();
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let _server = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": format!("http://127.0.0.1:{upstream}"),
+                "limits": { "minUploadRateBytesPerSec": 1000 },
+                "middleware": [{
+                    "type": "ext_proc",
+                    "config": { "grpc": processor, "requestBody": "streamed", "timeoutMs": 10000 }
+                }]
+            }]
+        }),
+    );
+    let first = format!("A{}", "x".repeat(999));
+    let (status, body) = post_two_chunks(port, &first, "0123456789");
+    assert!(status.contains("200"), "{status} {body}");
+    assert!(body.contains("0123456789"), "{body}");
+}
+
 #[cfg(feature = "proxy")]
 #[test]
 fn a_processor_that_denies_a_body_ends_the_request_with_its_own_answer() {
@@ -763,20 +823,26 @@ fn a_processor_can_replace_the_response_it_is_shown() {
     );
 }
 
+/// `GET /static` through an entry that observes the response body (plus whatever `extra` adds to its config): the client's
+/// answer, and what the processor was sent as the response body.
 #[cfg(feature = "proxy")]
-#[test]
-fn an_observed_response_body_is_copied_to_the_processor_and_the_client_gets_it_unchanged() {
+fn observed_get(extra: serde_json::Value) -> (String, String) {
     use processing_request::Request as R;
     let (processor, seen) = support::serve_in_background(script(|m| match &m.request {
         Some(R::RequestHeaders(_)) => Reply::Answer(phase(true, false, CommonResponse::default())),
+        Some(R::RequestBody(_)) => Reply::Answer(phase(true, true, CommonResponse::default())),
         _ => Reply::Nothing,
     }));
-    let server =
-        start_body_site(serde_json::json!({ "grpc": processor, "responseBody": "observe" }));
+    let mut entry = serde_json::json!({ "grpc": processor, "responseBody": "observe" });
+    entry
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    let server = start_body_site(entry);
 
     let resp = common::get(server.url("/static")).unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().unwrap(), "upstream says hi");
+    let answer = resp.text().unwrap();
 
     let mut copied = String::new();
     for _ in 0..100 {
@@ -792,6 +858,24 @@ fn an_observed_response_body_is_copied_to_the_processor_and_the_client_gets_it_u
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    (answer, copied)
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn an_observed_response_body_is_copied_to_the_processor_and_the_client_gets_it_unchanged() {
+    let (answer, copied) = observed_get(serde_json::json!({}));
+    assert_eq!(answer, "upstream says hi");
+    assert_eq!(copied, "upstream says hi");
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_response_is_observed_for_a_bodyless_get_when_the_request_body_is_exchanged_too() {
+    // The request body phase is not run for a GET with no body: the request body is done all the same, or the stream would
+    // be kept for it for ever and the response never observed (found by scripts/e2e/ext-proc.sh).
+    let (answer, copied) = observed_get(serde_json::json!({ "requestBody": "buffered" }));
+    assert_eq!(answer, "upstream says hi");
     assert_eq!(copied, "upstream says hi");
 }
 
@@ -853,6 +937,126 @@ fn an_upgrade_header_does_not_switch_the_body_phases_off() {
         "the body was not shown to the processor"
     );
     assert!(kinds(&seen).contains(&"request-body"));
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_get_without_a_body_is_not_shown_to_the_body_phase() {
+    // The upstream request of a bodyless GET is not framed for a body, so whatever a processor made up for it would be
+    // dropped by the writer: the body phase is not run, and the request goes through as it came.
+    let (processor, seen) = support::serve_in_background(body_processor(|_| {
+        replace_body(true, "made up by the processor")
+    }));
+    let server =
+        start_body_site(serde_json::json!({ "grpc": processor, "requestBody": "buffered" }));
+    let resp = common::local_client()
+        .get(server.url("/echo"))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(echoed(resp)["body"], "");
+    assert_eq!(kinds(&seen), ["request-headers"]);
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn a_refusal_after_100_continue_still_delivers_the_final_answer() {
+    use std::io::{Read, Write};
+    // `Expect: 100-continue`: Pingora answers `100 Continue` when the body is first read, and that interim response is not
+    // an answer yet: the processor's refusal of the body must still arrive as the final response.
+    let (processor, _) = support::serve_in_background(body_processor(|body| {
+        if body.contains("attack") {
+            deny(403, "blocked by policy\n")
+        } else {
+            replace_body(true, body)
+        }
+    }));
+    let server =
+        start_body_site(serde_json::json!({ "grpc": processor, "requestBody": "buffered" }));
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    client
+        .write_all(
+            b"POST /echo HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 9\r\nConnection: close\r\n\r\nan attack",
+        )
+        .unwrap();
+    let mut answer = String::new();
+    let _ = client.read_to_string(&mut answer);
+    assert!(answer.contains("403"), "no final answer: {answer:?}");
+    assert!(answer.contains("blocked by policy"), "{answer:?}");
+}
+
+#[cfg(feature = "proxy")]
+#[test]
+fn the_tunnel_after_a_101_is_not_sent_to_a_response_body_observer() {
+    use std::io::{Read, Write};
+    // An upstream that accepts the upgrade, says something through the tunnel and reads what comes back.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            std::thread::spawn(move || {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                    head.push(byte[0]);
+                }
+                let _ = stream.write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\nfrom-upstream",
+                );
+                let mut sink = [0u8; 64];
+                while stream.read(&mut sink).unwrap_or(0) > 0 {}
+            });
+        }
+    });
+    let (processor, seen) = support::serve_in_background(body_processor(|_| {
+        phase(true, true, CommonResponse::default())
+    }));
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let _server = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxy": { "/": { "targets": [format!("http://127.0.0.1:{upstream}")], "websocket": true } },
+                "middleware": [{
+                    "type": "ext_proc",
+                    "config": { "grpc": processor, "responsePhase": true, "responseBody": "observe" }
+                }]
+            }]
+        }),
+    );
+
+    let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    client
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    client
+        .write_all(
+            b"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut received = String::new();
+    let mut buf = [0u8; 256];
+    while !received.contains("from-upstream") {
+        let n = client.read(&mut buf).unwrap();
+        assert!(n > 0, "the tunnel closed early: {received:?}");
+        received.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(received.starts_with("HTTP/1.1 101"), "{received}");
+    client.write_all(b"from-client").unwrap();
+    // the observer is fed in the background: give it the time it would need
+    std::thread::sleep(std::time::Duration::from_millis(800));
+    assert_eq!(
+        kinds(&seen),
+        ["request-headers", "response-headers"],
+        "tunnel bytes must not reach the processor as a response body"
+    );
 }
 
 #[cfg(feature = "proxy")]

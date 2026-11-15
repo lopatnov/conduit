@@ -46,7 +46,7 @@ pub struct HeaderSet {
 pub struct HeaderChanges {
     /// Headers to set, in the order the processor sent them.
     pub set: Vec<HeaderSet>,
-    /// Headers to remove (applied after the sets, as Envoy does).
+    /// Headers to remove (applied before the sets, as Envoy does: a header that is removed and set stays set).
     pub remove: Vec<HeaderName>,
 }
 
@@ -149,11 +149,12 @@ pub fn plan(mutation: &HeaderMutation, limits: Limits) -> Result<Plan, Rejected>
         }
         let mode = match option.append_action {
             append_action::APPEND_IF_EXISTS_OR_ADD => {
-                // the deprecated `append: false` still means overwrite
-                if option.append.as_ref().is_some_and(|b| !b.value) {
-                    SetMode::Overwrite
-                } else {
+                // Envoy's ext_proc reads only `append`, which defaults to false in this message (external_processor.proto,
+                // `HeaderMutation.set_headers`): a header that names no `append` replaces the existing value
+                if option.append.as_ref().is_some_and(|b| b.value) {
                     SetMode::Append
+                } else {
+                    SetMode::Overwrite
                 }
             }
             append_action::ADD_IF_ABSENT => SetMode::AddIfAbsent,
@@ -243,7 +244,7 @@ mod tests {
             [
                 ("x-team", "blue", SetMode::Overwrite),
                 ("x-trace", "1", SetMode::AddIfAbsent),
-                ("x-list", "a", SetMode::Append),
+                ("x-list", "a", SetMode::Overwrite),
                 ("x-only", "b", SetMode::OverwriteIfExists),
             ]
         );
@@ -260,11 +261,19 @@ mod tests {
     }
 
     #[test]
-    fn the_deprecated_append_false_means_overwrite() {
-        let mut option = set("x-a", b"v", append_action::APPEND_IF_EXISTS_OR_ADD);
-        option.append = Some(BoolValue { value: false });
-        let plan = plan(&mutation(vec![option], &[]), LIMITS).unwrap();
-        assert_eq!(plan.changes.set[0].mode, SetMode::Overwrite);
+    fn append_defaults_to_false_as_in_envoys_ext_proc_and_true_appends() {
+        // external_processor.proto, HeaderMutation.set_headers: `append` "defaults to false when used in this message"
+        let absent = set("x-a", b"v", append_action::APPEND_IF_EXISTS_OR_ADD);
+        let mut false_ = absent.clone();
+        false_.append = Some(BoolValue { value: false });
+        let mut true_ = absent.clone();
+        true_.append = Some(BoolValue { value: true });
+        let plan = plan(&mutation(vec![absent, false_, true_], &[]), LIMITS).unwrap();
+        let modes: Vec<_> = plan.changes.set.iter().map(|s| s.mode).collect();
+        assert_eq!(
+            modes,
+            [SetMode::Overwrite, SetMode::Overwrite, SetMode::Append]
+        );
     }
 
     #[test]
@@ -355,12 +364,10 @@ mod tests {
 
     #[test]
     fn an_empty_value_is_dropped_unless_kept_and_removes_when_overwriting() {
-        // add modes: nothing to add
-        let plan_add = plan(
-            &mutation(vec![set("x-a", b"", 0), set("x-b", b"", 1)], &[]),
-            LIMITS,
-        )
-        .unwrap();
+        // add modes (`append: true`, ADD_IF_ABSENT): nothing to add
+        let mut appended = set("x-a", b"", 0);
+        appended.append = Some(BoolValue { value: true });
+        let plan_add = plan(&mutation(vec![appended, set("x-b", b"", 1)], &[]), LIMITS).unwrap();
         assert!(plan_add.changes.is_empty());
         // overwrite modes: the header goes away
         let plan_over = plan(

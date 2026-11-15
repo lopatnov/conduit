@@ -140,7 +140,20 @@ pub(crate) async fn request_body_filter(
         .filter(|s| s.rewrites_request_body() && !session.was_upgraded())
     {
         use conduit_ext_proc::BodyVerdict;
-        match sessions.request_body(body.take(), end_of_stream).await {
+        let body_is_empty = session.is_body_empty();
+        let processable = super::transform::body_can_be_processed(
+            session.req_header().method.as_str(),
+            body_is_empty,
+        );
+        let verdict = if processable {
+            sessions.request_body(body.take(), end_of_stream).await
+        } else {
+            // A request with no body and a method that carries none has nothing to exchange (and the upstream request is
+            // not framed for a body): the request body is done, so that a `responseBody: observe` entry may start.
+            sessions.request_body_is_done().await;
+            BodyVerdict::Forward(body.take())
+        };
+        match verdict {
             BodyVerdict::Forward(next) => {
                 // `None` would tell Pingora the body is over: a chunk that is held back is an empty one instead.
                 *body = match next {
@@ -148,10 +161,17 @@ pub(crate) async fn request_body_filter(
                     None if end_of_stream => None,
                     None => Some(bytes::Bytes::new()),
                 };
+                // The time spent in the processor is not the client's upload time: the next chunk is measured from here, so a
+                // slow processor does not cost the client its credit against `minUploadRateBytesPerSec`.
+                if let Some(last) = req_ctx.limits.upload_last_chunk.as_mut() {
+                    *last = std::time::Instant::now();
+                }
             }
             BodyVerdict::Respond(answer) => {
                 // The upstream may already have started its response (it answered before the body was complete): a second
-                // response cannot be written over it, so the connection is dropped instead.
+                // response cannot be written over it, so the connection is dropped instead. `response_written` holds only a
+                // final response (status >= 200, or 101): the `100 Continue` that answers `Expect: 100-continue` does not
+                // count (pingora-core 0.9.1 `Session::response_written`; `a_refusal_after_100_continue_...` pins it).
                 if session.response_written().is_none() {
                     // The connection is closed right after: say so, or a client that reuses it for its next request
                     // finds it gone (a reset, `IncompleteMessage`) instead of being told to open a new one.

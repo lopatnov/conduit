@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use crate::client::Failure;
+use crate::client::{channel_for, Failure};
 use crate::proto::{
     append_action, processing_request, processing_response, CommonResponse, HeaderMutation,
     HeaderValue as PbValue, HeaderValueOption, HttpStatus, ImmediateResponse, PhaseResponse,
@@ -375,13 +375,29 @@ async fn a_tls_processor_uses_the_public_roots_or_the_given_ca_file_and_fails_un
     refused(&ask(&with_file).await, 503);
 }
 
-#[test]
-fn a_reload_forgets_the_channels() {
-    // builds one channel (lazily: nothing connects), then forgets it; the next client builds it again
-    let c = config("http://127.0.0.1:9", serde_json::json!({}));
-    let _ = ExtProcClient::new(&c);
+#[tokio::test]
+async fn a_reload_forgets_a_channel_that_could_not_be_built() {
+    // The channel cache keeps a failure too (an unreadable caFile is read once, not per request). Mend the file: the
+    // cached failure stays until a reload, and then the channel builds. The key holds a path of its own, so no other
+    // test shares this cache entry.
+    let dir = tempfile::tempdir().unwrap();
+    let ca = dir.path().join("ca.pem");
+    let c = config(
+        "grpcs://127.0.0.1:9",
+        serde_json::json!({ "caFile": ca.to_str().unwrap() }),
+    );
+    assert!(channel_for(&c).is_err(), "no such file yet");
+    std::fs::write(
+        &ca,
+        "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+    )
+    .unwrap();
+    assert!(
+        channel_for(&c).is_err(),
+        "the failure is cached until a reload"
+    );
     clear_channels();
-    let _ = ExtProcClient::new(&c);
+    assert!(channel_for(&c).is_ok(), "a reload reads the file again");
     clear_channels();
 }
 
