@@ -70,6 +70,15 @@ impl CrdConfigBuilder for ConduitSchema {
                  they are only allowed in a file config"
             );
         }
+        // The Redis address belongs to the operator of the process (`CONDUIT_REDIS_URL`): a site only says
+        // `store: redis`. A site that names an address would put its counters, or the cached responses of
+        // another site, in a Redis of its writer's choice.
+        if crate::config::validate::site_names_redis_address(&site) {
+            anyhow::bail!(
+                "a ConduitSite cannot name a Redis address (store: redis://...); write `store: redis` and let \
+                 the operator set the address once (CONDUIT_REDIS_URL in the pod)"
+            );
+        }
         // What is wrong with this site alone (a hard validation error) is refused here, so that the
         // provider can leave this one object out instead of the whole config being refused.
         let alone = AppConfig {
@@ -700,7 +709,7 @@ mod tests {
         assert!(site.extra.contains_key("jwtAuht"));
     }
 
-    /// A `disk:<path>` cache store is a host path, in any route shape; `memory` and a Redis URL are not.
+    /// A `disk:<path>` cache store is a host path, in any route shape; `memory` is not (a Redis address is refused too, see `crd_spec_cannot_name_a_redis_address`).
     #[test]
     fn crd_spec_cannot_cache_to_a_host_directory() {
         let site_with = |proxy: &str| {
@@ -725,9 +734,41 @@ mod tests {
                 assert!(err.contains("host file paths"), "{shape} {store}: {err}");
             }
         }
-        for store in ["memory", "redis://cache.default.svc:6379"] {
-            assert!(site_with(&in_map(store)).is_ok(), "proxy map {store}");
-            assert!(site_with(&in_routes(store)).is_ok(), "routes[] {store}");
+        assert!(site_with(&in_map("memory")).is_ok(), "proxy map memory");
+        assert!(site_with(&in_routes("memory")).is_ok(), "routes[] memory");
+    }
+
+    /// The Redis address is the operator's (issue #760): a `ConduitSite` writes `store: redis`, never an address, in
+    /// a limit or a cache, in any route shape. (`store: redis` itself needs `CONDUIT_REDIS_URL` in the pod, so it
+    /// is refused here, where the test environment has none; the message says what to set.)
+    #[test]
+    fn crd_spec_cannot_name_a_redis_address() {
+        let site_with = |body: &str| {
+            let yaml = format!(
+                "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {{name: a}}\nspec:\n  port: 8080\n{body}"
+            );
+            spec_to_site_config(&crds_in(&yaml)[0].spec)
+        };
+        let bodies = [
+            "  proxy: http://b:1\n  rateLimit: {{windowSecs: 60, limit: 5, store: '@STORE@'}}\n",
+            "  proxy:\n    /:\n      targets: [http://b:1]\n      rateLimit: {{windowSecs: 60, limit: 5, store: '@STORE@'}}\n",
+            "  proxy:\n    /:\n      targets: [http://b:1]\n      cache: {{store: '@STORE@'}}\n",
+            "  routes:\n    - match: {{path: /}}\n      proxy:\n        targets: [http://b:1]\n        cache: {{store: '@STORE@'}}\n",
+            "  routes:\n    - match: {{path: /}}\n      proxy:\n        targets: [http://b:1]\n        rateLimit: {{windowSecs: 60, limit: 5, store: '@STORE@'}}\n",
+        ];
+        for body in bodies {
+            let body = body.replace("{{", "{").replace("}}", "}");
+            for address in ["redis://evil.example:6379", "rediss://evil.example:6380"] {
+                let err = site_with(&body.replace("@STORE@", address))
+                    .expect_err(&format!("{address} in {body}"))
+                    .to_string();
+                assert!(err.contains("cannot name a Redis address"), "{err}");
+            }
+            // the bare `redis` is the allowed form; this process has no operator address, so it says what to set
+            let err = site_with(&body.replace("@STORE@", "redis"))
+                .expect_err("no operator address in the test environment")
+                .to_string();
+            assert!(err.contains("CONDUIT_REDIS_URL"), "{err}");
         }
     }
 

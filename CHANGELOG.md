@@ -20,6 +20,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The Redis address is set once, by the operator** (#760). `global.redis.url` in a file config, or the `CONDUIT_REDIS_URL`
+  environment variable for a pod that reads `ConduitSite` objects (a `ConduitSite` cannot set `global`; the value is trimmed,
+  and `global.redis.url` wins when both are set). Sites, routes and consumers write `store: redis` (rate limits and caches),
+  with no address, and all of them share the process's one Redis connection as before. `store: redis` with no address
+  anywhere is a validation error. A `store: "redis://host"` written on a site still works and is now deprecated: a warning
+  at start and on reload, and a validation error when it differs from `global.redis.url`. A `ConduitSite` that names a
+  `redis://` or `rediss://` address is refused like a host path, so a writer of one site can no longer send the counters
+  (client IPs) or cached responses of every site to a Redis of their choice. The address is read at startup: a change
+  takes a restart, and a reload that changes it logs that.
 - A Kubernetes guide, `docs/kubernetes.md` (#573): the CRD, RBAC and Deployment, a first site, what a `ConduitSite` may
   contain, what is checked on each change and what a rejected update leaves (the whole previous config), what needs a
   restart (a new port, `tls.acme`), who may write the objects, and troubleshooting. Every `ConduitSite` in the guide, in
@@ -150,6 +159,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The first rate-limited request of every instance that uses `store: redis` was counted in the in-memory fallback, not in the
+  shared bucket (the connection is made at start in a throw-away runtime, so the first command failed with a broken pipe and
+  only the next one worked). A dropped connection is now retried once inside the existing 50 ms deadline. With N instances
+  that let N requests through above the limit once per start; `scripts/e2e/redis-limit.sh` (two instances, a real Redis)
+  shows the shared limit now holds exactly.
 - Active health probes of an `https://` or `wss://` upstream: the probe is plaintext HTTP/1.1, which a TLS listener does not
   understand, so a healthy TLS upstream was marked unhealthy (or healthy by accident, behind a server that answers plaintext on its
   TLS port). Such an upstream is now probed by opening a TCP connection (`path` is not used for it; behaviour change).

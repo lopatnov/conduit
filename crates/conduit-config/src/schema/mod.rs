@@ -29,7 +29,7 @@ use conduit_config_core::redact::Redacted;
 
 pub use conduit_config_core::parse::CONFIG_VERSION;
 
-pub use app::{AdminConfig, AppConfig, ConfigFile, GlobalConfig, OtlpConfig};
+pub use app::{AdminConfig, AppConfig, ConfigFile, GlobalConfig, OtlpConfig, RedisConfig};
 pub use auth::{
     ApiKeyConfig, BasicAuthConfig, Consumer, ConsumerBasicAuth, ConsumerJwtConfig, ConsumersConfig,
     ConsumersSharedJwtConfig, ForwardAuthConfig, JwtAuthConfig, RateLimitConfig,

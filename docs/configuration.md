@@ -90,7 +90,7 @@ Admin API.
 | `ext-proc` | Sends the request headers to an external processor over gRPC (Envoy's `ext_proc` protocol), which can change them or answer the request itself, and fails closed when the processor does not answer. Adds the gRPC client (`tonic`, `prost`) to the binary. | [`middleware[].type: "ext_proc"`](#external-processing-ext_proc) | A fail-closed entry (the default) is **refused at validation**: the binary will not start with it. A `failOpen: true` entry is ignored with a warning: requests are not sent to the processor. |
 | `tcp` | A raw TCP proxy site, for protocols that are not HTTP (databases, message brokers, anything else on a TCP port). | [`type: "tcp"` site](#tcp-proxy) | The site is ignored. |
 | `upload` | An endpoint that accepts multipart file uploads and writes them to a directory. | [`upload`](#upload) | `upload` is ignored. |
-| `redis` | Keeps rate-limit counters and cached responses in Redis, so several Conduit instances share them. | `rateLimit.store: "redis://..."`, `cache.store: "redis://..."` | A rate limit falls back to the in-memory store, **per instance**: with three instances each limit effectively triples. A route with a `redis://` cache store is not cached. |
+| `redis` | Keeps rate-limit counters and cached responses in Redis, so several Conduit instances share them. | `global.redis`, `rateLimit.store: redis`, `cache.store: redis` | A rate limit falls back to the in-memory store, **per instance**: with three instances each limit effectively triples. A route with a Redis cache store is not cached. |
 | `cache` | HTTP response cache for proxied responses (memory store). Implies `proxy`. | [`proxy.*.cache`](#proxy-cache) | Responses are not cached. |
 | `disk-cache` | The on-disk cache store, `cache.store: "disk:/path"`: the code that writes cache files under a directory. Implies `cache`. A `cache` build without it is a memory (and, with `redis`, Redis) cache. | `cache.store: "disk:/path"` | The route is **not cached** and nothing is written under the directory; the start-up log and `conduit validate` say so. |
 | `acme` | Obtains and renews certificates from Let's Encrypt on its own. | [`tls.acme`](#auto-tls-via-lets-encrypt) | `tls.acme` is ignored: no certificate is requested. |
@@ -2524,7 +2524,7 @@ proxy:
 
 | Field                      | Type     | Default       | Description                                                                        |
 | -------------------------- | -------- | ------------- | ---------------------------------------------------------------------------------- |
-| `store`                    | string   | —             | `"memory"`, `"redis://..."` / `"rediss://..."` (`--features redis`), `"disk:/path"` (`--features disk-cache`) |
+| `store`                    | string   | —             | `"memory"`, `"redis"` (the address of [`global.redis.url`](#global-redis), `--features redis`), `"disk:/path"` (`--features disk-cache`); a `"redis://..."` address here still works but is deprecated |
 | `ttlSecs`                  | number   | —             | Fresh cache TTL (seconds)                                                          |
 | `maxSizeMb`                | number   | —             | Size budget of the store in MiB (LRU eviction) (≥ 1; unset = unlimited) |
 | `staleWhileRevalidateSecs` | number   | `0`           | Serve stale while refreshing in background (RFC 5861)                              |
@@ -2618,38 +2618,46 @@ maximum TTL — upstream headers cannot extend it beyond the configured limit.
 **`"memory"`** — in-process cache, lost on restart. Best for single-instance
 deployments with small response bodies.
 
-**`"redis://host:port"` / `"rediss://host:port"`** — shared Redis cache.
-(`--features redis` required)
+**`"redis"`** — shared Redis cache, on the one Redis address of the process
+([`global.redis.url`](#global-redis)). (`--features redis` required)
 All Conduit instances share the same cache — consistent hit rate under
-horizontal scaling. `rediss://` enables TLS (AWS ElastiCache, Azure Cache).
+horizontal scaling. A `rediss://` address enables TLS (AWS ElastiCache, Azure Cache).
 
 ```yaml
 # conduit.yaml — Redis cache shared across multiple instances
-proxy:
-  /api:
-    targets: ["http://api1:4000", "http://api2:4000"]
-    cache:
-      store: "redis://redis:6379"
-      ttlSecs: 300
-      staleWhileRevalidateSecs: 60
-      varyHeaders: [Accept-Language]
+global:
+  redis:
+    url: "redis://redis:6379"
+sites:
+  - port: 8080
+    proxy:
+      /api:
+        targets: ["http://api1:4000", "http://api2:4000"]
+        cache:
+          store: redis
+          ttlSecs: 300
+          staleWhileRevalidateSecs: 60
+          varyHeaders: [Accept-Language]
 ```
 
 ```json
 // conduit.json
 {
-  "proxy": {
-    "/api": {
-      "targets": ["http://api1:4000", "http://api2:4000"],
-      "cache": {
-        "store": "redis://redis:6379",
-        "ttlSecs": 300,
-        "staleWhileRevalidateSecs": 60
+  "global": { "redis": { "url": "redis://redis:6379" } },
+  "sites": [{
+    "port": 8080,
+    "proxy": {
+      "/api": {
+        "targets": ["http://api1:4000", "http://api2:4000"],
+        "cache": { "store": "redis", "ttlSecs": 300, "staleWhileRevalidateSecs": 60 }
       }
     }
-  }
+  }]
 }
 ```
+
+A `store: "redis://host:port"` written on the route still works (the address is then that of the route), but it is
+deprecated: it is a warning at start, and an error when it differs from `global.redis.url`.
 
 If Redis is unreachable at startup or during a request, caching is silently
 disabled for that request — the proxy continues to work normally (fail-open).
@@ -3129,7 +3137,7 @@ matters for a specific deployment, avoid reordering `routes[]` entries in a live
 | `burst`      | number   | `0`        | Extra burst capacity above `limit` (see below)                                                              |
 | `algorithm`  | string   | —          | Optional; only `"token-bucket"` is supported — a typo fails validation                                      |
 | `keyBy`      | string   | `"ip"`     | `"ip"` or `"header:<name>"`                                                                                 |
-| `store`      | string   | `"memory"` | `"memory"` or `"redis://host:port"` (`--features redis` required for Redis)                                 |
+| `store`      | string   | `"memory"` | `"memory"` or `"redis"` (the address of [`global.redis.url`](#global-redis); `--features redis` required)    |
 | `skipPaths`  | string[] | —          | Paths that bypass rate limiting — see [skipPaths glob syntax](#skippaths-glob-syntax)                       |
 | `dryRun`     | bool     | `false`    | Log rate-limit violations without actually rejecting requests — useful for tuning limits before enforcement |
 
@@ -3168,18 +3176,17 @@ counter's admission ceiling rising from `limit` to `limit + burst` within the cu
 window, rather than a continuously-refilling allowance like the in-memory token
 bucket's burst.
 
-**Only one Redis connection is ever established per process**, regardless of how many
-levels configure a `store` URL. At startup Conduit scans site, then route, then
-consumer `rateLimit.store` values and connects to the *first* `redis://`/`rediss://`
-URL it finds; every level that configures Redis shares that one connection. If
-different levels are configured with genuinely different Redis URLs, only the
-first-discovered one is actually used — the others silently share it rather than each
-getting their own connection. Point every level's `store` at the same Redis
-instance/URL if you use Redis at more than one level. **This is checked at config-load
-time (issue #357)**: configuring more than one distinct Redis URL across
-site/route/consumer produces an advisory warning (logged, not fatal — same
-non-blocking treatment as the near-expiry-certificate warning) naming which URL is
-actually used and which are ignored.
+**There is one Redis per process, and the operator names it once** (issue #760). Write `store: redis` at
+whatever level needs Redis (site, route, consumer, and `cache.store`), and set the address in
+[`global.redis.url`](#global-redis), or in the `CONDUIT_REDIS_URL` environment variable (a pod that reads
+`ConduitSite` objects cannot set `global`). Every level shares the one connection, so a limit is shared by all
+replicas. The address is read at startup only: a change takes a restart, and a reload that changes it says so in the log.
+
+A `store: "redis://host:port"` written on a site or route still works, as before, but is **deprecated**: it
+is a warning when the config is loaded. When `global.redis.url` is set it must be that same address; another
+address is a validation error. Without `global.redis.url`, the first legacy URL found (site, then route, then
+consumer) is the process's address, and more than one distinct URL is an advisory warning naming the one used
+(issue #357).
 
 ---
 
@@ -4052,6 +4059,17 @@ sites:
 | `admin.bind`          | string | — (not started) | Admin API address. **Required to enable the Admin API.** Omit to disable it entirely |
 | `admin.token`         | string | —               | Bearer token required for every Admin API request (strongly recommended)             |
 | `otlp`                | object | —               | OpenTelemetry tracing config (`--features otlp` required — see [OpenTelemetry Tracing](#opentelemetry-tracing)) |
+| `redis.url`           | string | —               | The one Redis of the process, for `store: redis` (see [below](#global-redis)). Read at startup |
+
+<a id="global-redis"></a>
+
+**`global.redis.url`** is the address of the Redis that shared rate limits (`rateLimit.store: redis`) and caches
+(`cache.store: redis`) use. The operator sets it once; sites, routes and consumers only write `store: redis`, with no
+address. It is a `redis://` (plaintext) or `rediss://` (TLS) URL and may carry a password, which is not logged. A pod
+that reads its sites from `ConduitSite` objects cannot set `global` and takes the address from the `CONDUIT_REDIS_URL`
+environment variable instead (from a `Secret`; surrounding whitespace is trimmed). When both are set, `global.redis.url`
+is used. `store: redis` with no address anywhere is a validation error, not a silent in-memory fallback. See
+[Rate limiting](#rate-limiting) and [Cache store options](#cache-store-options).
 
 ### What happens on SIGTERM
 

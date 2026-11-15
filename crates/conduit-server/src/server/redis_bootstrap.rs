@@ -15,6 +15,11 @@ use crate::config::rate_limit_scan::find_redis_rate_limit_store;
 pub(super) fn connect_redis_rate_limiter_if_configured(
     config: &AppConfig,
 ) -> anyhow::Result<Option<Arc<RedisRateLimiter>>> {
+    // The operator's address (issue #760) is recorded first: a bare `store: redis` of a cache or a limit resolves
+    // to it for the life of the process (the connections are made now; a later change takes a restart).
+    conduit_config_core::scheme::set_operator_redis_url(
+        crate::config::rate_limit_scan::operator_redis_address(config),
+    );
     crate::config::rate_limit_scan::record_startup_redis_store(config);
     let url_opt = find_redis_rate_limit_store(config);
     let Some(ref url) = url_opt else {
@@ -95,6 +100,54 @@ mod tests {
             find_redis_rate_limit_store(&config).as_deref(),
             Some("redis://127.0.0.1:6379")
         );
+    }
+
+    /// Issue #760: a bare `store: redis` is the operator's address, wherever the limit sits; an
+    /// operator's address wins over a legacy URL; no redis store, no address needed.
+    #[test]
+    fn a_bare_redis_store_connects_to_the_operators_address() {
+        let global = |url: &str| {
+            Some(crate::config::schema::GlobalConfig {
+                redis: Some(crate::config::schema::RedisConfig {
+                    url: Some(url.to_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+        };
+        let site = |store: &str| SiteConfig {
+            rate_limit: Some(redis_rate_limit(store)),
+            ..Default::default()
+        };
+        let bare = AppConfig {
+            global: global("rediss://redis.internal:6380"),
+            sites: vec![site("redis")],
+            ..Default::default()
+        };
+        assert_eq!(
+            find_redis_rate_limit_store(&bare).as_deref(),
+            Some("rediss://redis.internal:6380")
+        );
+        // a legacy URL equal to the address, next to a bare one: still the operator's address
+        let mixed = AppConfig {
+            global: global("redis://a:6379"),
+            sites: vec![site("redis://a:6379"), site("redis")],
+            ..Default::default()
+        };
+        assert_eq!(
+            find_redis_rate_limit_store(&mixed).as_deref(),
+            Some("redis://a:6379")
+        );
+        // an address and no redis store: nothing to connect
+        let unused = AppConfig {
+            global: global("redis://a:6379"),
+            sites: vec![SiteConfig {
+                rate_limit: Some(memory_rate_limit()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(find_redis_rate_limit_store(&unused), None);
     }
 
     #[test]

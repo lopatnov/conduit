@@ -519,8 +519,8 @@ proxy:
       skipPaths: [/api/me, /api/cart]
 ```
 
-For shared cache across multiple Conduit instances, use `store: "redis://host:6379"`
-(`--features redis` required).
+For shared cache across multiple Conduit instances, use `store: redis` and set the address once in
+`global.redis.url` (`--features redis` required; see [Cache store options](configuration.md#cache-store-options)).
 
 → JSON: [`examples/stale-while-revalidate.json`](../examples/stale-while-revalidate.json)
 

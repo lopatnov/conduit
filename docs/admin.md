@@ -541,7 +541,7 @@ Only the in-memory rate limiter is reflected here (site-level and per-route
 buckets). Per-consumer rate limits are global across every site a consumer is
 allowed to call, not attributable to one site or route, so they're excluded
 from this endpoint. Requests admitted through a Redis-backed rate limit
-(`rateLimit.store: redis://...`) are also not reflected here.
+(`rateLimit.store: redis`) are also not reflected here.
 
 ---
 

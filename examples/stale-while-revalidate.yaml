@@ -29,7 +29,7 @@ proxy:
     stripPrefix: true
 
     cache:
-      store: memory         # or "redis://..." for multi-instance shared cache
+      store: memory         # or "redis" (global.redis.url) for multi-instance shared cache
       ttlSecs: 60           # fresh for 60 seconds
       staleWhileRevalidateSecs: 300  # serve stale for up to 5 min while refreshing
       staleIfErrorSecs: 600          # serve stale for up to 10 min if upstream fails

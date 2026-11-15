@@ -151,10 +151,20 @@ impl RedisRateLimiter {
         let mut conn = self.conn.clone();
 
         // Wrap the two-command sequence in a 50 ms deadline.
-        let result = tokio::time::timeout(
-            Duration::from_millis(50),
-            redis_fixed_window_check(&mut conn, &redis_key, limit, burst, window_secs),
-        )
+        //
+        // A dropped connection is retried once inside that deadline. The connection is made at start
+        // in a throw-away runtime (`redis_bootstrap`), and its driver dies with it, so the first command
+        // of the process fails with a broken pipe; the manager reconnects on that failure and the very
+        // next command works. Without the retry that first request of every instance was counted in
+        // the memory fallback instead of the shared bucket.
+        let result = tokio::time::timeout(Duration::from_millis(50), async {
+            match redis_fixed_window_check(&mut conn, &redis_key, limit, burst, window_secs).await {
+                Err(e) if e.is_connection_dropped() || e.is_io_error() => {
+                    redis_fixed_window_check(&mut conn, &redis_key, limit, burst, window_secs).await
+                }
+                other => other,
+            }
+        })
         .await;
 
         match result {

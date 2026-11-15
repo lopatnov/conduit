@@ -3,6 +3,7 @@ pub use conduit_config_core::validation::{partition_by_severity, Severity, Valid
 mod auth;
 mod cross_site;
 mod proxy_loop;
+mod redis_operator;
 mod required_features;
 mod site;
 mod tls;
@@ -14,6 +15,7 @@ use self::cross_site::{
     admin_endpoint, validate_global, validate_http_redirect_ports, validate_no_duplicate_host_port,
 };
 use self::proxy_loop::check_proxy_loop_warnings;
+use self::redis_operator::{check_redis_legacy_warnings, check_redis_operator};
 use self::site::validate_site;
 use self::warnings::{
     check_extra_key_warnings, check_global_feature_warnings, check_jwt_secret_warnings,
@@ -26,7 +28,7 @@ use self::warnings::{
 pub use self::required_features::{compiled_features, required_features, FEATURE_ORDER};
 pub use self::warnings::sanitize_for_log;
 #[cfg(feature = "kubernetes")]
-pub(crate) use self::warnings::site_uses_disk_store;
+pub(crate) use self::warnings::{site_names_redis_address, site_uses_disk_store};
 
 use crate::config::schema::AppConfig;
 
@@ -38,6 +40,7 @@ pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
     validate_no_duplicate_host_port(config, &mut errors);
     validate_http_redirect_ports(config, &mut errors);
     validate_global(config, &mut errors);
+    check_redis_operator(config, &mut errors);
     #[cfg(feature = "redis")]
     check_redis_store_consistency(config, &mut errors);
 
@@ -70,6 +73,7 @@ pub fn feature_warnings(config: &AppConfig) -> Vec<String> {
     check_unresolved_credential_warnings(config, &mut warnings);
     check_metrics_auth_warnings(config, &mut warnings);
     check_extra_key_warnings(config, &mut warnings);
+    check_redis_legacy_warnings(config, &mut warnings);
 
     warnings
 }

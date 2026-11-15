@@ -35,7 +35,7 @@
 [] error|sites[58].rateLimit.keyBy|invalid header name "bad name" in "header:bad name" — must be a valid HTTP header field name (letters, digits, and !#$%&'*+-.^_`|~)
 [] error|sites[59].rateLimit.keyBy|invalid keyBy "header" — must be "ip" or "header:<name>"
 [] error|sites[60].rateLimit.keyBy|invalid keyBy "cookie" — must be "ip" or "header:<name>"
-[] error|sites[61].rateLimit.store|invalid store "memcached://localhost" — must be "memory", a redis:// URL (plaintext), or a rediss:// URL (TLS)
+[] error|sites[61].rateLimit.store|invalid store "memcached://localhost" — must be "memory", "redis" (the address is global.redis.url), a redis:// URL (plaintext), or a rediss:// URL (TLS)
 [] error|sites[63].tcp.targets|at least one target is required for a TCP proxy site
 [] error|sites[64].tcp.targets[0]|TCP target "http://mysql:3306" must be a plain host:port — no http:// prefix
 [] error|sites[65].tcp.targets[0]|TCP target "just-a-host" must include a port, e.g. "host:3306" or "[::1]:3306" for IPv6
@@ -131,18 +131,18 @@
 [] error|sites[176].proxy["/groups"].groups[1].targets|Strategy 'weighted-round-robin' requires weighted targets: { "url": "...", "weight": N }
 [] error|sites[177].proxy["/rewrite"].rewrite[0].from|Invalid regex '(': regex parse error:\n    (\n    ^\nerror: unclosed group
 [] error|sites[178].proxy["/mirror"].mirror|mirror URL must be http:// or https://
-[] error|sites[179].proxy["/cache"].cache.store|invalid store "bogus" — must be "memory", a redis:// URL, a rediss:// URL (TLS), or disk:<path>
+[] error|sites[179].proxy["/cache"].cache.store|invalid store "bogus" — must be "memory", "redis" (the address is global.redis.url), a redis:// URL, a rediss:// URL (TLS), or disk:<path>
 [] error|sites[180].routes[0].proxy.targets|At least one target is required (or use 'groups' for two-level balancing)
 [] error|sites[181].proxy["/rl"].rateLimit.windowSecs|windowSecs must be greater than 0
 [] error|sites[181].proxy["/rl"].rateLimit.limit|limit must be greater than 0
 [] error|sites[181].proxy["/rl"].rateLimit.algorithm|invalid algorithm "leaky" — only "token-bucket" is supported
 [] error|sites[181].proxy["/rl"].rateLimit.keyBy|invalid header name "bad name" in "header:bad name" — must be a valid HTTP header field name (letters, digits, and !#$%&'*+-.^_`|~)
-[] error|sites[181].proxy["/rl"].rateLimit.store|invalid store "memcached://x" — must be "memory", a redis:// URL (plaintext), or a rediss:// URL (TLS)
+[] error|sites[181].proxy["/rl"].rateLimit.store|invalid store "memcached://x" — must be "memory", "redis" (the address is global.redis.url), a redis:// URL (plaintext), or a rediss:// URL (TLS)
 [] error|sites[182].routes[0].proxy.rateLimit.windowSecs|windowSecs must be greater than 0
 [] error|sites[182].routes[0].proxy.rateLimit.limit|limit must be greater than 0
 [] error|sites[182].routes[0].proxy.rateLimit.algorithm|invalid algorithm "leaky" — only "token-bucket" is supported
 [] error|sites[182].routes[0].proxy.rateLimit.keyBy|invalid header name "bad name" in "header:bad name" — must be a valid HTTP header field name (letters, digits, and !#$%&'*+-.^_`|~)
-[] error|sites[182].routes[0].proxy.rateLimit.store|invalid store "memcached://x" — must be "memory", a redis:// URL (plaintext), or a rediss:// URL (TLS)
+[] error|sites[182].routes[0].proxy.rateLimit.store|invalid store "memcached://x" — must be "memory", "redis" (the address is global.redis.url), a redis:// URL (plaintext), or a rediss:// URL (TLS)
 [] error|sites[183].rateLimit.keyBy|invalid keyBy "cookie" — must be "ip" or "header:<name>"
 [] error|sites[184].ipFilter.allow[0]|Invalid IP address or CIDR block: '999.1.1.1'
 [] error|sites[184].ipFilter.allow[1]|Invalid IP address or CIDR block: '10.0.0.0/33'

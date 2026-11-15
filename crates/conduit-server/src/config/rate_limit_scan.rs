@@ -49,27 +49,42 @@ pub(crate) fn iter_rate_limit_configs(site: &SiteConfig) -> impl Iterator<Item =
         .chain(consumer_rate_limits(site))
 }
 
-/// Find the first `redis://`/`rediss://` `rateLimit.store` configured anywhere
-/// in `config` — site-level, per-route (`proxy.*.rateLimit` AND
-/// `routes[*].proxy.rateLimit`, issue #360), or per-consumer
-/// (`consumers.consumers[].rateLimit`) — so a Redis backend is connected at
-/// startup even when Redis is used *only* at the route/consumer layer (issue
-/// #322: previously only the site level was scanned, so a route/consumer-only
-/// Redis config silently fell back to the in-memory limiter forever, since
-/// `AppState.redis_rate_limiter` was never populated in the first place).
+/// The Redis address of this process for rate limiting, when any `rateLimit.store` anywhere in `config` selects
+/// Redis — site-level, per-route (`proxy.*.rateLimit` AND `routes[*].proxy.rateLimit`, issue #360), or
+/// per-consumer (`consumers.consumers[].rateLimit`) — so a backend is connected at startup even when Redis is
+/// used *only* at the route/consumer layer (issue #322).
 ///
-/// Scan order (site → `proxy` map → `routes[]` → consumer, across sites in
-/// declaration order) is shared with `config::validate`'s Redis-consistency
-/// checks via [`iter_rate_limit_configs`] —
+/// The address is the operator's ([`operator_redis_address`]: `global.redis.url`, else `CONDUIT_REDIS_URL`,
+/// issue #760); a config without one falls back to the first legacy `redis://`/`rediss://` store URL found
+/// (site → `proxy` map → `routes[]` → consumer, across sites in declaration order; #357). A bare `store: redis`
+/// with no operator address is a validation error, so it never reaches the connection.
+///
+/// The scan order is shared with `config::validate`'s Redis-consistency checks via [`iter_rate_limit_configs`] —
 /// see that module for why the walk lives in exactly one place.
 pub(crate) fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
-    config
+    let mut stores = config
         .sites
         .iter()
         .flat_map(iter_rate_limit_configs)
         .filter_map(|rl| rl.store.as_deref())
-        .find(|store| conduit_config_core::scheme::is_redis_url(store))
-        .map(str::to_owned)
+        .filter(|store| conduit_config_core::scheme::is_redis_store(store))
+        .peekable();
+    stores.peek()?;
+    operator_redis_address(config).or_else(|| {
+        stores
+            .find(|s| conduit_config_core::scheme::is_redis_url(s))
+            .map(str::to_owned)
+    })
+}
+
+/// The operator's Redis address for `config`: `global.redis.url` when set, else `CONDUIT_REDIS_URL` (issue #760).
+pub(crate) fn operator_redis_address(config: &AppConfig) -> Option<String> {
+    let global_url = config
+        .global
+        .as_ref()
+        .and_then(|g| g.redis.as_ref())
+        .and_then(|r| r.url.as_deref());
+    conduit_config_core::scheme::operator_redis_url_from_env(global_url)
 }
 
 /// The Redis rate-limit store the connection was made for at startup (`None` = none configured).
@@ -92,6 +107,19 @@ pub(crate) fn redis_rate_limit_change_warning(new: &AppConfig) -> Option<String>
         startup.as_deref(),
         find_redis_rate_limit_store(new).as_deref(),
     )
+    .or_else(|| operator_address_change_warning(new))
+}
+
+/// A warning when the operator's Redis address (issue #760) differs from the one recorded at startup: every
+/// bare `store: redis`, of a limit or a cache, keeps using the startup address until the process restarts.
+fn operator_address_change_warning(new: &AppConfig) -> Option<String> {
+    let startup = conduit_config_core::scheme::operator_redis_url();
+    let now = operator_redis_address(new);
+    (now.as_deref() != startup).then(|| {
+        "global.redis.url: the Redis address is read at startup only; this change takes effect after a \
+         restart (stores named `redis` keep using the startup address)"
+            .to_owned()
+    })
 }
 
 fn redis_store_change_warning(startup: Option<&str>, new: Option<&str>) -> Option<String> {

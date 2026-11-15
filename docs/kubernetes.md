@@ -134,6 +134,26 @@ The Admin API listens on `127.0.0.1:2019` inside the pod in this mode, and its b
 (from a `Secret`, for example), or, when that is not set, a random one that nobody knows, which closes the API. The
 `conduit status` and the other admin commands read the same variable, so run them in the pod with it set.
 
+**Redis for shared limits and caches.** Several replicas share a rate limit or a cache through one Redis, and the operator
+names it once, in the Deployment: the `CONDUIT_REDIS_URL` environment variable (from a `Secret`, because the URL may carry a
+password). A `ConduitSite` then only says `store: redis`, and never an address: a `redis://` address in a `ConduitSite` is
+refused like a host path, and `store: redis` without `CONDUIT_REDIS_URL` in the pod makes that site invalid.
+
+<!-- docs-check: skip (a fragment of a Deployment, not a Conduit config file) -->
+```yaml
+          env:
+            - name: CONDUIT_REDIS_URL
+              valueFrom:
+                secretKeyRef: { name: conduit-redis, key: url }   # redis://:password@redis.default.svc:6379
+```
+
+<!-- docs-check: skip (a fragment of a ConduitSite spec) -->
+```yaml
+  rateLimit: { windowSecs: 60, limit: 100, store: redis }
+```
+
+The address is read when the pod starts: changing the `Secret` takes a rollout (`kubectl rollout restart deployment/conduit`).
+
 ## Your first site
 
 <!-- docs-check: skip (a ConduitSite manifest, not a Conduit config file) -->
@@ -308,7 +328,7 @@ A `ConduitSite` decides which requests Conduit accepts and where it sends them, 
 access to that traffic. The host-path rule above stops a writer from reading, writing or serving files of the Conduit
 pod. It does not limit where the site sends traffic: a writer can route a `host` and `port` to any address the pod can
 reach, including services of other namespaces, and `tcp` opens a raw TCP port to any `host:port`, with none of the
-checks of an HTTP site. A writer can also point `cache.store` and `rateLimit.store` at any `redis://` address.
+checks of an HTTP site. A writer cannot name a Redis address: `cache.store` and `rateLimit.store` may say `redis`, and the address is the operator's (`CONDUIT_REDIS_URL`, below), so the counters and cached responses of all sites go to the one Redis the operator chose; a `redis://` address in a `ConduitSite` is refused like a host path.
 Loopback is covered: the Admin API, which could otherwise be reached through a site that proxies to `127.0.0.1:2019`,
 has a token that a writer does not know. In practice:
 

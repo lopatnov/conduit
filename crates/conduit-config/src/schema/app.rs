@@ -62,10 +62,41 @@ pub struct GlobalConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub otlp: Option<OtlpConfig>,
+    /// The Redis the process uses for shared rate limits and caches (issue #760): the operator names it once
+    /// here and sites write `store: redis` without an address. Read at startup only (a change needs a restart).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redis: Option<RedisConfig>,
     /// Keys under `global` that no field names (`workerz`, `shutdownTimeoutSec`): ignored, and reported by
     /// `validate::feature_warnings()` (issue #681).
     #[serde(flatten)]
     pub extra: IndexMap<String, serde_json::Value>,
+}
+
+/// `global.redis`: the one Redis address of the process (issue #760).
+///
+/// ```json
+/// { "global": { "redis": { "url": "rediss://redis.internal:6380" } } }
+/// ```
+///
+/// A process that reads its sites from `ConduitSite` objects sets the `CONDUIT_REDIS_URL` environment variable
+/// instead (a `ConduitSite` cannot set `global`). The URL may carry a password, so `Debug` redacts it.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RedisConfig {
+    /// `redis://` (plaintext) or `rediss://` (TLS) URL, with optional credentials.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Keys under `global.redis` that no field names: ignored, and reported by `validate::feature_warnings()`.
+    #[serde(flatten)]
+    pub extra: IndexMap<String, serde_json::Value>,
+}
+
+impl fmt::Debug for RedisConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedisConfig")
+            .field("url", &self.url.as_ref().map(|_| Redacted))
+            .finish()
+    }
 }
 
 /// OpenTelemetry OTLP exporter configuration.
