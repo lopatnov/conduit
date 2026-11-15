@@ -592,8 +592,8 @@ Each phase is one PR with its own security pass, tests in the e2e network (`scri
 | 5 | Route data to WASM | reserved headers · a WIT interface · both | **headers first, WIT later** |
 | 6 | Where resources are declared | `global.resources` · per site · both | **`global.resources`** (a store shared by two sites is common) |
 | 7 | `conduit-webapp` | separate release artifact · only a feature set in `full` | **decide after the phase-1 size measurement** |
-| 9 | JavaScript | J1: `jco` components (WASI HTTP) · J2: embedded engine (`rquickjs` or Boa) | **J1**; J2 later through #187 if a no-build path is wanted |
 | 8 | Phase-1 scope | stateless only (as above) · stateless plus KV | **stateless only**: the routing and fail-closed plumbing is the part that touches the hot path |
+| 9 | JavaScript | J1: `jco` components (WASI HTTP) · J2: embedded engine (`rquickjs` or Boa) | **J1**; J2 later through #187 if a no-build path is wanted |
 
 ## What is not known yet
 
