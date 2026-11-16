@@ -12,6 +12,7 @@
 #   tcp    9300  accepts the header and sends v2 to the upstream, which reports the client it was told
 #   tcp    9301  accepts the header and sends none: the upstream sees a plain connection (the header is consumed)
 #   tcp    9302  maxConnectionsPerIp: 1 counts the client of the header, not the load balancer
+# The upstream tells a header from none by the first byte it receives, so a client of a site that sends none must send one.
 # Needs `--features tcp` in the binary.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -198,8 +199,8 @@ spoof=$(from 60 sh -c "printf 'PROXY TCP4 192.0.2.60 192.0.2.20 1 8443\r\n' | nc
 ok "a PROXY header from an untrusted address is not believed (and not answered)"
 
 # ── 2. tcp: accept, send, and consume ──
-greet() { # greet OCTET PORT: the first line the upstream sends through HAProxy
-  from "$1" sh -c "nc -w 2 lb.test $2 </dev/null | head -1" | tr -d '\r'
+greet() { # greet OCTET PORT [PAYLOAD]: the first line the upstream sends through HAProxy after the client sent PAYLOAD
+  from "$1" sh -c "printf '${3:-}' | nc -w 2 lb.test $2 | head -1" | tr -d '\r'
 }
 got=$(greet 60 3306)
 [ "$got" = "v2 192.0.2.60" ] || fail "tcp 9300 (accept, send v2): the upstream reported '$got', expected 'v2 192.0.2.60'"
@@ -207,7 +208,7 @@ ok "tcp site: the upstream got a v2 header naming the client 192.0.2.60 ($got)"
 got=$(greet 61 3306)
 [ "$got" = "v2 192.0.2.61" ] || fail "tcp 9300 from .61: '$got'"
 ok "tcp site: another client is named as itself ($got)"
-got=$(greet 60 3307)
+got=$(greet 60 3307 'x\n')
 [ "$got" = "none -" ] || fail "tcp 9301 (accept, no send): the upstream reported '$got', expected 'none -'"
 ok "tcp site without sendProxyProtocol: the header is consumed, the upstream sees a plain connection ($got)"
 got=$(from 60 sh -c "nc -w 2 app.test 9300 </dev/null | head -1" | tr -d '\r')
