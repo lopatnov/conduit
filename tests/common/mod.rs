@@ -372,9 +372,18 @@ pub fn start_echo_upstream() -> (u16, std::thread::JoinHandle<()>) {
     let handle = std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            // Read the HTTP request.
-            let mut buf = vec![0u8; 4096];
-            let n = stream.read(&mut buf).unwrap_or(0);
+            // Read the HTTP request up to the blank line that ends its headers. One `read` returns whatever
+            // has arrived so far, which can be less than the whole header block when the proxy writes it in
+            // more than one piece, and the echo then reports a header the proxy did send as missing.
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let mut buf = vec![0u8; 16 * 1024];
+            let mut n = 0;
+            while n < buf.len() && !buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf[n..]) {
+                    Ok(0) | Err(_) => break,
+                    Ok(m) => n += m,
+                }
+            }
             let raw = String::from_utf8_lossy(&buf[..n]);
 
             // Parse method, path, and headers from the raw HTTP/1.1 request.
