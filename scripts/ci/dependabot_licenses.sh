@@ -18,6 +18,11 @@
 #   4. commits the file to the branch when it changed, and starts ci.yml on the branch through `workflow_dispatch`
 #      (a push made with GITHUB_TOKEN starts no `pull_request` run by design, so without this the new head has no CI).
 #
+# Side effect: once this job has committed to a branch, Dependabot treats the PR as edited by someone else. It no longer
+# rebases it on its own (not even on a conflict) and answers "@dependabot rebase" with a refusal; "@dependabot recreate"
+# still works, rebuilds the branch from main and fires `synchronize`, so this job runs again on the fresh branch. The
+# `push` trigger of the workflow keeps such PRs current with main instead, through "Update branch".
+#
 # Nothing from the PR's branch is executed: `cargo fetch` and `cargo metadata` read Cargo.toml / Cargo.lock and run no
 # build script, and the file check in step 1 keeps a `.cargo/config.toml` (which could name a `rustc` wrapper) out.
 #
@@ -96,7 +101,8 @@ handle_pr() {
       note "#$n was $behind commit(s) behind main: branch updated to $sha"
     else
       fail "#$n is behind main and the branch could not be updated (a conflict, or main changed a workflow file," \
-        "which GITHUB_TOKEN may not write): comment \"@dependabot rebase\" on the PR and this job runs again"
+        "which GITHUB_TOKEN may not write): comment \"@dependabot recreate\" on the PR (Dependabot refuses" \
+        "\"rebase\" once another account has committed to its branch) and this job runs again"
       return 1
     fi
   fi
