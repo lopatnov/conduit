@@ -137,10 +137,14 @@ for _ in range(6):
     time.sleep(1)
     s.sendall(b"x")
     assert s.recv(1) == b"x"
-print("open", round(time.time() - start))
+print("open", round(time.time() - start, 1))
 ' | tr -d '\r')
-[ "$busy" = "open 6" ] || fail "a connection with traffic every second was cut at idleTimeoutSecs 2: '$busy'"
-ok "a connection with traffic stays open past the idle time ($busy s)"
+# All six exchanges completed (a cut connection raises, so nothing is printed) and the connection lived well past
+# the 2 s idle time; the elapsed time is only bounded from below, since a slow runner may take longer than 6 s.
+set -- $busy
+[ "$1" = open ] || fail "a connection with traffic every second was cut at idleTimeoutSecs 2: '$busy'"
+awk "BEGIN { exit !($2 >= 5.5) }" || fail "traffic every second finished after $2 s, expected at least 5.5 s: '$busy'"
+ok "a connection with traffic stays open past the idle time ($2 s)"
 
 # 4. idleTimeoutSecs: 0 — no idle timeout
 still=$(client python3 -c '
