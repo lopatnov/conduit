@@ -28,7 +28,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   at start and on reload, and a validation error when it differs from `global.redis.url`. A `ConduitSite` that names a
   `redis://` or `rediss://` address is refused like a host path, so a writer of one site can no longer send the counters
   (client IPs) or cached responses of every site to a Redis of their choice. The address is read at startup: a change
-  takes a restart, and a reload that changes it logs that.
+  takes a restart, and a reload that changes it is refused (cold field).
 - A Kubernetes guide, `docs/kubernetes.md` (#573): the CRD, RBAC and Deployment, a first site, what a `ConduitSite` may
   contain, what is checked on each change and what a rejected update leaves (the whole previous config), what needs a
   restart (a new port, `tls.acme`), who may write the objects, and troubleshooting. Every `ConduitSite` in the guide, in
