@@ -110,6 +110,7 @@ sites:
     tcp:
       targets: ["echo.test:9100"]
       maxConnectionsPerIp: 1
+      sendProxyProtocol: v2 # the upstream greets a connection that opens with a header, which is what the probe waits for
 YAML
 docker run -d --name "$APP" --network "$NET" --ip 192.0.2.20 --network-alias app.test \
   -v "$BIN:/usr/local/bin/conduit:ro" -v "$WORK:/conf:ro" "$CONDUIT_IMAGE" conduit -c /conf/conduit.yaml >/dev/null

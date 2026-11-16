@@ -4,6 +4,9 @@
 //!
 //! The tcp-site side (accept and send) is in `tests/tcp_proxy.rs`; the parser is covered by the unit tests of
 //! `conduit_tcp::proxy_protocol`.
+//!
+//! The sites proxy to a local upstream, so the file needs the `proxy` feature (without it a request falls through to a 404).
+#![cfg(feature = "proxy")]
 
 mod common;
 
