@@ -29,8 +29,6 @@ pingora-core  = { workspace = true }
 pingora-proxy = { workspace = true }
 pingora-http  = { workspace = true }
 pingora-cache = { workspace = true }
-anyhow      = { workspace = true }
-serde       = { workspace = true }
 base64      = { workspace = true }
 
 # Only the proxy pipeline needs an HTTP client (traffic mirroring, the forwardAuth subrequest) and only the
@@ -68,7 +66,6 @@ lopatnov-conduit-upload           = { workspace = true }
 lopatnov-conduit-upstream         = { workspace = true }
 
 [dev-dependencies]
-tempfile    = { workspace = true }
 serial_test = { workspace = true }
 futures     = { workspace = true }
 

@@ -39,7 +39,7 @@ every name below is described in the tables that follow:
 1. **Baseline features**, on by default: `proxy`, `compression`, `static`, `hotreload`, `mimalloc`.
 2. **Optional features**, off unless you ask for them: `jwt`, `consumers`, `forward-auth`,
    `rhai`, `wasm`, `ext-proc`, `tcp`, `upload`, `redis`, `cache`, `disk-cache`, `acme`, `fault-injection`,
-   `otlp`, `tokio-metrics`, `kubernetes`, `jemalloc`.
+   `otlp`, `tokio-metrics`, `kubernetes`.
 3. **Bundles**, which are only a short name for a set of the above: `standard`, `gateway`,
    `static-server`, `full`. A bundle adds no code of its own.
 
@@ -98,7 +98,6 @@ Admin API.
 | `otlp` | Exports traces to an OpenTelemetry collector over OTLP. | [`global.otlp`](#opentelemetry-tracing) | `global.otlp` is ignored: no traces are exported. |
 | `tokio-metrics` | One more Prometheus gauge: `conduit_eventloop_lag_ms`, the scheduling delay of the admin runtime. | no config key | The gauge is absent. |
 | `kubernetes` | Reads the sites from `ConduitSite` resources in a cluster instead of a file. | `--kubernetes-namespace` (a command-line flag, not a config field) | The flag does not exist. |
-| `jemalloc` | The jemalloc memory allocator in the `conduit` binary, instead of mimalloc. Not in any bundle: mimalloc measured faster and smaller ([building](building.md#allocator)); jemalloc is for those who prefer its tuning and profiling. With both on, jemalloc is used. | no config key | mimalloc (the default) or the system allocator is used. |
 
 #### Bundles
 

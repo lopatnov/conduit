@@ -75,11 +75,10 @@ proxy. Add features with `--features`:
 | `tokio-metrics` | `conduit_eventloop_lag_ms` Prometheus gauge (no config key)                |
 | `kubernetes`    | Kubernetes CRD config provider (`--kubernetes-namespace`)                  |
 | `mimalloc`      | mimalloc as the global allocator of the `conduit` binary; **on by default**, in every bundle (see [Allocator](#allocator)) |
-| `jemalloc`      | jemalloc as the global allocator instead of mimalloc; in no bundle (see [Allocator](#allocator)) |
 | `standard`      | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `disk-cache` + `acme` — typical self-hosted reverse-proxy / API-gateway set |
 | `static-server` | Bundle for `--no-default-features`: `static` + `compression` + `hotreload` — the default set minus `proxy` |
 | `gateway`       | Bundle for `--no-default-features`: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `disk-cache` + `acme` + `compression` — the `standard` set without static files and hot-reload |
-| `full`          | Every optional feature above except `jemalloc`, which replaces the `mimalloc` it already has (`static-server` and `gateway` are shorthands, not extra capabilities) |
+| `full`          | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) |
 
 `proxy`, `compression`, `static` and `hotreload` are on by default and are not
 listed above because there is nothing to add — `--no-default-features` turns
@@ -181,12 +180,12 @@ A proxy allocates a little on every request (header maps, buffers, futures), so 
 cost of a request. The `conduit` binary uses **mimalloc in its `secure` mode** by default (feature `mimalloc`, in
 `default` and in every bundle): guard pages around allocator metadata, encoded free lists, randomised allocation addresses and double-free detection, which make
 a heap overflow or a use-after-free much harder to turn into code execution. That matters because the process also holds
-C libraries (`aws-lc`, `wasmtime`, `rhai`'s dependencies) and some `unsafe`. Two other choices exist, and each applies to
-the binary only: a program that embeds the `conduit` library keeps its own allocator.
+C libraries (`aws-lc`, `wasmtime`, `rhai`'s dependencies) and some `unsafe`. The other choice is the system allocator, and it applies to
+the binary only: a program that embeds the `conduit` library keeps its own allocator. (A `jemalloc` feature existed;
+it was removed because it measured no faster than mimalloc in its `secure` mode, below, and nobody used it.)
 
 ```bash
 cargo build --release                                        # mimalloc, secure mode (default)
-cargo build --release --features jemalloc                    # jemalloc instead; with both on, jemalloc is used
 cargo build --release --no-default-features \
   --features proxy,compression,static,hotreload              # the system allocator
 ```
