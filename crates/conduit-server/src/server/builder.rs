@@ -21,6 +21,7 @@ use conduit_runtime::upload::UploadService;
 use super::acme_certs::{obtain_acme_certs, plan_acme_renewals};
 use super::config_watch::spawn_config_update_watcher;
 use super::listeners::{add_tls_listeners, build_http_server_options, classify_ports};
+use super::proxy_protocol::PreTlsProxyProtocol;
 #[cfg(feature = "redis")]
 use super::redis_bootstrap::connect_redis_rate_limiter_if_configured;
 
@@ -204,6 +205,13 @@ pub fn run_server(
     let mut proxy_service = ListeningService::new("Conduit HTTP Proxy".to_owned(), inner_proxy);
 
     let (port_tls, port_plain) = classify_ports(&config.sites, &acme_certs);
+    // The PROXY protocol of the HTTPS ports: read before the TLS handshake (issue #757).
+    if let Some(hook) =
+        PreTlsProxyProtocol::for_sites(&config.sites, |p| port_tls.contains_key(&p))?
+    {
+        tracing::info!(ports = ?hook.ports(), "PROXY protocol required on HTTPS ports");
+        proxy_service.endpoints().set_pre_tls_callback(hook);
+    }
     add_tls_listeners(&mut proxy_service, &port_tls)?;
 
     // Add plain TCP listeners for ports that are not TLS.

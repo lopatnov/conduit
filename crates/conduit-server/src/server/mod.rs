@@ -6,6 +6,7 @@ pub mod builder;
 mod config_watch;
 mod listeners;
 pub mod otel;
+mod proxy_protocol;
 pub mod redirect;
 #[cfg(feature = "redis")]
 mod redis_bootstrap;
