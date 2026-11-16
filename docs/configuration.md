@@ -3503,7 +3503,8 @@ hotReload:
 
 **Requires cold restart:** `port`, `tls.cert/key`, every field of `tls.acme` (and adding or removing it on a site),
 `workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`, `global.redis.url` (the one Redis connection is made at
-start-up; a reload that changes it is refused). (`tls.versions`/`tls.ciphers` are not listed here
+start-up; a reload that changes it is refused), and adding, removing or changing a `tcp` site (the TCP services are
+started once). (`tls.versions`/`tls.ciphers` are not listed here
 because they're rejected at validate-time — see [TLS field reference]
 (#tls-field-reference) — not merely cold-restart-only.)
 
@@ -4125,6 +4126,9 @@ sites:
         - "mysql-replica:3306"
       strategy: round-robin # or "random" (default: round-robin)
       connectTimeoutMs: 5000 # upstream connect timeout (default: 5000)
+      maxConnections: 1000 # connections open on this site at once (default: no limit)
+      maxConnectionsPerIp: 20 # connections open from one client at once (default: no limit)
+      idleTimeoutSecs: 3600 # close a connection quiet in both directions (default: 3600; 0 = never)
 ```
 
 ```json
@@ -4136,18 +4140,31 @@ sites:
       "tcp": {
         "targets": ["mysql-primary:3306", "mysql-replica:3306"],
         "strategy": "round-robin",
-        "connectTimeoutMs": 5000
+        "connectTimeoutMs": 5000,
+        "maxConnections": 1000,
+        "maxConnectionsPerIp": 20,
+        "idleTimeoutSecs": 3600
       }
     }
   ]
 }
 ```
 
-| Field              | Type     | Default       | Description                                   |
-| ------------------ | -------- | ------------- | --------------------------------------------- |
-| `targets`          | string[] | —             | Upstream `host:port` addresses — **required** |
-| `strategy`         | string   | `round-robin` | `"round-robin"` or `"random"`                 |
-| `connectTimeoutMs` | number   | `5000`        | Upstream connect timeout (ms)                 |
+| Field                 | Type     | Default       | Description                                                                                                                |
+| --------------------- | -------- | ------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `targets`             | string[] | —             | Upstream `host:port` addresses — **required**                                                                              |
+| `strategy`            | string   | `round-robin` | `"round-robin"` or `"random"`                                                                                              |
+| `connectTimeoutMs`    | number   | `5000`        | Upstream connect timeout (ms)                                                                                              |
+| `maxConnections`      | number   | no limit      | Most connections open on the site at once, at least 1. A connection over it is closed at accept, before any upstream is tried |
+| `maxConnectionsPerIp` | number   | no limit      | Most connections open at once from one client address, at least 1. IPv6 clients are counted per /64, IPv4-mapped as IPv4   |
+| `idleTimeoutSecs`     | number   | `3600`        | Seconds a connection may be quiet, in both directions, before it is closed. `0` = never                                    |
+
+> **Limits and idle time:** the caps are checked when a connection is accepted and a refused one is closed at once (nothing
+> is queued); the refusals are logged as one `warn` line per site every 10 seconds with their count. A connection that is
+> already relayed is never cut because a cap was lowered (the TCP services start with the process: a reload that adds,
+> removes or changes a `tcp` site is refused, restart instead). The idle time counts bytes moving either way, so a stream that sends nothing but receives something stays open; a
+> client that stops reading while the upstream keeps sending is cut once nothing can be written. The default of one hour is
+> new: before it a connection lived until a side closed it, so a session that must stay silent for longer needs `0` or a larger value.
 
 > **Failover:** a connect error or timeout is not the end of the connection: the other targets are tried once
 > each, starting from the one picked, and a target that just failed is passed over for 5 seconds while another
@@ -4159,8 +4176,7 @@ sites:
 > features on the same site. Use a separate port/site for HTTP traffic.
 
 > **Not supported on a TCP site:** TLS termination (TLS passes through untouched and the client verifies the
-> upstream's certificate), the PROXY protocol (the upstream sees Conduit's address), an idle timeout
-> or a connection limit, UDP, and port ranges. `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` and
+> upstream's certificate), the PROXY protocol (the upstream sees Conduit's address), UDP, and port ranges. `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` and
 > `middleware` next to `tcp` are refused at validation (they would be ignored). See the [guide](protocols.md#what-a-tcp-site-does-and-does-not-do).
 
 ---

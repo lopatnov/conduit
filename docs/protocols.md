@@ -50,8 +50,11 @@ a site of their own. Do not list a primary and a replica together: Conduit does 
   configuration that puts `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`, `limits` or `middleware` on a `tcp`
   site (it would be silently ignored and look like protection). Put access control in front of the port (a firewall or
   network policy) or on the backend.
-- There is no idle timeout and Conduit sets no limit on the number of connections: a connection lives until one side closes it
-  (the operating system's limits on open files still apply).
+- Limits: `maxConnections` caps the connections open on the site and `maxConnectionsPerIp` the connections from one client
+  address (IPv6 clients are counted per /64, an IPv4-mapped address as the IPv4 address); a connection over a cap is closed
+  at once, before any upstream is tried. Neither is set by default (the operating system's limit on open files still applies).
+  A connection that has been quiet in **both** directions for `idleTimeoutSecs` is closed: 3600 (one hour) by default, `0` for
+  never. A long-lived idle connection (an SSH session left open, a database pool) needs a larger value or `0`.
 - No UDP. Port ranges are not supported: one `sites` entry is one port.
 - Several upstreams are load-balanced per **connection**, not per message, and a target that fails to connect is passed
   over for a few seconds (see [TCP Proxy](configuration.md#tcp-proxy)). A connection that is already relayed is never
@@ -247,8 +250,8 @@ sites:
     tcp: {targets: ["media.internal:1935"]}
 ```
 
-The test completes the RTMP handshake through the site. A published stream can last for hours; there is no idle timeout in TCP
-mode. RTMPS is RTMP inside TLS, which passes through untouched. HTTP-FLV and HLS output of the same media server are HTTP.
+The test completes the RTMP handshake through the site. A published stream can last for hours; the TCP idle timeout (`idleTimeoutSecs`, one hour by default) only closes a connection
+in which nothing moves in either direction, so a live stream is not cut, and a long pause between publishes needs a larger value. RTMPS is RTMP inside TLS, which passes through untouched. HTTP-FLV and HLS output of the same media server are HTTP.
 
 ## MQTT
 
@@ -344,7 +347,7 @@ If Conduit's own host needs SSH on port 22, put Conduit on another port (`ssh -p
 These are gaps rather than choices; each is a candidate feature:
 
 - UDP proxying (WebRTC media, QUIC, DNS, syslog).
-- TLS termination for TCP sites, the PROXY protocol, an access filter (IP allow/deny), an idle timeout and a connection limit on TCP sites.
+- TLS termination for TCP sites, the PROXY protocol, and an access filter (IP allow/deny) on TCP sites.
 - Port ranges (FTP passive ports need one site each).
 - Active health probes that speak h2c or TLS (a TLS upstream is probed by connecting only), or a TCP-level probe for TCP sites.
 - A per-route custom CA for `upstreamTls` (only `verify: false` or the process-wide roots: the system store, or the file in `SSL_CERT_FILE`). The host needs a non-empty root store even with `verify: false`; see [Upstream TLS verification](configuration.md#upstream-tls-verification).
