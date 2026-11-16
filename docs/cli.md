@@ -679,10 +679,11 @@ extra crates each feature compiles in. `conduit features -c FILE` prints what a 
 | `tokio-metrics`   | `conduit_eventloop_lag_ms` Prometheus gauge          | —                       |
 | `kubernetes`      | Kubernetes CRD config provider                      | `kube`, `k8s-openapi`   |
 | `mimalloc`        | mimalloc allocator (`secure` mode) in the binary (on by default, in every bundle) | `mimalloc`, `libmimalloc-sys` (C) |
+| `jemalloc`        | jemalloc allocator instead of mimalloc (not in a bundle) | `tikv-jemallocator` (C) |
 | `standard`        | Bundle: `jwt` + `consumers` + `forward-auth` + `cache` + `acme` (typical self-hosted reverse-proxy / API-gateway set) — used by the published "standard" binaries/images | bundle, no extra deps of its own |
 | `static-server`   | Bundle for `--no-default-features` builds: `static` + `compression` + `hotreload` + `mimalloc` (the default set minus `proxy`) | bundle, no extra deps of its own |
 | `gateway`         | Bundle for `--no-default-features` builds: `proxy` + `jwt` + `consumers` + `forward-auth` + `cache` + `acme` + `compression` (the `standard` set without static files and hot-reload) | bundle, no extra deps of its own |
-| `full`            | Every optional feature above (`static-server` and `gateway` are shorthands, not extra capabilities) | all of the above        |
+| `full`            | Every optional feature above except `jemalloc`, which replaces the `mimalloc` it already has (`static-server` and `gateway` are shorthands, not extra capabilities) | all of the above        |
 
 When a feature is off but its config field is set, Conduit logs a warning at
 startup and continues with that feature disabled (fail-open, no crash).

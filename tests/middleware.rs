@@ -6,15 +6,10 @@
 
 mod common;
 
-use std::net::TcpListener;
-
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
+// Ports come from `common::free_port`: it hands out ports below the OS ephemeral range and never twice in one process.
+// A local helper that binds port 0 gets an ephemeral port, and two tests running in parallel can be given the same one
+// (the first releases it before its server binds it), so a request meant for one server reaches the other.
+use common::free_port;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

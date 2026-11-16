@@ -8,7 +8,7 @@
 What it does, from `Cargo.lock` through `cargo metadata` (no extra tool to install):
 
 * takes every crate that can end up in a binary: the *normal* dependencies of the `lopatnov-conduit` package with
-  `--features full` (the largest build; every smaller one is a subset), on every target platform, minus the
+  `--features full,jemalloc` (the largest build, with the alternative allocator `full` leaves out; every smaller one is a subset), on every target platform, minus the
   workspace's own crates (those are Conduit, Apache-2.0, `LICENSE`);
 * checks each crate's SPDX licence expression against the allow-list in `ci/license-policy.json`: an `OR` needs one
   allowed alternative, an `AND` needs all of them, `WITH <exception>` needs the exception to be allowed too. A crate
@@ -37,7 +37,7 @@ import textwrap
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLICY = os.path.join(REPO, "ci", "license-policy.json")
 ROOT_PACKAGE = "lopatnov-conduit"
-FEATURES = "full"
+FEATURES = "full,jemalloc"
 LICENSE_FILE = re.compile(r"^(licen[cs]e|copying|notice|unlicense|copyright)([-_. ].*)?$", re.IGNORECASE)
 MAX_LICENSE_BYTES = 200 * 1024
 
@@ -150,7 +150,7 @@ def license_files(package, policy=None):
     """(file name, text) of the licence and notice files in the package's top directory, sorted by name.
 
     `policy["bundled_notices"][crate]` names more files, relative to the package, for a crate that bundles C sources
-    under another licence than its own (libmimalloc-sys: Microsoft's mimalloc notice sits in `c_src/`). The file must
+    under another licence than its own (libmimalloc-sys: Microsoft's mimalloc notice sits in `c_src/`; tikv-jemalloc-sys: jemalloc's COPYING sits in `jemalloc/`). The file must
     exist and stay inside the package: a stale entry fails the check instead of silently dropping a notice.
     """
     directory = os.path.dirname(package["manifest_path"])

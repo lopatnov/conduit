@@ -995,11 +995,12 @@ jobs:
 
   # ── Global allocators (issue #486) ──────────────────────────────────────────
   # `cargo hack` above only compiles each feature. What nothing else shows is that the allocator is really the one in
-  # use: mimalloc prints its statistics at exit when asked through MIMALLOC_SHOW_STATS, and the build without it (the
-  # system allocator) must print none. Each binary then proxies requests, so a broken allocator hook cannot hide behind
-  # `--version`. mimalloc is the default build.
+  # use: each allocator prints its statistics at exit when asked through its own environment variable (mimalloc:
+  # MIMALLOC_SHOW_STATS, jemalloc with tikv's symbol prefix: _RJEM_MALLOC_CONF), and the build with neither (the system
+  # allocator) must print none. Each binary then proxies requests, so a broken allocator hook cannot hide behind
+  # `--version`. mimalloc is the default build, jemalloc is `--features jemalloc`.
   allocators:
-    name: Global allocator (mimalloc)
+    name: Opt-in allocators (mimalloc, jemalloc)
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -1017,16 +1018,18 @@ jobs:
           key: allocators
         continue-on-error: true
 
-      - name: Build the system-allocator and default (mimalloc) binaries
+      - name: Build the system-allocator, default (mimalloc) and jemalloc binaries
         run: |
           set -eu
           cargo build --locked --no-default-features --features proxy,compression,static,hotreload
           cp target/debug/conduit /tmp/conduit-system
           cargo build --locked
           cp target/debug/conduit /tmp/conduit-mimalloc
+          cargo build --locked --features jemalloc
+          cp target/debug/conduit /tmp/conduit-jemalloc
 
       - name: Each binary uses the allocator it was built with
-        run: scripts/allocator-check.sh /tmp/conduit-system /tmp/conduit-mimalloc
+        run: scripts/allocator-check.sh /tmp/conduit-system /tmp/conduit-mimalloc /tmp/conduit-jemalloc
 
   # ── Feature-OFF tests (issue #144) ──────────────────────────────────────────
   # `cargo hack --no-dev-deps` above only *compiles* each feature state — it
