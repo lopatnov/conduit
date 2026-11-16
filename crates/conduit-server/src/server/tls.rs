@@ -36,6 +36,14 @@ pub fn make_tls_settings(
 ) -> anyhow::Result<TlsSettings> {
     let mut settings = TlsSettings::intermediate(cert_path, key_path)
         .map_err(|e| anyhow::anyhow!("failed to load TLS certificate from {cert_path}: {e}"))?;
+    // `intermediate` only stores the paths and Pingora reads the files later, in `build()`, which panics on a missing or
+    // unparseable one. The setters read and check them now, so the error names the file and stops the start cleanly.
+    settings
+        .set_certificate_chain_file(cert_path)
+        .map_err(|e| anyhow::anyhow!("failed to load TLS certificate from {cert_path}: {e}"))?;
+    settings
+        .set_private_key_file(key_path)
+        .map_err(|e| anyhow::anyhow!("failed to load TLS private key from {key_path}: {e}"))?;
 
     if enable_h2 {
         settings.enable_h2();
@@ -121,6 +129,33 @@ mod tests {
             .self_signed(&key_pair)
             .expect("self-signed cert");
         (cert.pem(), key_pair.serialize_pem())
+    }
+
+    /// Pingora's `TlsSettings::intermediate` only stores the paths and reads the files in `build()`, which panics: the
+    /// settings must read them, so a missing or non-PEM file is an error that names the file.
+    #[test]
+    fn make_tls_settings_reports_a_missing_or_unreadable_file() {
+        use super::make_tls_settings;
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = generate_self_signed();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+        std::fs::write(path("cert.pem"), cert).unwrap();
+        std::fs::write(path("key.pem"), key).unwrap();
+        std::fs::write(path("junk.pem"), "this is not PEM").unwrap();
+        assert!(make_tls_settings(&path("cert.pem"), &path("key.pem"), false).is_ok());
+
+        for (cert_file, key_file, named) in [
+            ("missing-cert.pem", "key.pem", "missing-cert.pem"),
+            ("cert.pem", "missing-key.pem", "missing-key.pem"),
+            ("junk.pem", "key.pem", "junk.pem"),
+            ("cert.pem", "junk.pem", "junk.pem"),
+        ] {
+            let err = make_tls_settings(&path(cert_file), &path(key_file), false)
+                .err()
+                .unwrap_or_else(|| panic!("{cert_file} + {key_file} must be refused"))
+                .to_string();
+            assert!(err.contains(named), "the error must name {named}: {err}");
+        }
     }
 
     #[test]

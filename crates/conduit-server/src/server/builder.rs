@@ -469,6 +469,9 @@ mod tests {
     #[cfg(feature = "tcp")]
     #[test]
     fn a_tcp_site_terminates_tls_only_with_a_certificate_and_key() {
+        // The client-certificate verifier needs a process-default crypto provider; install it here so the test also
+        // passes when run alone or first, as the sibling TLS tests do.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let dir = tempfile::tempdir().unwrap();
         let (cert, key) = write_cert(&dir);
         let site = |tls: serde_json::Value| {
