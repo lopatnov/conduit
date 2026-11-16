@@ -86,7 +86,7 @@ handle_pr() {
   done <<<"$files"
 
   # 2. Up to date with main, so the file is made for the Cargo.lock CI tests (the merge result).
-  local behind updated=0
+  local behind
   behind=$(gh api "repos/$REPO/compare/main...$sha" --jq '.behind_by')
   if [ "$behind" != "0" ]; then
     if [ "$DRY_RUN" = "1" ]; then
@@ -100,7 +100,6 @@ handle_pr() {
       done
       if [ "$new" = "$sha" ]; then fail "#$n: the branch update did not land within a minute"; return 1; fi
       sha="$new"
-      updated=1
       note "#$n was $behind commit(s) behind main: branch updated to $sha"
     else
       fail "#$n is behind main and the branch could not be updated (a conflict, or main changed a workflow file," \
@@ -130,7 +129,7 @@ handle_pr() {
     # gets one; a head that has one is left alone.
     local runs
     runs=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=1" --jq '.total_count')
-    if [ "$updated" = "1" ] || [ "$runs" = "0" ]; then dispatch_ci "$n" "$ref"; fi
+    if [ "$runs" = "0" ]; then dispatch_ci "$n" "$ref"; fi
     return 0
   fi
 
