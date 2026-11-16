@@ -202,9 +202,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **A missing or non-PEM TLS certificate or key file stops the start with an error that names the file** (HTTPS ports and
-  `tcp` sites with `tls`). Before, the paths were only stored and Pingora read the files when the listener was built, so such a
-  start ended in a panic with no port or file in the message.
+- **A missing or non-PEM TLS certificate or key file, or a key that does not belong to the certificate, stops the start with an
+  error that names the file** (HTTPS ports and `tcp` sites with `tls`). Before, the paths were only stored and Pingora read
+  the files when the listener was built, so such a start ended in a panic with no port or file in the message.
 - The first rate-limited request of every instance that uses `store: redis` was counted in the in-memory fallback, not in the
   shared bucket (the connection is made at start in a throw-away runtime, so the first command failed with a broken pipe and
   only the next one worked). The first use of the connection now sends a `PING` (which changes nothing and is repeated if it fails) before the check, so the connection is back when the request is counted; the check itself is never retried, so a request cannot be counted twice. With N instances

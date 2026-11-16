@@ -44,6 +44,18 @@ pub fn make_tls_settings(
     settings
         .set_private_key_file(key_path)
         .map_err(|e| anyhow::anyhow!("failed to load TLS private key from {key_path}: {e}"))?;
+    // Each file is valid on its own at this point, but `build()` also unwraps rustls's check that the key belongs to the
+    // certificate: a valid certificate with another valid key would still panic there. The admin API's check runs the same
+    // rustls call, so a mismatched pair is refused here, naming both files.
+    let cert_pem = std::fs::read_to_string(cert_path)
+        .map_err(|e| anyhow::anyhow!("failed to read TLS certificate {cert_path}: {e}"))?;
+    let key_pem = std::fs::read_to_string(key_path)
+        .map_err(|e| anyhow::anyhow!("failed to read TLS private key {key_path}: {e}"))?;
+    validate_cert_key_pem(&cert_pem, &key_pem).map_err(|e| {
+        anyhow::anyhow!(
+            "TLS certificate {cert_path} and private key {key_path} cannot be used together: {e}"
+        )
+    })?;
 
     if enable_h2 {
         settings.enable_h2();
@@ -142,6 +154,8 @@ mod tests {
         std::fs::write(path("cert.pem"), cert).unwrap();
         std::fs::write(path("key.pem"), key).unwrap();
         std::fs::write(path("junk.pem"), "this is not PEM").unwrap();
+        // A valid certificate with the valid key of another pair: each file is fine alone, the pair is not.
+        std::fs::write(path("other-key.pem"), generate_self_signed().1).unwrap();
         assert!(make_tls_settings(&path("cert.pem"), &path("key.pem"), false).is_ok());
 
         for (cert_file, key_file, named) in [
@@ -149,6 +163,7 @@ mod tests {
             ("cert.pem", "missing-key.pem", "missing-key.pem"),
             ("junk.pem", "key.pem", "junk.pem"),
             ("cert.pem", "junk.pem", "junk.pem"),
+            ("cert.pem", "other-key.pem", "other-key.pem"),
         ] {
             let err = make_tls_settings(&path(cert_file), &path(key_file), false)
                 .err()
