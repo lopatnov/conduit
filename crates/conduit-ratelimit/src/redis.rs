@@ -59,6 +59,7 @@
 //! `strip_nul`, issue #320) — so the same collision is not reproducible under
 //! the `\0` join, matching the already-\0-based in-memory key format above.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -77,6 +78,8 @@ pub struct RedisRateLimiter {
     conn: ConnectionManager,
     /// In-memory fallback used when Redis is unreachable.
     fallback: Arc<DashMap<String, TokenBucket>>,
+    /// Whether a command has already succeeded on this connection (see the warm-up in `check`).
+    warm: AtomicBool,
 }
 
 impl RedisRateLimiter {
@@ -109,6 +112,7 @@ impl RedisRateLimiter {
         Ok(Self {
             conn,
             fallback: Arc::new(DashMap::new()),
+            warm: AtomicBool::new(false),
         })
     }
 
@@ -150,22 +154,23 @@ impl RedisRateLimiter {
         let redis_key = build_redis_key(scope_label, window_secs, client_key);
         let mut conn = self.conn.clone();
 
-        // Wrap the two-command sequence in a 50 ms deadline.
+        // Wrap the sequence in a 50 ms deadline.
         //
-        // A write that certainly never reached the server is retried once inside that deadline. The
-        // connection is made at start in a throw-away runtime (`redis_bootstrap`), and its driver dies
-        // with it, so the first command of the process fails with a broken pipe; the manager reconnects
-        // on that failure and the very next command works. Without the retry that first request of every
-        // instance was counted in the memory fallback instead of the shared bucket. Any other failure
-        // (a reset or an end of stream after the command was sent) is ambiguous: the server may have
-        // counted it, and a replay would count the request twice, so it goes to the fallback.
+        // The check itself is never retried: after a connection error the server may already have counted the
+        // request, and a replay would count it twice. The connection is made at start in a throw-away runtime
+        // (`redis_bootstrap`), and its driver dies with it, so the first command of the process fails with a
+        // broken pipe; the manager reconnects on that failure and the very next command works. So the first
+        // use of the connection sends a `PING` first, which changes nothing and may be repeated, and only then
+        // the check. Without it that first request of every instance was counted in the memory fallback instead
+        // of the shared bucket.
         let result = tokio::time::timeout(Duration::from_millis(50), async {
-            match redis_fixed_window_check(&mut conn, &redis_key, limit, burst, window_secs).await {
-                Err(e) if write_never_reached_server(&e) => {
-                    redis_fixed_window_check(&mut conn, &redis_key, limit, burst, window_secs).await
+            if !self.warm.load(Ordering::Relaxed) {
+                if redis_ping(&mut conn).await.is_err() {
+                    redis_ping(&mut conn).await?;
                 }
-                other => other,
+                self.warm.store(true, Ordering::Relaxed);
             }
+            redis_fixed_window_check(&mut conn, &redis_key, limit, burst, window_secs).await
         })
         .await;
 
@@ -339,26 +344,10 @@ async fn redis_fixed_window_check(
     Ok(count <= limit.saturating_add(burst))
 }
 
-/// True when `redis` reported the connection as closed without a socket error: the synthetic `BrokenPipe` or
-/// `NotConnected` it raises when the driver is gone (no OS error code). That is the first command after the
-/// throw-away bootstrap runtime died, and the command was never handed to a driver.
-/// A `BrokenPipe` with an OS error code (`EPIPE`) comes from a write or flush on the socket, and `redis`
-/// hands that error to the oldest in-flight command, which the server may already have executed; a reset or an
-/// end of stream can follow a delivered command too. Those are not retried: the increment would be replayed.
-/// Residual case, which can only over-count: when a connection dies with several commands in flight, the others
-/// also surface as the synthetic error although they may have been written; one retry then counts that request
-/// twice (a stricter outcome, bounded by the 50 ms deadline).
-/// `redis` keeps its io error private, so it is found through `source()`.
-fn write_never_reached_server(e: &redis::RedisError) -> bool {
-    use std::error::Error as _;
-    use std::io::ErrorKind::{BrokenPipe, NotConnected};
-    // `source()` is the `Arc<dyn Error + Send + Sync>` that `redis` wraps the io error in.
-    e.source()
-        .and_then(|s| s.downcast_ref::<Arc<dyn std::error::Error + Send + Sync>>())
-        .and_then(|inner| inner.downcast_ref::<std::io::Error>())
-        .is_some_and(|io| {
-            io.raw_os_error().is_none() && matches!(io.kind(), BrokenPipe | NotConnected)
-        })
+/// `PING`: changes nothing on the server, so it is safe to repeat. Used to bring a connection whose driver died
+/// back before the first rate-limit command is sent.
+async fn redis_ping(conn: &mut ConnectionManager) -> redis::RedisResult<()> {
+    redis::cmd("PING").query_async::<()>(conn).await
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -374,30 +363,6 @@ mod tests {
     // The unit tests below exercise only the fallback path (no Redis required).
 
     use super::*;
-
-    #[test]
-    fn only_a_write_that_never_arrived_is_retried() {
-        use std::io::{Error, ErrorKind};
-        let retried =
-            |k: ErrorKind| write_never_reached_server(&redis::RedisError::from(Error::from(k)));
-        assert!(retried(ErrorKind::BrokenPipe));
-        assert!(retried(ErrorKind::NotConnected));
-        // a real socket write failure (EPIPE) is ambiguous too: the command may have been flushed earlier
-        #[cfg(unix)]
-        assert!(!write_never_reached_server(&redis::RedisError::from(
-            Error::from_raw_os_error(32)
-        )));
-        // ambiguous: the server may have counted the request already
-        assert!(!retried(ErrorKind::ConnectionReset));
-        assert!(!retried(ErrorKind::UnexpectedEof));
-        assert!(!retried(ErrorKind::TimedOut));
-        // not an io error at all
-        let other = redis::RedisError::from((
-            redis::ErrorKind::Server(redis::ServerErrorKind::ResponseError),
-            "x",
-        ));
-        assert!(!write_never_reached_server(&other));
-    }
 
     /// Build a `RedisRateLimiter` with a dummy (invalid) connection manager
     /// by pointing to a non-existent server — initial connect will fail.
@@ -598,8 +563,9 @@ mod tests {
     }
 
     /// The connection is made in a throw-away runtime that is then dropped (as `conduit-server`'s bootstrap does), so
-    /// its driver is dead and the very first command fails with a synthetic broken pipe. The request must still
-    /// be counted in Redis (retried once), not in the memory fallback: a real Redis holds the key afterwards.
+    /// its driver is dead and the very first command would fail with a broken pipe. The request must still be
+    /// counted in Redis (the warm-up `PING` reconnects), not in the memory fallback: a real Redis holds the key
+    /// afterwards, counted once.
     ///
     /// Requires a real Redis at `REDIS_URL`; skips when unset.
     #[test]

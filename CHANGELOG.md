@@ -161,7 +161,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The first rate-limited request of every instance that uses `store: redis` was counted in the in-memory fallback, not in the
   shared bucket (the connection is made at start in a throw-away runtime, so the first command failed with a broken pipe and
-  only the next one worked). A dropped connection is now retried once inside the existing 50 ms deadline. With N instances
+  only the next one worked). The first use of the connection now sends a `PING` (which changes nothing and is repeated if it fails) before the check, so the connection is back when the request is counted; the check itself is never retried, so a request cannot be counted twice. With N instances
   that let N requests through above the limit once per start; `scripts/e2e/redis-limit.sh` (two instances, a real Redis)
   shows the shared limit now holds exactly.
 - Active health probes of an `https://` or `wss://` upstream: the probe is plaintext HTTP/1.1, which a TLS listener does not
