@@ -552,10 +552,9 @@ tracing-subscriber.workspace = true
 # #140's scope — still pulls it in regardless of this crate's `hotreload`
 # feature.)
 
-# --- TLS (always needed) ---
-x509-parser.workspace = true
-
-rustls.workspace         = true
+# --- TLS ---
+# rustls: the PROXY protocol integration test (`tests/proxy_protocol.rs`) drives a TLS client directly.
+rustls.workspace = true
 
 # --- Utilities ---
 bytes.workspace     = true

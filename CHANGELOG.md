@@ -10,7 +10,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Removed
 
 - Direct dependencies that no code used any more, left over from the move into member crates (#777): `anyhow`, `axum`,
-  `dashmap`, `indexmap`, `pingora-core`, `pingora-http`, `pingora-proxy` and `serde_yaml` from the
+  `dashmap`, `indexmap`, `pingora-core`, `pingora-http`, `pingora-proxy`, `serde_yaml` and `x509-parser` from the
   root crate, `anyhow`, `serde` and `tempfile` from `lopatnov-conduit-runtime`. Every crate stays in the build through the
   member crates that do use it, so binaries are unchanged.
 

@@ -2808,7 +2808,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wat",
- "x509-parser 0.18.1",
 ]
 
 [[package]]
