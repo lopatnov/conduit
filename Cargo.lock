@@ -2793,6 +2793,7 @@ dependencies = [
  "p256",
  "rcgen",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "serial_test",

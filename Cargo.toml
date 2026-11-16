@@ -997,6 +997,8 @@ reqwest                = { workspace = true, features = ["http2", "blocking", "m
 # carries its own base64 dependency for the Basic-auth decoder).
 base64                 = { workspace = true }
 criterion.workspace     = true
+# tests/proxy_protocol.rs and tests/tcp_tls.rs are TLS clients; the binary itself no longer links rustls directly (#776).
+rustls.workspace        = true
 tempfile.workspace      = true
 serial_test.workspace   = true
 time.workspace          = true
