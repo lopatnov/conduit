@@ -71,6 +71,21 @@ pub fn validate_tcp(tcp: &TcpConfig, prefix: &str, errors: &mut Vec<ValidationEr
     }
 }
 
+/// `true` for a rule that covers every client: a zero prefix, or the IPv4-mapped network that holds the whole IPv4 space.
+fn trusts_everyone(rule: &str) -> bool {
+    let Some((addr, prefix)) = rule.split_once('/') else {
+        return false;
+    };
+    let Ok(prefix) = prefix.parse::<u32>() else {
+        return false;
+    };
+    prefix == 0
+        || (prefix <= 96
+            && addr
+                .parse::<std::net::Ipv6Addr>()
+                .is_ok_and(|a| a.to_ipv4_mapped().is_some()))
+}
+
 /// Validate `sites[].proxyProtocol` (`prefix` is the site's path, e.g. `sites[0]`).
 pub fn validate_proxy_protocol(
     pp: &ProxyProtocolConfig,
@@ -91,10 +106,7 @@ pub fn validate_proxy_protocol(
                 format!("{path}.trustedSources[{i}]"),
                 format!("\"{rule}\" is not an IP address or a CIDR block (e.g. \"10.0.0.0/8\")"),
             ));
-        } else if rule
-            .split_once('/')
-            .is_some_and(|(_, prefix)| prefix.parse::<u32>() == Ok(0))
-        {
+        } else if trusts_everyone(rule) {
             errors.push(ValidationError::warning(
                 format!("{path}.trustedSources[{i}]"),
                 format!(
@@ -221,7 +233,13 @@ mod tests {
     fn trusting_everyone_is_a_warning() {
         use conduit_config_core::validation::Severity;
         // the prefix is read as a number, so spellings of zero count too
-        for rule in ["0.0.0.0/0", "::/0", "0.0.0.0/00", "::/+0"] {
+        for rule in [
+            "0.0.0.0/0",
+            "::/0",
+            "0.0.0.0/00",
+            "::/+0",
+            "::ffff:0.0.0.0/96",
+        ] {
             let e = pp(&[rule], None, None);
             assert_eq!(e.len(), 1, "{e:?}");
             assert_eq!(e[0].severity, Severity::Warning);

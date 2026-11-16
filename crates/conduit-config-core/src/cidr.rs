@@ -6,7 +6,11 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// `true` when `rule` is a valid address or a valid CIDR block (prefix at most 32 for IPv4, 128 for IPv6).
+/// Prefix length at which the IPv4 space starts inside an IPv4-mapped IPv6 network (`::ffff:a.b.c.d/96` is every IPv4 address).
+const MAPPED_PREFIX: u32 = 96;
+
+/// `true` when `rule` is a valid address or a valid CIDR block (prefix at most 32 for IPv4, 128 for IPv6; an IPv4-mapped
+/// IPv6 network needs at least 96).
 pub fn is_valid_ip_or_cidr(s: &str) -> bool {
     if let Some((addr, prefix)) = s.split_once('/') {
         let Ok(ip) = addr.parse::<IpAddr>() else {
@@ -19,6 +23,13 @@ pub fn is_valid_ip_or_cidr(s: &str) -> bool {
             IpAddr::V4(_) => 32,
             IpAddr::V6(_) => 128,
         };
+        // An IPv4-mapped network counts bits of the 128-bit address, so below 96 it would name more than the IPv4 space
+        // (`::ffff:10.0.0.0/8` is `::/8`, every IPv4 address). Refuse it rather than let an IPv4-style prefix widen a rule.
+        if let IpAddr::V6(v6) = ip {
+            if v6.to_ipv4_mapped().is_some() && prefix_len < MAPPED_PREFIX {
+                return false;
+            }
+        }
         prefix_len <= max_prefix
     } else {
         s.parse::<IpAddr>().is_ok()
@@ -46,7 +57,13 @@ pub fn matches_rule(ip: &IpAddr, rule: &str) -> bool {
 fn in_subnet(ip: &IpAddr, net: &IpAddr, prefix: u32) -> bool {
     match (ip, net) {
         (IpAddr::V4(ip4), IpAddr::V4(net4)) => ipv4_in_subnet(*ip4, *net4, prefix),
-        (IpAddr::V6(ip6), IpAddr::V6(net6)) => ipv6_in_subnet(*ip6, *net6, prefix),
+        (IpAddr::V6(ip6), IpAddr::V6(net6)) => {
+            // A mapped network shorter than /96 is refused by validation; matching it must not widen either.
+            if net6.to_ipv4_mapped().is_some() && prefix < MAPPED_PREFIX {
+                return false;
+            }
+            ipv6_in_subnet(*ip6, *net6, prefix)
+        }
         // Handle IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 vs 127.0.0.1)
         (IpAddr::V6(ip6), IpAddr::V4(net4)) => {
             if let Some(ip4) = ip6.to_ipv4_mapped() {
@@ -58,7 +75,7 @@ fn in_subnet(ip: &IpAddr, net: &IpAddr, prefix: u32) -> bool {
         // The prefix of an IPv4-mapped network counts bits of the 128-bit address (`::ffff:192.0.2.0/120` is the IPv4
         // `192.0.2.0/24`), so compare in IPv6 form rather than reusing the prefix as an IPv4 one.
         (IpAddr::V4(ip4), IpAddr::V6(net6)) => {
-            if net6.to_ipv4_mapped().is_some() {
+            if net6.to_ipv4_mapped().is_some() && prefix >= MAPPED_PREFIX {
                 ipv6_in_subnet(ip4.to_ipv6_mapped(), *net6, prefix)
             } else {
                 false
@@ -182,6 +199,28 @@ mod tests {
             assert!(!matches_rule(&ip, rule), "{rule} must not match");
             assert!(!matches_rule(&mapped_ip, rule), "{rule} must not match");
         }
+    }
+
+    #[test]
+    fn a_mapped_network_shorter_than_96_is_refused_and_matches_nothing() {
+        // `::ffff:10.0.0.0/8` read with an IPv4-style prefix used to mean 10.0.0.0/8; as an IPv6 network it is `::/8`.
+        for rule in [
+            "::ffff:10.0.0.0/8",
+            "::ffff:192.0.2.0/24",
+            "::ffff:0.0.0.0/0",
+            "::ffff:10.0.0.0/95",
+        ] {
+            assert!(!is_valid_ip_or_cidr(rule), "{rule} must be refused");
+            for peer in ["10.1.2.3", "192.0.2.7", "::ffff:10.1.2.3"] {
+                let ip: IpAddr = peer.parse().unwrap();
+                assert!(!matches_rule(&ip, rule), "{rule} must not match {peer}");
+            }
+        }
+        assert!(is_valid_ip_or_cidr("::ffff:10.0.0.0/96"));
+        assert!(is_valid_ip_or_cidr("::ffff:10.0.0.0/104"));
+        // A plain IPv6 network with a short prefix is untouched.
+        assert!(is_valid_ip_or_cidr("2001:db8::/32"));
+        assert!(is_valid_ip_or_cidr("::/0"));
     }
 
     #[test]
