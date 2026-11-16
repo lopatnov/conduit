@@ -412,7 +412,8 @@ fn demo_wasm_header_injector_injects_x_wasm_plugin() {
             .or_else(|| headers.get("X-Wasm-Plugin"))
             .and_then(|v| v.as_str()),
         Some("header-injector/1.0"),
-        "upstream must receive X-Wasm-Plugin: header-injector/1.0; got headers: {headers}"
+        "upstream must receive X-Wasm-Plugin: header-injector/1.0; got headers: {headers}; server stderr:\n{}",
+        srv.stderr_tail()
     );
 }
 

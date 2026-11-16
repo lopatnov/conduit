@@ -17,4 +17,18 @@ pub struct TcpConfig {
     /// Connection timeout to upstream in milliseconds (default: 5000).
     #[serde(rename = "connectTimeoutMs", skip_serializing_if = "Option::is_none")]
     pub connect_timeout_ms: Option<u64>,
+    /// Most connections open on this site at once; a connection over it is closed at accept, before any upstream
+    /// connect (default: no limit).
+    #[serde(rename = "maxConnections", skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<u32>,
+    /// Most connections open at once from one client address (default: no limit). IPv6 clients are counted per /64,
+    /// an IPv4-mapped IPv6 address as the IPv4 address it carries.
+    #[serde(
+        rename = "maxConnectionsPerIp",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_connections_per_ip: Option<u32>,
+    /// Seconds a connection may be quiet, in both directions, before it is closed (default: 3600; `0` = never).
+    #[serde(rename = "idleTimeoutSecs", skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_secs: Option<u64>,
 }

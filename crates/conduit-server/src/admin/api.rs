@@ -375,7 +375,8 @@ fn bound_listeners(
 /// require a server restart (cold fields).
 ///
 /// Cold fields: `global.workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`, `global.redis.url`,
-/// the set of bound listener ports, each port's `tls.cert`/`tls.key`, and every field of a site's `tls.acme`.
+/// the set of bound listener ports, each port's `tls.cert`/`tls.key`, every field of a site's `tls.acme`, and the `tcp`
+/// block of every TCP site (the TCP services are registered once, at start).
 pub(crate) fn detect_cold_changes(
     old: &crate::config::schema::AppConfig,
     new: &crate::config::schema::AppConfig,
@@ -446,6 +447,20 @@ pub(crate) fn detect_cold_changes_in(
         }
     }
 
+    // TCP sites: the services are registered once, at start, with their `tcp` block, so adding, removing or changing
+    // one (its targets, limits or timeouts) would silently keep the old behaviour until a restart (issue #757).
+    let old_t = tcp_by_port(old);
+    let new_t = tcp_by_port(new);
+    for port in old_t
+        .keys()
+        .chain(new_t.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        if old_t.get(port) != new_t.get(port) {
+            cold.push(format!("sites[port {port}].tcp"));
+        }
+    }
+
     // `tls.acme`: every field is read when the certificate is ordered at start-up and by the renewal loop, which
     // a reload does not restart (issue #555). A change here would silently keep the old account, directory,
     // storage directory or contact. Sites are matched by `host`, the name the certificate is ordered for.
@@ -476,6 +491,19 @@ pub(crate) fn detect_cold_changes_in(
     }
 
     cold
+}
+
+/// The `tcp` block of every TCP site, by the port it listens on (the first site wins for a repeated port).
+fn tcp_by_port(
+    cfg: &crate::config::schema::AppConfig,
+) -> std::collections::BTreeMap<u16, &crate::config::schema::TcpConfig> {
+    let mut out = std::collections::BTreeMap::new();
+    for site in &cfg.sites {
+        if let Some(tcp) = site.tcp.as_ref() {
+            out.entry(site.port.unwrap_or(80)).or_insert(tcp);
+        }
+    }
+    out
 }
 
 /// The `tls.acme` block of every site that has one, by the site's `host` (the first site wins for a repeated host).
@@ -564,6 +592,32 @@ mod tests {
         ] {
             let cold = detect_cold_changes_in(old, new, None);
             assert_eq!(cold, vec!["global.redis.url".to_string()], "{cold:?}");
+        }
+    }
+
+    #[test]
+    fn a_tcp_site_change_is_cold() {
+        let site = |extra: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"port":3306,"tcp":{{"targets":["db:3306"]{extra}}}}},{{"port":8080}}]}}"#
+            ))
+        };
+        let plain = cfg(r#"{"sites":[{"port":8080}]}"#);
+        // identical: nothing
+        assert!(detect_cold_changes_in(&site(""), &site(""), None).is_empty());
+        let one = vec!["sites[port 3306].tcp".to_string()];
+        // a field of the block changed (a cap, a timeout, a target), added, or removed
+        for (old, new) in [
+            (site(""), site(r#","maxConnections":10"#)),
+            (
+                site(r#","maxConnections":10"#),
+                site(r#","maxConnections":20"#),
+            ),
+            (site(""), site(r#","idleTimeoutSecs":60"#)),
+            (plain.clone(), site("")),
+            (site(""), plain),
+        ] {
+            assert_eq!(detect_cold_changes_in(&old, &new, None), one);
         }
     }
 

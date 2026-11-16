@@ -9,6 +9,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A `tcp` connection that is quiet in both directions for an hour is now closed** (`tcp.idleTimeoutSecs`, default 3600;
+  `0` keeps the old never-closed behaviour). Before, a connection lived until a side closed it, so a client that vanished
+  without closing held a slot for ever. A session that must stay silent for longer (an idle SSH login, a database pool with a
+  long idle time) needs a larger value or `0`.
+- **A reload that adds, removes or changes a `tcp` site is refused as a cold change** (restart to apply). The TCP services are
+  registered once at start, so such a reload used to be accepted and silently left the old targets in use.
 - **The `ConduitSite` API group is now `conduit.lopatnov.github.io` (was `conduit.io`)** (#573; breaking for anyone who
   installed the CRD). `conduit.io` is a domain nobody here owns, so no one could vouch for the name and anyone who registered
   it could have claimed it; the new group is a subdomain of the project's own address. The version stays `v1`. Objects of the
@@ -29,6 +35,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `redis://` or `rediss://` address is refused like a host path, so a writer of one site can no longer send the counters
   (client IPs) or cached responses of every site to a Redis of their choice. The address is read at startup: a change
   takes a restart, and a reload that changes it is refused (cold field).
+- **Connection limits and an idle timeout for `tcp` sites** (#757, item 1 of 5): `tcp.maxConnections` (connections open on the
+  site), `tcp.maxConnectionsPerIp` (per client address; IPv6 per /64) and `tcp.idleTimeoutSecs`. A connection over a cap is
+  closed at accept, before any upstream is tried, and the refusals are logged as one line per site every 10 seconds. Zero
+  caps are a validation error. The `TcpConfig` block is now in `schema/conduit.schema.json`. Proven by unit tests
+  (`crates/conduit-tcp`), real sockets through `process_new`, and the e2e scenario `scripts/e2e/tcp-limits.sh`.
 - A Kubernetes guide, `docs/kubernetes.md` (#573): the CRD, RBAC and Deployment, a first site, what a `ConduitSite` may
   contain, what is checked on each change and what a rejected update leaves (the whole previous config), what needs a
   restart (a new port, `tls.acme`), who may write the objects, and troubleshooting. Every `ConduitSite` in the guide, in

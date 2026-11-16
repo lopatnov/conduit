@@ -15,7 +15,14 @@
 //!       targets: ["mysql-primary:3306", "mysql-replica:3306"]
 //!       strategy: round-robin     # optional; default
 //!       connectTimeoutMs: 5000    # optional
+//!       maxConnections: 1000      # optional; none by default
+//!       maxConnectionsPerIp: 20   # optional; none by default
+//!       idleTimeoutSecs: 3600     # optional; default 3600, 0 = never
 //! ```
+//!
+//! A connection over `maxConnections` or `maxConnectionsPerIp` is closed at once, before an upstream is chosen (#757;
+//! see [`crate::limits`]), and one that has been quiet in both directions for `idleTimeoutSecs` is closed (see
+//! [`crate::relay`]).
 //!
 //! A connect error or timeout is not the end of the connection: the remaining targets are tried once each, in
 //! order from the one picked, and a target that just failed is left out of the pick for [`DOWN_FOR`] so that a dead
@@ -32,9 +39,15 @@ use pingora_core::server::ShutdownWatch;
 use tokio::net::TcpStream;
 
 use crate::config::TcpConfig;
+use crate::limits::{Limits, Refusal};
+use crate::relay::{relay, Outcome};
 
 /// How long a target that failed to connect is passed over while another one is available.
 const DOWN_FOR: Duration = Duration::from_secs(5);
+
+/// The idle timeout of a connection when `idleTimeoutSecs` is not set (Envoy's `tcp_proxy.idle_timeout`; nginx
+/// `proxy_timeout` is 10 minutes). Without any, a client that goes away without closing holds a slot for ever.
+const DEFAULT_IDLE_SECS: u64 = 3600;
 
 /// Raw TCP proxy application.
 ///
@@ -53,6 +66,12 @@ pub struct TcpProxy {
     /// Per target: milliseconds after `epoch` until which it is passed over (0 = not marked down).
     down_until_ms: Vec<AtomicU64>,
     epoch: Instant,
+    /// Connection caps of the site.
+    limits: Arc<Limits>,
+    /// Quiet time after which a connection is closed (`None` = never).
+    idle_timeout: Option<Duration>,
+    /// Names the site in log lines (its port); 0 until [`TcpProxy::with_port`].
+    port: u16,
 }
 
 impl TcpProxy {
@@ -70,12 +89,24 @@ impl TcpProxy {
             connect_timeout,
             down_until_ms: cfg.targets.iter().map(|_| AtomicU64::new(0)).collect(),
             epoch: Instant::now(),
+            limits: Limits::new(cfg.max_connections, cfg.max_connections_per_ip),
+            idle_timeout: match cfg.idle_timeout_secs.unwrap_or(DEFAULT_IDLE_SECS) {
+                0 => None,
+                secs => Some(Duration::from_secs(secs)),
+            },
+            port: 0,
         }
+    }
+
+    /// The port the site listens on, named in the log line about refused connections.
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
     }
 
     fn now_ms(&self) -> u64 {
         // +1 so that a mark made at the very first millisecond is not the "not down" value 0.
-        self.epoch.elapsed().as_millis() as u64 + 1
+        crate::relay::millis(self.epoch.elapsed()).saturating_add(1)
     }
 
     fn is_down(&self, idx: usize) -> bool {
@@ -83,7 +114,7 @@ impl TcpProxy {
     }
 
     fn mark_down(&self, idx: usize) {
-        let until = self.now_ms() + DOWN_FOR.as_millis() as u64;
+        let until = self.now_ms().saturating_add(crate::relay::millis(DOWN_FOR));
         self.down_until_ms[idx].store(until, Ordering::Relaxed);
     }
 
@@ -152,28 +183,52 @@ impl ServerApp for TcpProxy {
     /// bidirectionally until either side closes.
     async fn process_new(
         self: &Arc<Self>,
-        mut downstream: Stream,
+        downstream: Stream,
         _shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
         if self.targets.is_empty() {
             tracing::warn!("TCP proxy: no upstream targets configured");
             return None;
         }
-        let Some((mut upstream, target)) = self.connect_any().await else {
+        let client = downstream
+            .get_socket_digest()
+            .and_then(|digest| digest.peer_addr().and_then(|a| a.as_inet().map(|a| a.ip())));
+        // Held until the relay ends, however it ends.
+        let _permit = match self.limits.admit(client) {
+            Ok(permit) => permit,
+            Err(refusal) => {
+                if let Some(n) = self.limits.note_refusal() {
+                    tracing::warn!(
+                        port = self.port,
+                        refusal = match refusal {
+                            Refusal::SiteFull => "maxConnections",
+                            Refusal::ClientFull => "maxConnectionsPerIp",
+                        },
+                        refused = n,
+                        "TCP proxy: connections refused because a limit is reached"
+                    );
+                }
+                return None;
+            }
+        };
+        let Some((upstream, target)) = self.connect_any().await else {
             tracing::warn!("TCP proxy: no upstream target could be reached");
             return None;
         };
 
         tracing::debug!(target, "TCP proxy: relaying connection");
 
-        match tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await {
-            Ok((down_bytes, up_bytes)) => {
+        match relay(downstream, upstream, self.idle_timeout).await {
+            Ok(Outcome::Closed(down_bytes, up_bytes)) => {
                 tracing::debug!(
                     target,
                     bytes_client_to_upstream = down_bytes,
                     bytes_upstream_to_client = up_bytes,
                     "TCP proxy: connection closed"
                 );
+            }
+            Ok(Outcome::Idle) => {
+                tracing::debug!(target, "TCP proxy: idle connection closed");
             }
             Err(e) => {
                 // Broken pipe and connection reset are normal — don't warn.
@@ -198,7 +253,7 @@ mod tests {
         TcpProxy::new(&TcpConfig {
             targets: targets.iter().map(|s| s.to_string()).collect(),
             strategy: strategy.map(str::to_owned),
-            connect_timeout_ms: None,
+            ..Default::default()
         })
     }
 
@@ -328,9 +383,173 @@ mod tests {
         use crate::config::TcpConfig;
         let proxy = TcpProxy::new(&TcpConfig {
             targets: vec!["x:1".to_owned()],
-            strategy: None,
             connect_timeout_ms: Some(2000),
+            ..Default::default()
         });
         assert_eq!(proxy.connect_timeout, Duration::from_secs(2));
+    }
+
+    // ── limits and idle timeout, through real sockets (#757) ─────────────────
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// An echo upstream; returns its address.
+    async fn echo_upstream() -> String {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = l.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    while let Ok(n) = s.read(&mut buf).await {
+                        if n == 0 || s.write_all(&buf[..n]).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    /// The stream Pingora's listener hands to a `ServerApp`: the socket digest carries the peer address.
+    #[cfg(unix)]
+    fn accepted_stream(s: tokio::net::TcpStream, peer: std::net::SocketAddr) -> Stream {
+        use pingora_core::protocols::{GetSocketDigest, SocketDigest};
+        use std::os::fd::AsRawFd;
+        let mut stream = pingora_core::protocols::l4::stream::Stream::from(s);
+        let digest = SocketDigest::from_raw_fd(stream.as_raw_fd());
+        digest.peer_addr.set(Some(peer.into())).expect("new cell");
+        stream.set_socket_digest(digest);
+        Box::new(stream)
+    }
+
+    #[cfg(not(unix))]
+    fn accepted_stream(s: tokio::net::TcpStream, _peer: std::net::SocketAddr) -> Stream {
+        Box::new(pingora_core::protocols::l4::stream::Stream::from(s))
+    }
+
+    /// The proxy on a loopback listener, serving every accepted connection the way Pingora's listening service does.
+    async fn serve(cfg: TcpConfig) -> std::net::SocketAddr {
+        let proxy = Arc::new(TcpProxy::new(&cfg));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let (_tx, shutdown) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            let _tx = _tx;
+            loop {
+                let Ok((s, peer)) = l.accept().await else {
+                    return;
+                };
+                let (proxy, shutdown) = (Arc::clone(&proxy), shutdown.clone());
+                tokio::spawn(async move {
+                    let stream = accepted_stream(s, peer);
+                    proxy.process_new(stream, &shutdown).await;
+                });
+            }
+        });
+        addr
+    }
+
+    /// `true` when the proxy relays a round trip on a new connection (kept open in `held`).
+    async fn round_trip(addr: std::net::SocketAddr, held: &mut Vec<tokio::net::TcpStream>) -> bool {
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let _ = c.write_all(b"hi").await;
+        let mut buf = [0u8; 2];
+        let ok = matches!(
+            tokio::time::timeout(Duration::from_secs(2), c.read_exact(&mut buf)).await,
+            Ok(Ok(_))
+        ) && &buf == b"hi";
+        if ok {
+            held.push(c);
+        }
+        ok
+    }
+
+    #[tokio::test]
+    async fn a_connection_over_max_connections_is_closed_and_a_freed_slot_is_reused() {
+        let up = echo_upstream().await;
+        let addr = serve(TcpConfig {
+            targets: vec![up],
+            max_connections: Some(2),
+            ..Default::default()
+        })
+        .await;
+        let mut held = Vec::new();
+        assert!(round_trip(addr, &mut held).await, "first");
+        assert!(round_trip(addr, &mut held).await, "second");
+        assert!(
+            !round_trip(addr, &mut held).await,
+            "the third is over the cap and is closed without being relayed"
+        );
+        held.pop(); // a client goes away: its slot is free again
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(round_trip(addr, &mut held).await, "after a slot is freed");
+    }
+
+    // Needs the peer address in the socket digest, which the helper above sets on Unix only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn max_connections_per_ip_counts_the_client_address() {
+        let up = echo_upstream().await;
+        let addr = serve(TcpConfig {
+            targets: vec![up],
+            max_connections_per_ip: Some(1),
+            ..Default::default()
+        })
+        .await;
+        let mut held = Vec::new();
+        assert!(round_trip(addr, &mut held).await, "first from 127.0.0.1");
+        assert!(
+            !round_trip(addr, &mut held).await,
+            "a second from the same address is refused"
+        );
+        held.clear();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(round_trip(addr, &mut held).await, "after the first closed");
+    }
+
+    #[tokio::test]
+    async fn a_quiet_connection_is_closed_after_idle_timeout_secs() {
+        let up = echo_upstream().await;
+        let addr = serve(TcpConfig {
+            targets: vec![up],
+            idle_timeout_secs: Some(1),
+            ..Default::default()
+        })
+        .await;
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(b"hi").await.unwrap();
+        let mut buf = [0u8; 2];
+        c.read_exact(&mut buf).await.unwrap();
+        let started = Instant::now();
+        let n = tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf))
+            .await
+            .expect("the proxy closes the quiet connection")
+            .unwrap_or(0);
+        assert_eq!(n, 0, "closed, not data");
+        let waited = started.elapsed();
+        assert!(
+            waited >= Duration::from_millis(800) && waited < Duration::from_secs(3),
+            "closed after about 1 s, not {waited:?}"
+        );
+    }
+
+    #[test]
+    fn idle_timeout_defaults_to_an_hour_and_zero_means_never() {
+        let t = |secs: Option<u64>| {
+            TcpProxy::new(&TcpConfig {
+                targets: vec!["x:1".to_owned()],
+                idle_timeout_secs: secs,
+                ..Default::default()
+            })
+            .idle_timeout
+        };
+        assert_eq!(t(None), Some(Duration::from_secs(3600)));
+        assert_eq!(t(Some(90)), Some(Duration::from_secs(90)));
+        assert_eq!(t(Some(0)), None);
     }
 }
