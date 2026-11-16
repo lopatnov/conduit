@@ -225,6 +225,7 @@ or build from source: `cargo build --release --features full`.
 
 - [Connection pool](#connection-pool)
 - [Multi-site (virtual hosting)](#multi-site)
+- [PROXY protocol](#proxy-protocol)
 - [Upload](#upload)
 - [Admin API](#admin-api) — see also [admin.md](admin.md) for full reference
 - [Prometheus metrics reference](#prometheus-metrics-reference)
@@ -4129,6 +4130,7 @@ sites:
       maxConnections: 1000 # connections open on this site at once (default: no limit)
       maxConnectionsPerIp: 20 # connections open from one client at once (default: no limit)
       idleTimeoutSecs: 3600 # close a connection quiet in both directions (default: 3600; 0 = never)
+      sendProxyProtocol: v2 # tell the upstream who the client is (default: none), see PROXY protocol below
 ```
 
 ```json
@@ -4143,7 +4145,8 @@ sites:
         "connectTimeoutMs": 5000,
         "maxConnections": 1000,
         "maxConnectionsPerIp": 20,
-        "idleTimeoutSecs": 3600
+        "idleTimeoutSecs": 3600,
+        "sendProxyProtocol": "v2"
       }
     }
   ]
@@ -4158,6 +4161,7 @@ sites:
 | `maxConnections`      | number   | no limit      | Most connections open on the site at once, at least 1. A connection over it is closed at accept, before any upstream is tried |
 | `maxConnectionsPerIp` | number   | no limit      | Most connections open at once from one client address, at least 1. IPv6 clients are counted per /64, IPv4-mapped as IPv4   |
 | `idleTimeoutSecs`     | number   | `3600`        | Seconds a connection may be quiet, in both directions, before it is closed. `0` = never                                    |
+| `sendProxyProtocol`   | string   | none          | `"v1"` (text) or `"v2"` (binary): write a [PROXY protocol](#proxy-protocol) header naming the client to the upstream first |
 
 > **Limits and idle time:** the caps are checked when a connection is accepted and a refused one is closed at once (nothing
 > is queued); the refusals are logged as one `warn` line per site every 10 seconds with their count. A connection that is
@@ -4176,8 +4180,77 @@ sites:
 > features on the same site. Use a separate port/site for HTTP traffic.
 
 > **Not supported on a TCP site:** TLS termination (TLS passes through untouched and the client verifies the
-> upstream's certificate), the PROXY protocol (the upstream sees Conduit's address), UDP, and port ranges. `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` and
+> upstream's certificate), UDP, and port ranges. The upstream sees Conduit's address unless `sendProxyProtocol` is set. `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` and
 > `middleware` next to `tcp` are refused at validation (they would be ignored). See the [guide](protocols.md#what-a-tcp-site-does-and-does-not-do).
+
+---
+
+## PROXY protocol
+
+A load balancer in front of Conduit (HAProxy, an AWS Network Load Balancer, nginx with `proxy_protocol on`) hides the
+client behind its own address. The [PROXY protocol](https://www.haproxy.org/download/2.8/doc/proxy-protocol.txt) (versions
+1 and 2) is how it passes the client on: a header at the start of each connection. Conduit reads it on `tcp` sites and on
+TLS ports (`proxyProtocol`), and writes one to the upstream of a `tcp` site (`tcp.sendProxyProtocol`).
+
+```yaml
+sites:
+  # HTTPS behind a load balancer: the header comes before the TLS handshake
+  - port: 443
+    host: app.example.com
+    tls: { cert: ./cert.pem, key: ./key.pem }
+    proxyProtocol:
+      trustedSources: ["10.0.0.0/8"] # the load balancers
+    ipFilter:
+      allow: ["203.0.113.0/24"] # judged on the client of the header
+    proxy: "http://app.internal:8080"
+
+  # a database port behind the same load balancer, and the real client passed on to the database
+  - port: 5432
+    proxyProtocol:
+      trustedSources: ["10.0.0.0/8"]
+    tcp:
+      targets: ["db.internal:5432"]
+      sendProxyProtocol: v2
+      maxConnectionsPerIp: 20 # counted per client, not per load balancer
+```
+
+| `proxyProtocol` field | Type     | Default | Description                                                                                                                         |
+| --------------------- | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `trustedSources`      | string[] | —       | Addresses or CIDR blocks of the load balancers whose header is believed — **required**, at least one                                |
+| `timeoutMs`           | number   | `5000`  | Milliseconds a trusted peer has to send the whole header (one deadline, a byte at a time does not extend it)                         |
+| `maxHeaderBytes`      | number   | `4096`  | Longest header accepted, from 107 (the longest v1 header) to 65551. A v2 header may carry TLVs, which are checked and then ignored |
+
+What it does:
+
+- **The header is required and is believed only from `trustedSources`.** A connection from any other address, or from a
+  trusted one that does not open with a valid header (or does not finish it within `timeoutMs`), is closed before a byte of it
+  is read as TLS or relayed. There is no "optional" mode: a port that takes both direct clients and a load balancer
+  cannot tell a spoofed header from a real one. This also means that **the load balancer's own health checks must send the
+  header** (HAProxy: `check-send-proxy`) or be answered on another port.
+- **The client of the header is the client everywhere after it**: `ipFilter`, rate limits, `tcp.maxConnectionsPerIp`, the
+  access log, `X-Forwarded-For` and the address `sendProxyProtocol` passes on. `trustProxy` is a different thing (it trusts
+  an `X-Forwarded-For` header inside HTTP) and is not needed for this.
+- Both versions are accepted. A v2 `LOCAL` header and a v1 `UNKNOWN` line (a load balancer's own probe) keep the address of the
+  socket. An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is the IPv4 address it carries, so an `ipFilter` with IPv4 CIDRs matches it.
+  A header that breaks the specification (a wrong length, a TLV that overruns, a datagram transport) is refused, never guessed at.
+- `sendProxyProtocol` writes `v1` or `v2` to the upstream before any client byte. The client is the one of the incoming header
+  when there is one, otherwise the socket peer. The upstream must be set up to expect it (`listen ... proxy_protocol` in nginx,
+  `bind ... accept-proxy` in HAProxy): one that is not reads it as garbage and drops the connection.
+- Sites that share an HTTPS port must have the same `proxyProtocol` (the header is read before the TLS handshake names a
+  host); a difference is a validation error.
+
+Limits of this version:
+
+- `proxyProtocol` needs `tls` or `tcp` on the site: a plain-HTTP port does not read the header yet, and the setting is refused at
+  validation there rather than ignored. If a site with `proxyProtocol` ends up on a plain listener at start (its certificate is
+  missing or its ACME order failed), Conduit does not start.
+- A connection refused on an HTTPS port is logged by the server as `Downstream handshake error from <address>:
+  ProxyProtocol context: <reason>`, one line per connection at `error` level; on a `tcp` site the refusals are one `warn`
+  line per port every 10 seconds, with their count.
+- Writing a header to an HTTP upstream is not supported (only `tcp.sendProxyProtocol`).
+- `proxyProtocol` is read at start: a reload that adds, removes or changes one is refused as a cold change (restart to apply).
+- `0.0.0.0/0` (or `::/0`) in `trustedSources` is a warning: it trusts every client, and any of them can name any address
+  as its own and walk past `ipFilter` and the rate limits.
 
 ---
 
