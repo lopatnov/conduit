@@ -189,15 +189,30 @@ out=$(via_lb 61 443)
 ok "ipFilter works on the client of the header: 192.0.2.61 gets 403 through the same load balancer that let .60 in"
 
 # a client that skips the load balancer is not a trusted source: no TLS, whatever it claims
-direct=$(from 60 curl -sS --max-time 10 --cacert /conf/cert.pem -o /dev/null -w '%{http_code}' https://app.test:8443/headers 2>&1 || true)
-case "$direct" in
-  *200*) fail "a client that bypassed the load balancer was served: $direct" ;;
-esac
-ok "a connection from an address that is not a trusted source gets no TLS ($direct)"
-# the same, spoofing a header by hand
-spoof=$(from 60 sh -c "printf 'PROXY TCP4 192.0.2.60 192.0.2.20 1 8443\r\n' | nc -w 3 app.test 8443 | wc -c" | tr -d '\r')
-[ "$spoof" = 0 ] || fail "a spoofed header from an untrusted address was answered ($spoof bytes)"
-ok "a PROXY header from an untrusted address is not believed (and not answered)"
+direct_rc=0
+direct=$(from 60 curl -sS --max-time 10 --cacert /conf/cert.pem -o /dev/null -w '%{http_code}' https://app.test:8443/headers 2>/dev/null) \
+  || direct_rc=$?
+# curl prints 000 when no HTTP response completed; any status (200, 403, 500 ...) means TLS was served
+{ [ "$direct" = 000 ] && [ "$direct_rc" != 0 ]; } \
+  || fail "a client that bypassed the load balancer got a response: status '$direct', curl exit $direct_rc"
+ok "a connection from an address that is not a trusted source gets no TLS (no HTTP response, curl exit $direct_rc)"
+# the same, spoofing a header by hand, then going on to the TLS handshake over the same connection: it has to fail
+spoof_probe='
+import socket, ssl
+s = socket.create_connection(("app.test", 8443), timeout=5)
+s.sendall(b"PROXY TCP4 192.0.2.60 192.0.2.20 1 8443\r\n")
+ctx = ssl.create_default_context(cafile="/conf/cert.pem")
+try:
+    ctx.wrap_socket(s, server_hostname="app.test")
+    print("served")
+except socket.timeout:
+    print("open")
+except OSError:
+    print("refused")
+'
+spoof=$(from 60 python3 -c "$spoof_probe" | tr -d '\r')
+[ "$spoof" = refused ] || fail "a spoofed PROXY header from an untrusted address: expected the connection to be refused before TLS completed, got '$spoof'"
+ok "a PROXY header from an untrusted address is not believed: the TLS handshake after it fails"
 
 # ── 2. tcp: accept, send, and consume ──
 greet() { # greet OCTET PORT [PAYLOAD]: the first line the upstream sends through HAProxy after the client sent PAYLOAD

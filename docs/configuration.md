@@ -4252,8 +4252,11 @@ Limits of this version:
   sends the header to every port needs that port left out, or its redirect done by the load balancer.
 - Writing a header to an HTTP upstream is not supported (only `tcp.sendProxyProtocol`).
 - `proxyProtocol` is read at start: a reload that adds, removes or changes one is refused as a cold change (restart to apply).
-- Write an IPv4 load balancer as a plain IPv4 address or network (`10.0.0.0/8`); an IPv4-mapped IPv6 network such as
-  `::ffff:10.0.0.0/104` is not read as one.
+- Write an IPv4 load balancer as a plain IPv4 address or network (`10.0.0.0/8`). An IPv4-mapped IPv6 network such as
+  `::ffff:10.0.0.0/104` also matches the IPv4 addresses it names; its prefix counts bits of the 128-bit address, so it is 96
+  plus the IPv4 prefix.
+- An HTTPS site with `proxyProtocol` needs a fixed `port`: `port: 0` (an OS-assigned port) is refused, because the policy is
+  found by the port a connection arrives on.
 - `0.0.0.0/0` (or `::/0`) in `trustedSources` is a warning: it trusts every client, and any of them can name any address
   as its own and walk past `ipFilter` and the rate limits.
 

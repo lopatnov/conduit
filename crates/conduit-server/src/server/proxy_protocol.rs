@@ -49,6 +49,11 @@ impl PreTlsProxyProtocol {
             let port = site
                 .port
                 .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
+            // Port 0 binds an OS-assigned port that no connection's local port could look up here: refused, as in `validate`.
+            anyhow::ensure!(
+                port != 0,
+                "sites[{i}] has proxyProtocol on port 0, which binds a port the policy cannot be found by"
+            );
             anyhow::ensure!(
                 has_tls_listener(port),
                 "sites[{i}] has proxyProtocol, but port {port} has no TLS listener (its certificate is missing or its \

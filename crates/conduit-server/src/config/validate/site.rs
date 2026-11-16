@@ -56,6 +56,14 @@ fn validate_site_transport(site: &SiteConfig, prefix: &str, errors: &mut Vec<Val
                 "proxyProtocol needs tls or tcp on the same site: plain HTTP ports do not read the PROXY protocol yet",
             ));
         }
+        // An HTTPS port finds its policy by the port a connection arrived on; port 0 binds an OS-assigned port, so no
+        // connection would match and the header would not be required (fail open).
+        if site.tcp.is_none() && site.port == Some(0) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.port"),
+                "proxyProtocol needs a fixed port: port 0 binds an OS-assigned port, so the PROXY protocol policy cannot match it",
+            ));
+        }
     }
 }
 

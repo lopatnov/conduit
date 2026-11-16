@@ -10,7 +10,7 @@
 //! * a v2 header must be exactly the length it declares, its address block must fit the family, and its TLVs must tile the
 //!   rest of the header; anything else is [`Error::Invalid`], never guessed at;
 //! * `LOCAL` (v2) and `UNKNOWN` (v1) carry no address: the caller keeps the address of the socket (the spec's rule for
-//!   a load balancer's own health checks), and an `UNSPEC` or `UNIX` family does the same;
+//!   a load balancer's own health checks), and an `UNSPEC` or `UNIX` family, or an UNSPEC transport, does the same;
 //! * an IPv4-mapped IPv6 source is turned into the IPv4 address it carries, so that the CIDRs of the IP filter match it.
 //!
 //! TLVs are checked and then ignored: nothing in them is used for a decision.
@@ -196,6 +196,14 @@ fn parse_v2(buf: &[u8], max: usize) -> Result<Parsed, Error> {
     let (addresses, rest) = match family {
         // UNSPEC: the receiver ignores whatever the block holds and uses the address of the socket.
         0 => {
+            return Ok(Parsed {
+                header: Header::Local,
+                len: total,
+            });
+        }
+        // An IP family with an UNSPEC transport (`0x10`, `0x20`) names no stream: the spec lets the receiver use the address
+        // of the socket, so the advertised endpoints are not believed.
+        1 | 2 if protocol == 0 => {
             return Ok(Parsed {
                 header: Header::Local,
                 len: total,
@@ -579,6 +587,22 @@ mod tests {
         assert_eq!(
             parse(&v2(1, 0x31, &[0u8; 216]), 4096).unwrap().header,
             Header::Local
+        );
+    }
+
+    #[test]
+    fn v2_ip_family_with_an_unspec_transport_keeps_the_socket_address() {
+        // `0x10` / `0x20`: the block is well formed, but a transport of UNSPEC makes it no stream's endpoints, so the
+        // advertised addresses are not used (the receiver "is free to use the real endpoint addresses").
+        let p = parse(&v2(1, 0x10, &v4_block()), 4096).unwrap();
+        assert_eq!(p.header, Header::Local);
+        assert_eq!(p.len, 16 + v4_block().len());
+        let p = parse(&v2(1, 0x20, &[0u8; 36]), 4096).unwrap();
+        assert_eq!(p.header, Header::Local);
+        // The same block over a stream is believed, as before.
+        assert_eq!(
+            parse(&v2(1, 0x11, &v4_block()), 4096).unwrap().header,
+            proxy("203.0.113.9:51000", "192.0.2.1:443")
         );
     }
 

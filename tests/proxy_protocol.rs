@@ -53,6 +53,26 @@ fn https_get_after(port: u16, preamble: &[u8], cert_pem: &str) -> std::io::Resul
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
+/// `true` for the error a read returns when its timeout expires on a connection that is still open.
+fn is_timeout(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    )
+}
+
+/// A refusal must be the server closing the connection (EOF, reset, a failed handshake), not our own read timing out on a
+/// connection it left open: that would prove nothing about the header being checked.
+fn assert_closed(result: &std::io::Result<String>, what: &str) {
+    match result {
+        Ok(body) => panic!("{what}: the connection was served: {body}"),
+        Err(e) => assert!(
+            !is_timeout(e),
+            "{what}: the connection was left open until the read timed out: {e:?}"
+        ),
+    }
+}
+
 /// A PROXY protocol v1 header naming `client` (an IPv4 address) as the source.
 fn v1(client: &str) -> Vec<u8> {
     format!("PROXY TCP4 {client} 192.0.2.1 51000 443\r\n").into_bytes()
@@ -157,10 +177,7 @@ fn a_connection_without_a_header_or_from_an_untrusted_peer_gets_no_tls() {
 
     // trusted peer, but it goes straight to the TLS handshake: closed, not served
     let direct = https_get_after(s.pp_port, b"", &s.cert_pem);
-    assert!(
-        direct.is_err(),
-        "a TLS hello is not a PROXY header: {direct:?}"
-    );
+    assert_closed(&direct, "a TLS hello is not a PROXY header");
 
     // a header that is not valid (a v1 line with a port out of range)
     let bad = https_get_after(
@@ -168,11 +185,11 @@ fn a_connection_without_a_header_or_from_an_untrusted_peer_gets_no_tls() {
         b"PROXY TCP4 203.0.113.9 192.0.2.1 99999 443\r\n",
         &s.cert_pem,
     );
-    assert!(bad.is_err(), "{bad:?}");
+    assert_closed(&bad, "an invalid header");
 
     // a valid header from a peer that is not in trustedSources: the claimed address is not believed
     let spoof = https_get_after(s.untrusting_port, &v1("203.0.113.9"), &s.cert_pem);
-    assert!(spoof.is_err(), "{spoof:?}");
+    assert_closed(&spoof, "a header from an untrusted peer");
 
     // a trusted peer that never finishes the header is closed at the deadline (1 s here), not held
     let mut slow = TcpStream::connect(("127.0.0.1", s.pp_port)).expect("connect");
@@ -180,8 +197,14 @@ fn a_connection_without_a_header_or_from_an_untrusted_peer_gets_no_tls() {
     slow.write_all(b"PROXY TCP4 203.0.").unwrap();
     let started = std::time::Instant::now();
     let mut buf = [0u8; 16];
-    let n = slow.read(&mut buf).unwrap_or(0);
-    assert_eq!(n, 0, "closed, nothing sent back");
+    // closed (EOF, or a reset because the server closed with our bytes unread), not a read timeout, and nothing sent back
+    match slow.read(&mut buf) {
+        Ok(n) => assert_eq!(n, 0, "closed, nothing sent back"),
+        Err(e) => assert!(
+            !is_timeout(&e),
+            "the connection was left open until the read timed out: {e:?}"
+        ),
+    }
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "closed after about timeoutMs, not {:?}",

@@ -2713,6 +2713,32 @@ fn proxy_protocol_is_accepted_on_a_tls_site_and_on_a_tcp_site() {
 }
 
 #[test]
+fn proxy_protocol_on_an_https_site_needs_a_fixed_port() {
+    // Port 0 binds an OS-assigned port the policy (keyed by port) could not be found by: the header would not be required.
+    let e: Vec<_> = errs(
+        r#"{ "port": 0, "tls": { "cert": "c.pem", "key": "k.pem" },
+            "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#,
+    )
+    .into_iter()
+    .filter(|e| e.path == "sites[0].port")
+    .collect();
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert!(e[0].message.contains("fixed port"), "{}", e[0].message);
+    // The same site without proxyProtocol, and a tcp site (which carries its own policy), are not affected.
+    assert!(
+        errs(r#"{ "port": 0, "tls": { "cert": "c.pem", "key": "k.pem" } }"#)
+            .iter()
+            .all(|e| e.path != "sites[0].port")
+    );
+    assert!(errs(
+        r#"{ "port": 0, "tcp": { "targets": ["db:3306"] },
+            "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#
+    )
+    .iter()
+    .all(|e| e.path != "sites[0].port"));
+}
+
+#[test]
 fn proxy_protocol_on_a_plain_http_site_is_refused() {
     let e = pp_errs(r#"{ "port": 8080, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#);
     assert_eq!(e.len(), 1, "{e:?}");

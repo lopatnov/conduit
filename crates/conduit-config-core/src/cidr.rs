@@ -55,9 +55,11 @@ fn in_subnet(ip: &IpAddr, net: &IpAddr, prefix: u32) -> bool {
                 false
             }
         }
+        // The prefix of an IPv4-mapped network counts bits of the 128-bit address (`::ffff:192.0.2.0/120` is the IPv4
+        // `192.0.2.0/24`), so compare in IPv6 form rather than reusing the prefix as an IPv4 one.
         (IpAddr::V4(ip4), IpAddr::V6(net6)) => {
-            if let Some(net4) = net6.to_ipv4_mapped() {
-                ipv4_in_subnet(*ip4, net4, prefix)
+            if net6.to_ipv4_mapped().is_some() {
+                ipv6_in_subnet(ip4.to_ipv6_mapped(), *net6, prefix)
             } else {
                 false
             }
@@ -153,6 +155,33 @@ mod tests {
         let ip: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
         assert!(matches_rule(&ip, "127.0.0.0/8"));
         assert!(!matches_rule(&ip, "10.0.0.0/8"));
+    }
+
+    #[test]
+    fn a_mapped_network_matches_the_ipv4_peer_it_names() {
+        // The prefix of a mapped network is over 128 bits: /128 is one host, /120 the IPv4 /24, /96 every IPv4 address.
+        let ip: IpAddr = "192.0.2.7".parse().unwrap();
+        let mapped_ip: IpAddr = "::ffff:192.0.2.7".parse().unwrap();
+        for rule in [
+            "::ffff:192.0.2.7/128",
+            "::ffff:192.0.2.0/120",
+            "::ffff:192.0.0.0/112",
+            "::ffff:0.0.0.0/96",
+        ] {
+            assert!(matches_rule(&ip, rule), "{rule} against the IPv4 form");
+            assert!(
+                matches_rule(&mapped_ip, rule),
+                "{rule} against the mapped form"
+            );
+        }
+        for rule in [
+            "::ffff:192.0.2.8/128",
+            "::ffff:192.0.3.0/120",
+            "::ffff:10.0.0.0/104",
+        ] {
+            assert!(!matches_rule(&ip, rule), "{rule} must not match");
+            assert!(!matches_rule(&mapped_ip, rule), "{rule} must not match");
+        }
     }
 
     #[test]

@@ -741,17 +741,20 @@ mod tests {
         }
     }
 
-    /// Everything the client reads until the proxy closes the connection or `wait` passes.
+    /// Everything the client reads until the proxy closes the connection (EOF, or a reset because it closed with our bytes
+    /// unread). A connection still open after `wait` fails the test: a timeout is not a refusal.
     async fn read_all(c: &mut tokio::net::TcpStream, wait: Duration) -> Vec<u8> {
         let mut out = Vec::new();
         let mut buf = [0u8; 1024];
-        while let Ok(Ok(n)) = tokio::time::timeout(wait, c.read(&mut buf)).await {
-            if n == 0 {
-                break;
+        loop {
+            match tokio::time::timeout(wait, c.read(&mut buf)).await {
+                Err(_) => {
+                    panic!("the connection was left open for {wait:?} instead of being closed")
+                }
+                Ok(Ok(0) | Err(_)) => return out,
+                Ok(Ok(n)) => out.extend_from_slice(&buf[..n]),
             }
-            out.extend_from_slice(&buf[..n]);
         }
-        out
     }
 
     #[cfg(unix)]
