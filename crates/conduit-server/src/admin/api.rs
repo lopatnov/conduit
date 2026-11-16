@@ -9,6 +9,7 @@ use pingora_core::server::ShutdownWatch;
 use pingora_core::services::background::BackgroundService;
 use serde_json::{json, Value};
 
+use super::cold_keys::{acme_by_host, proxy_protocol_by_port, tcp_by_port};
 use crate::config;
 use crate::config::schema::LoggingConfig;
 use crate::config::validate;
@@ -461,6 +462,24 @@ pub(crate) fn detect_cold_changes_in(
         }
     }
 
+    // `proxyProtocol`: the pre-handshake hook of the HTTPS listeners and the accept side of the tcp services are built at
+    // start, so a new list of trusted sources would keep the old one (and a removed block would keep requiring the
+    // header) until a restart (issue #757).
+    let old_p = proxy_protocol_by_port(old);
+    let new_p = proxy_protocol_by_port(new);
+    for port in old_p
+        .keys()
+        .chain(new_p.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        if !crate::config::schema::ProxyProtocolConfig::same_policy(
+            old_p.get(port).copied(),
+            new_p.get(port).copied(),
+        ) {
+            cold.push(format!("sites[port {port}].proxyProtocol"));
+        }
+    }
+
     // `tls.acme`: every field is read when the certificate is ordered at start-up and by the renewal loop, which
     // a reload does not restart (issue #555). A change here would silently keep the old account, directory,
     // storage directory or contact. Sites are matched by `host`, the name the certificate is ordered for.
@@ -491,35 +510,6 @@ pub(crate) fn detect_cold_changes_in(
     }
 
     cold
-}
-
-/// The `tcp` block of every TCP site, by the port it listens on (the first site wins for a repeated port).
-fn tcp_by_port(
-    cfg: &crate::config::schema::AppConfig,
-) -> std::collections::BTreeMap<u16, &crate::config::schema::TcpConfig> {
-    let mut out = std::collections::BTreeMap::new();
-    for site in &cfg.sites {
-        if let Some(tcp) = site.tcp.as_ref() {
-            out.entry(site.port.unwrap_or(80)).or_insert(tcp);
-        }
-    }
-    out
-}
-
-/// The `tls.acme` block of every site that has one, by the site's `host` (the first site wins for a repeated host).
-fn acme_by_host(
-    cfg: &crate::config::schema::AppConfig,
-) -> std::collections::BTreeMap<String, &crate::config::schema::AcmeConfig> {
-    let mut out = std::collections::BTreeMap::new();
-    for site in &cfg.sites {
-        if let (Some(host), Some(acme)) = (
-            site.host.as_ref(),
-            site.tls.as_ref().and_then(|t| t.acme.as_ref()),
-        ) {
-            out.entry(host.clone()).or_insert(acme);
-        }
-    }
-    out
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -619,6 +609,48 @@ mod tests {
         ] {
             assert_eq!(detect_cold_changes_in(&old, &new, None), one);
         }
+    }
+
+    #[test]
+    fn a_proxy_protocol_change_is_cold() {
+        let site = |extra: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"port":3306,"tcp":{{"targets":["db:3306"]}}{extra}}},{{"port":8080}}]}}"#
+            ))
+        };
+        let pp = |src: &str| format!(r#","proxyProtocol":{{"trustedSources":["{src}"]}}"#);
+        assert!(
+            detect_cold_changes_in(&site(&pp("10.0.0.0/8")), &site(&pp("10.0.0.0/8")), None)
+                .is_empty()
+        );
+        let one = vec!["sites[port 3306].proxyProtocol".to_string()];
+        for (old, new) in [
+            (site(""), site(&pp("10.0.0.0/8"))),
+            (site(&pp("10.0.0.0/8")), site(&pp("192.0.2.1"))),
+            (site(&pp("10.0.0.0/8")), site("")),
+        ] {
+            assert_eq!(detect_cold_changes_in(&old, &new, None), one);
+        }
+        // an HTTPS port counts too, under its own default port
+        let https = |extra: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"tls":{{"cert":"c.pem","key":"k.pem"}}{extra}}}]}}"#
+            ))
+        };
+        let cold = detect_cold_changes_in(&https(""), &https(&pp("10.0.0.0/8")), None);
+        assert_eq!(cold, vec!["sites[port 443].proxyProtocol".to_string()]);
+        // the same policy written another way is not a change
+        let two = |a: &str, b: &str, extra: &str| {
+            https(&format!(
+                r#","proxyProtocol":{{"trustedSources":["{a}","{b}"]{extra}}}"#
+            ))
+        };
+        assert!(detect_cold_changes_in(
+            &two("10.0.0.0/8", "192.0.2.1", ""),
+            &two("192.0.2.1", "10.0.0.0/8", r#","timeoutMs":5000"#),
+            None
+        )
+        .is_empty());
     }
 
     // the environment is part of the address: the same file with a different environment value is not a change of

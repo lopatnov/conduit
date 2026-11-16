@@ -172,6 +172,7 @@
           "items": { "$ref": "#/$defs/RouteConfig" }
         },
         "tcp": { "$ref": "#/$defs/TcpConfig" },
+        "proxyProtocol": { "$ref": "#/$defs/ProxyProtocolConfig" },
         "upload": {
           "type": "object",
           "required": ["path", "dir"],
@@ -249,7 +250,18 @@
         "connectTimeoutMs":    { "type": "integer", "minimum": 1, "default": 5000, "description": "Upstream connect timeout." },
         "maxConnections":      { "type": "integer", "minimum": 1, "description": "Most connections open on the site at once; a connection over it is closed at accept. Default: no limit." },
         "maxConnectionsPerIp": { "type": "integer", "minimum": 1, "description": "Most connections open at once from one client address (IPv6: per /64). Default: no limit." },
-        "idleTimeoutSecs":     { "type": "integer", "minimum": 0, "default": 3600, "description": "Seconds a connection may be quiet in both directions before it is closed; 0 = never." }
+        "idleTimeoutSecs":     { "type": "integer", "minimum": 0, "default": 3600, "description": "Seconds a connection may be quiet in both directions before it is closed; 0 = never." },
+        "sendProxyProtocol":   { "type": "string", "enum": ["v1", "v2"], "description": "Write a PROXY protocol header (v1 text or v2 binary) naming the client to the upstream before any client byte. The upstream must expect it. Default: none." }
+      }
+    },
+    "ProxyProtocolConfig": {
+      "type": "object",
+      "description": "Accept the PROXY protocol (v1 and v2) on this site's port (a tcp site, or a site with tls). The header is required and is believed only from trustedSources; any other connection is closed. The client address it carries is used for ipFilter, rate limits, connection caps, logs and X-Forwarded-For.",
+      "required": ["trustedSources"],
+      "properties": {
+        "trustedSources": { "type": "array", "minItems": 1, "items": { "type": "string", "description": "An IP address or CIDR block of a load balancer, e.g. 10.0.0.0/8 or 2001:db8::1." } },
+        "timeoutMs":      { "type": "integer", "minimum": 1, "default": 5000, "description": "Milliseconds a trusted peer has to send the whole header." },
+        "maxHeaderBytes": { "type": "integer", "minimum": 107, "maximum": 65551, "default": 4096, "description": "Longest header accepted, in bytes." }
       }
     },
     "TlsConfig": {

@@ -27,9 +27,11 @@ pub mod config;
 pub mod limits;
 #[cfg(feature = "tcp")]
 pub mod proxy;
+pub mod proxy_protocol;
 #[cfg(feature = "tcp")]
 pub mod relay;
+pub mod throttle;
 pub mod validate;
 pub mod warnings;
 
-pub use config::TcpConfig;
+pub use config::{ProxyProtocolConfig, TcpConfig};

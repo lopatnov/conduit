@@ -446,19 +446,14 @@ fn upload_path_not_reachable_when_upload_not_configured() {
     let server = TestServer::start_minimal();
     let client = build_client();
 
-    let form = reqwest::blocking::multipart::Form::new().part(
-        "file",
-        reqwest::blocking::multipart::Part::bytes(b"hello".to_vec())
-            .file_name("hello.txt")
-            .mime_str("text/plain")
-            .expect("mime"),
-    );
-
     // The server has no upload config → the path falls through to the fallback
-    // handler which returns 404.
+    // handler which returns 404 and closes the connection at once. The request
+    // carries no body on purpose: with a multipart body the client can still be
+    // writing it when the server's reply and close arrive, and `send()` then
+    // fails with a body error instead of returning the 404 (a race, seen in CI).
     let resp = client
         .post(server.url("/upload"))
-        .multipart(form)
+        .header("content-length", "0")
         .send()
         .expect("POST /upload");
 

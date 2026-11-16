@@ -31,4 +31,130 @@ pub struct TcpConfig {
     /// Seconds a connection may be quiet, in both directions, before it is closed (default: 3600; `0` = never).
     #[serde(rename = "idleTimeoutSecs", skip_serializing_if = "Option::is_none")]
     pub idle_timeout_secs: Option<u64>,
+    /// Write a PROXY protocol header (`"v1"` text or `"v2"` binary) to the upstream before any client byte, so that
+    /// the upstream sees the real client address (MySQL/PostgreSQL behind HAProxy-style ACLs, Postfix, ...).
+    /// The upstream must expect the header: one that does not will read it as garbage (default: none).
+    #[serde(rename = "sendProxyProtocol", skip_serializing_if = "Option::is_none")]
+    pub send_proxy_protocol: Option<crate::proxy_protocol::Version>,
+}
+
+/// `sites[].proxyProtocol`: accept the PROXY protocol (v1 and v2) on this site's port.
+///
+/// A load balancer in front of Conduit (HAProxy, an AWS NLB, nginx `proxy_protocol on`) sends a header with the real
+/// client address at the start of each connection. With this block Conduit reads it, and the client address it
+/// carries replaces the address of the socket for everything after it: `ipFilter`, rate limits, connection caps,
+/// access logs and `X-Forwarded-For`.
+///
+/// The header is **required** and is believed only from `trustedSources`: a connection from any other address, or from a
+/// trusted one that does not start with a valid header, is closed before a byte of it is read as payload (TLS
+/// handshake, HTTP, or relay). That also means the load balancer's own health checks must send the header too (or be
+/// answered on another port).
+///
+/// Works on `tcp` sites and on TLS sites (the header is read before the TLS handshake). A site without `tls` is not
+/// supported yet and is refused at validation.
+///
+/// ```yaml
+/// sites:
+///   - port: 443
+///     tls: { cert: cert.pem, key: key.pem }
+///     proxyProtocol:
+///       trustedSources: ["10.0.0.0/8"]
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyProtocolConfig {
+    /// Addresses or CIDRs of the load balancers whose header is believed, e.g. `["10.0.0.0/8", "2001:db8::1"]`.
+    /// At least one is required; `0.0.0.0/0` trusts everyone, which lets any client claim any address.
+    #[serde(default)]
+    pub trusted_sources: Vec<String>,
+    /// Milliseconds a trusted peer has to send the whole header (default: 5000). One deadline for the whole header:
+    /// a client that sends a byte at a time does not extend it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Longest header accepted, in bytes (default: 4096; 107 to 65551). A v2 header carries TLVs, which cloud load
+    /// balancers fill with their own ids; the TLVs are checked and ignored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_header_bytes: Option<usize>,
+}
+
+impl ProxyProtocolConfig {
+    /// The default for `timeoutMs`.
+    pub const DEFAULT_TIMEOUT_MS: u64 = 5000;
+    /// The least `maxHeaderBytes`: the longest v1 header.
+    pub const MIN_HEADER_BYTES: usize = crate::proxy_protocol::V1_MAX_LEN;
+    /// The most `maxHeaderBytes`: a v2 header with the largest length its 16-bit field can declare.
+    pub const MAX_HEADER_BYTES: usize = 16 + 65535;
+
+    /// `true` when `a` and `b` (either may be absent) ask for the same behaviour: the same sources whatever their order or
+    /// repetition, and the same deadline and cap once the defaults are filled in. Two sites on one port, and the two sides of
+    /// a reload, are compared this way, so writing a default out or reordering the list is not a difference.
+    pub fn same_policy(a: Option<&Self>, b: Option<&Self>) -> bool {
+        fn key(p: &ProxyProtocolConfig) -> (Vec<&str>, std::time::Duration, usize) {
+            let mut sources: Vec<&str> = p.trusted_sources.iter().map(String::as_str).collect();
+            sources.sort_unstable();
+            sources.dedup();
+            (sources, p.timeout(), p.header_cap())
+        }
+        a.map(key) == b.map(key)
+    }
+
+    /// `true` when the header of a connection from `peer` is believed.
+    pub fn trusts(&self, peer: &std::net::IpAddr) -> bool {
+        self.trusted_sources
+            .iter()
+            .any(|rule| conduit_config_core::cidr::matches_rule(peer, rule))
+    }
+
+    /// The read deadline for the header.
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.timeout_ms.unwrap_or(Self::DEFAULT_TIMEOUT_MS))
+    }
+
+    /// The cap on the header length.
+    pub fn header_cap(&self) -> usize {
+        self.max_header_bytes
+            .unwrap_or(crate::proxy_protocol::DEFAULT_MAX_HEADER_BYTES)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pp(sources: &[&str], timeout: Option<u64>, max: Option<usize>) -> ProxyProtocolConfig {
+        ProxyProtocolConfig {
+            trusted_sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+            timeout_ms: timeout,
+            max_header_bytes: max,
+        }
+    }
+
+    #[test]
+    fn the_same_policy_written_differently_is_the_same() {
+        let base = pp(&["10.0.0.0/8", "192.0.2.1"], None, None);
+        let same = [
+            pp(&["192.0.2.1", "10.0.0.0/8"], None, None), // other order
+            pp(&["10.0.0.0/8", "192.0.2.1", "10.0.0.0/8"], None, None), // repeated
+            pp(&["10.0.0.0/8", "192.0.2.1"], Some(5000), Some(4096)), // defaults written out
+        ];
+        for other in &same {
+            assert!(ProxyProtocolConfig::same_policy(Some(&base), Some(other)));
+        }
+        assert!(ProxyProtocolConfig::same_policy(None, None));
+    }
+
+    #[test]
+    fn a_different_policy_is_different() {
+        let base = pp(&["10.0.0.0/8"], None, None);
+        for other in [
+            pp(&["10.0.0.0/16"], None, None),
+            pp(&["10.0.0.0/8", "192.0.2.1"], None, None),
+            pp(&["10.0.0.0/8"], Some(1000), None),
+            pp(&["10.0.0.0/8"], None, Some(200)),
+        ] {
+            assert!(!ProxyProtocolConfig::same_policy(Some(&base), Some(&other)));
+        }
+        assert!(!ProxyProtocolConfig::same_policy(Some(&base), None));
+        assert!(!ProxyProtocolConfig::same_policy(None, Some(&base)));
+    }
 }

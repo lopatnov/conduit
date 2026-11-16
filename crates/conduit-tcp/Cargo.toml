@@ -16,15 +16,17 @@ path = "src/lib.rs"
 lopatnov-conduit-config-core = { workspace = true }
 # TcpConfig itself is always compiled — see src/lib.rs doc comment.
 serde = { workspace = true }
+# The PROXY protocol parser (`src/proxy_protocol.rs`) is always compiled, so that the HTTPS listeners in
+# `conduit-server` can read the header without the `tcp` feature (decision #31: light logic stays always-on).
+tokio = { workspace = true }
 
 # Everything below is only needed by the real TcpProxy (`proxy`), gated
 # behind this crate's own `tcp` feature (mirrors the pre-extraction
 # `#![cfg(feature = "tcp")]` file-level gate). The root crate's `tcp`
 # feature forwards into this one via `lopatnov-conduit-tcp/tcp`.
 async-trait  = { workspace = true, optional = true }
-tokio        = { workspace = true, optional = true }
 pingora-core = { workspace = true, optional = true }
 tracing      = { workspace = true, optional = true }
 
 [features]
-tcp = ["dep:async-trait", "dep:tokio", "dep:pingora-core", "dep:tracing"]
+tcp = ["dep:async-trait", "dep:pingora-core", "dep:tracing"]

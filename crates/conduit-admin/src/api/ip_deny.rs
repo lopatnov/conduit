@@ -18,18 +18,10 @@ pub(super) struct IpDenyBody {
     pub(super) cidr: String,
 }
 
-/// Validate that a string is a valid IP address or CIDR notation.
+/// Validate that a string is a valid IP address or CIDR notation. The same check as `ipFilter`, so a rule the matcher
+/// would ignore (an IPv4-mapped network shorter than /96) is refused here instead of being accepted and denying nothing.
 pub(super) fn validate_cidr(s: &str) -> bool {
-    if let Some((addr_str, prefix_str)) = s.split_once('/') {
-        if let Ok(prefix) = prefix_str.parse::<u32>() {
-            if let Ok(addr) = addr_str.parse::<std::net::IpAddr>() {
-                let max_prefix = if addr.is_ipv4() { 32 } else { 128 };
-                return prefix <= max_prefix;
-            }
-        }
-        return false;
-    }
-    s.parse::<std::net::IpAddr>().is_ok()
+    conduit_config_core::cidr::is_valid_ip_or_cidr(s)
 }
 
 /// `POST /ip-deny` — add a CIDR to the runtime deny-list.

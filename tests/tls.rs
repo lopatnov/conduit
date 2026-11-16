@@ -3,41 +3,8 @@ mod common;
 use std::io::Write;
 
 use serial_test::serial;
-use tempfile::TempDir;
 
-// ── Helper: generate a self-signed cert pair for testing ──────────────────────
-
-/// Generates a self-signed TLS certificate for `localhost` using `rcgen` and
-/// writes `cert.pem` / `key.pem` into a temporary directory.
-/// Returns the temp dir (kept alive for the test's duration) and the file paths.
-fn make_self_signed_cert() -> (TempDir, String, String) {
-    use rcgen::{generate_simple_self_signed, CertifiedKey};
-
-    let CertifiedKey { cert, signing_key } =
-        generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
-            .expect("rcgen cert generation");
-
-    let dir = tempfile::tempdir().expect("tempdir");
-
-    let cert_path = dir.path().join("cert.pem");
-    let key_path = dir.path().join("key.pem");
-
-    std::fs::File::create(&cert_path)
-        .expect("create cert.pem")
-        .write_all(cert.pem().as_bytes())
-        .expect("write cert.pem");
-
-    std::fs::File::create(&key_path)
-        .expect("create key.pem")
-        .write_all(signing_key.serialize_pem().as_bytes())
-        .expect("write key.pem");
-
-    (
-        dir,
-        cert_path.to_string_lossy().into_owned(),
-        key_path.to_string_lossy().into_owned(),
-    )
-}
+use common::make_self_signed_cert;
 
 /// A reqwest HTTPS client that accepts any certificate (for self-signed certs in tests).
 fn insecure_client() -> reqwest::blocking::Client {

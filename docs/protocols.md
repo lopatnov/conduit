@@ -44,8 +44,10 @@ a site of their own. Do not list a primary and a replica together: Conduit does 
 - It does **not** terminate TLS. A TLS client talks to the upstream through Conduit and verifies the **upstream's**
   certificate (checked in `protocols.sh` with `openssl s_server`). That is also how `STARTTLS`-style upgrades and
   PostgreSQL's `SSLRequest` pass through.
-- It adds nothing to the stream: the upstream sees Conduit's address as the client, because there is no PROXY protocol
-  support. Anything that decides by client address on the backend (`pg_hba.conf`, mail relay rules, fail2ban) sees Conduit.
+- It adds nothing to the stream: the upstream sees Conduit's address as the client, unless `tcp.sendProxyProtocol` writes a
+  [PROXY protocol](configuration.md#proxy-protocol) header first. Anything that decides by client address on the backend
+  (`pg_hba.conf`, mail relay rules, fail2ban) sees Conduit otherwise, and the upstream must be set up to expect the header
+  when it is sent. In the other direction, `proxyProtocol` on the site reads the header of a load balancer in front of Conduit.
 - None of the HTTP features apply: no IP filter, rate limit, authentication or metrics per route. Conduit refuses a
   configuration that puts `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `jwtAuth`, `forwardAuth`, `consumers`, `limits` or `middleware` on a `tcp`
   site (it would be silently ignored and look like protection). Put access control in front of the port (a firewall or
@@ -277,7 +279,7 @@ sites:
 
 The test opens a connection through the site with the `SSLRequest` first, as `psql` does; the answer comes from the server and
 the startup, authentication and a query go through. TLS to PostgreSQL is end to end between client and server; Conduit
-does not see it. Without a PROXY protocol the server sees Conduit's address in `pg_hba.conf` and `pg_stat_activity`.
+does not see it. Without `sendProxyProtocol` the server sees Conduit's address in `pg_hba.conf` and `pg_stat_activity`.
 Balancing is per connection; do not point it at a primary and a replica together.
 
 ## Redis
@@ -347,7 +349,9 @@ If Conduit's own host needs SSH on port 22, put Conduit on another port (`ssh -p
 These are gaps rather than choices; each is a candidate feature:
 
 - UDP proxying (WebRTC media, QUIC, DNS, syslog).
-- TLS termination for TCP sites, the PROXY protocol, and an access filter (IP allow/deny) on TCP sites.
+- TLS termination for TCP sites, and an access filter (IP allow/deny) on TCP sites.
+- The PROXY protocol on plain-HTTP ports, and writing it to an HTTP upstream (it works on TLS ports and on `tcp` sites, see
+  [PROXY protocol](configuration.md#proxy-protocol)).
 - Port ranges (FTP passive ports need one site each).
 - Active health probes that speak h2c or TLS (a TLS upstream is probed by connecting only), or a TCP-level probe for TCP sites.
 - A per-route custom CA for `upstreamTls` (only `verify: false` or the process-wide roots: the system store, or the file in `SSL_CERT_FILE`). The host needs a non-empty root store even with `verify: false`; see [Upstream TLS verification](configuration.md#upstream-tls-verification).

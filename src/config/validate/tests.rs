@@ -2687,3 +2687,116 @@ fn a_resolved_or_literal_credential_is_not_warned_about() {
         "{warnings:#?}"
     );
 }
+
+// ── `proxyProtocol` (#757) ───────────────────────────────────────────────
+
+/// The findings that are about `proxyProtocol`, whatever else a made-up certificate path triggers.
+fn pp_errs(json: &str) -> Vec<ValidationError> {
+    errs(json)
+        .into_iter()
+        .filter(|e| e.path.contains("proxyProtocol"))
+        .collect()
+}
+
+#[test]
+fn proxy_protocol_is_accepted_on_a_tls_site_and_on_a_tcp_site() {
+    assert!(pp_errs(
+        r#"{ "port": 443, "tls": { "cert": "c.pem", "key": "k.pem" },
+            "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#
+    )
+    .is_empty());
+    assert!(pp_errs(
+        r#"{ "port": 3306, "tcp": { "targets": ["db:3306"], "sendProxyProtocol": "v2" },
+            "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#
+    )
+    .is_empty());
+}
+
+#[test]
+fn proxy_protocol_on_an_https_site_needs_a_fixed_port() {
+    // Port 0 binds an OS-assigned port the policy (keyed by port) could not be found by: the header would not be required.
+    let e: Vec<_> = errs(
+        r#"{ "port": 0, "tls": { "cert": "c.pem", "key": "k.pem" },
+            "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#,
+    )
+    .into_iter()
+    .filter(|e| e.path == "sites[0].port")
+    .collect();
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert!(e[0].message.contains("fixed port"), "{}", e[0].message);
+    // The same site without proxyProtocol, and a tcp site (which carries its own policy), are not affected.
+    assert!(
+        errs(r#"{ "port": 0, "tls": { "cert": "c.pem", "key": "k.pem" } }"#)
+            .iter()
+            .all(|e| e.path != "sites[0].port")
+    );
+    assert!(errs(
+        r#"{ "port": 0, "tcp": { "targets": ["db:3306"] },
+            "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#
+    )
+    .iter()
+    .all(|e| e.path != "sites[0].port"));
+}
+
+#[test]
+fn proxy_protocol_on_a_plain_http_site_is_refused() {
+    let e = pp_errs(r#"{ "port": 8080, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#);
+    assert_eq!(e.len(), 1, "{e:?}");
+    assert_eq!(e[0].path, "sites[0].proxyProtocol");
+    assert!(e[0].message.contains("tls or tcp"), "{}", e[0].message);
+}
+
+#[test]
+fn proxy_protocol_sites_on_one_port_must_agree() {
+    let tls = r#""tls": { "cert": "c.pem", "key": "k.pem" }"#;
+    // one has it, one does not: the second site is reported
+    let e = errs(&format!(
+        r#"{{ "sites": [
+            {{ "host": "a.test", "port": 443, {tls}, "proxyProtocol": {{ "trustedSources": ["10.0.0.0/8"] }} }},
+            {{ "host": "b.test", "port": 443, {tls} }} ] }}"#
+    ));
+    assert!(
+        e.iter()
+            .any(|e| e.path == "sites[1].proxyProtocol" && e.message.contains("share port 443")),
+        "{e:?}"
+    );
+    // the same policy written another way (order, defaults written out): fine
+    let e = errs(&format!(
+        r#"{{ "sites": [
+            {{ "host": "a.test", "port": 443, {tls}, "proxyProtocol": {{ "trustedSources": ["10.0.0.0/8", "192.0.2.1"] }} }},
+            {{ "host": "b.test", "port": 443, {tls}, "proxyProtocol": {{ "trustedSources": ["192.0.2.1", "10.0.0.0/8"], "timeoutMs": 5000 }} }} ] }}"#
+    ));
+    assert!(!e.iter().any(|e| e.message.contains("share port")), "{e:?}");
+    // the same block on both: fine
+    let e = errs(&format!(
+        r#"{{ "sites": [
+            {{ "host": "a.test", "port": 443, {tls}, "proxyProtocol": {{ "trustedSources": ["10.0.0.0/8"] }} }},
+            {{ "host": "b.test", "port": 443, {tls}, "proxyProtocol": {{ "trustedSources": ["10.0.0.0/8"] }} }} ] }}"#
+    ));
+    assert!(!e.iter().any(|e| e.message.contains("share port")), "{e:?}");
+}
+
+#[test]
+fn proxy_protocol_values_are_validated() {
+    let e = pp_errs(
+        r#"{ "port": 3306, "tcp": { "targets": ["db:3306"] },
+            "proxyProtocol": { "trustedSources": [], "timeoutMs": 0, "maxHeaderBytes": 10 } }"#,
+    );
+    let paths: Vec<&str> = e.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "sites[0].proxyProtocol.trustedSources",
+            "sites[0].proxyProtocol.timeoutMs",
+            "sites[0].proxyProtocol.maxHeaderBytes"
+        ]
+    );
+}
+
+#[test]
+fn an_unknown_send_proxy_protocol_version_does_not_parse() {
+    assert!(from_str(
+        r#"{ "port": 3306, "tcp": { "targets": ["db:3306"], "sendProxyProtocol": "v3" } }"#
+    )
+    .is_err());
+}

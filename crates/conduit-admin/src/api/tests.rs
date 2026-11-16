@@ -155,6 +155,15 @@ async fn cache_purge_with_cache_feature_rejects_non_http_scheme() {
 // ── validate_cidr ────────────────────────────────────────────────────────
 
 #[test]
+fn validate_cidr_refuses_a_mapped_network_the_matcher_would_ignore() {
+    // `::ffff:10.0.0.0/8` is the IPv6 `::/8`, not the IPv4 10.0.0.0/8: accepting it would add a rule that denies nothing.
+    assert!(!validate_cidr("::ffff:10.0.0.0/8"));
+    assert!(!validate_cidr("::ffff:192.0.2.0/24"));
+    assert!(validate_cidr("::ffff:192.0.2.0/120"));
+    assert!(validate_cidr("::ffff:10.0.0.0/96"));
+}
+
+#[test]
 fn valid_ipv4_cidr() {
     assert!(validate_cidr("192.168.1.0/24"));
     assert!(validate_cidr("10.0.0.0/8"));

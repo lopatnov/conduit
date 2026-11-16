@@ -18,16 +18,24 @@
 //!       maxConnections: 1000      # optional; none by default
 //!       maxConnectionsPerIp: 20   # optional; none by default
 //!       idleTimeoutSecs: 3600     # optional; default 3600, 0 = never
+//!       sendProxyProtocol: v2     # optional; write a PROXY protocol header to the upstream
+//!     proxyProtocol:              # optional; read one from the client (a load balancer)
+//!       trustedSources: ["10.0.0.0/8"]
 //! ```
 //!
 //! A connection over `maxConnections` or `maxConnectionsPerIp` is closed at once, before an upstream is chosen (#757;
 //! see [`crate::limits`]), and one that has been quiet in both directions for `idleTimeoutSecs` is closed (see
 //! [`crate::relay`]).
 //!
+//! With `proxyProtocol` the connection must start with a PROXY protocol header from a trusted address (see
+//! [`crate::proxy_protocol`]); the client address it names is the one the caps count, and `sendProxyProtocol` passes it
+//! on to the upstream. Anything else is closed before a byte of it reaches the upstream (#757).
+//!
 //! A connect error or timeout is not the end of the connection: the remaining targets are tried once each, in
 //! order from the one picked, and a target that just failed is left out of the pick for [`DOWN_FOR`] so that a dead
 //! one does not cost a connect timeout per connection (#725; nginx `proxy_next_upstream` + `fail_timeout`).
 
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,9 +46,12 @@ use pingora_core::protocols::Stream;
 use pingora_core::server::ShutdownWatch;
 use tokio::net::TcpStream;
 
-use crate::config::TcpConfig;
+use crate::config::{ProxyProtocolConfig, TcpConfig};
 use crate::limits::{Limits, Refusal};
+use crate::proxy_protocol::{self as pp, Header, ReadError};
 use crate::relay::{relay, Outcome};
+use crate::throttle::Throttle;
+use tokio::io::AsyncWriteExt;
 
 /// How long a target that failed to connect is passed over while another one is available.
 const DOWN_FOR: Duration = Duration::from_secs(5);
@@ -72,6 +83,23 @@ pub struct TcpProxy {
     idle_timeout: Option<Duration>,
     /// Names the site in log lines (its port); 0 until [`TcpProxy::with_port`].
     port: u16,
+    /// `proxyProtocol`: read the header of the client's connection (`None` = the socket address is the client).
+    accept: Option<Accept>,
+    /// `sendProxyProtocol`: the header to write to the upstream.
+    send: Option<pp::Version>,
+}
+
+/// The accept side of the PROXY protocol on one site.
+struct Accept {
+    cfg: ProxyProtocolConfig,
+    /// Which connections that did not pass are logged (a client can cause them at will).
+    refused: Throttle,
+}
+
+/// Where a connection came from and where it was going, as far as is known.
+struct Endpoints {
+    client: Option<SocketAddr>,
+    destination: Option<SocketAddr>,
 }
 
 impl TcpProxy {
@@ -95,7 +123,18 @@ impl TcpProxy {
                 secs => Some(Duration::from_secs(secs)),
             },
             port: 0,
+            accept: None,
+            send: cfg.send_proxy_protocol,
         }
+    }
+
+    /// Require a PROXY protocol header on every connection, from the addresses `cfg` trusts.
+    pub fn with_proxy_protocol(mut self, cfg: &ProxyProtocolConfig) -> Self {
+        self.accept = Some(Accept {
+            cfg: cfg.clone(),
+            refused: Throttle::default(),
+        });
+        self
     }
 
     /// The port the site listens on, named in the log line about refused connections.
@@ -149,6 +188,110 @@ impl TcpProxy {
         None
     }
 
+    /// Read the PROXY protocol header of a connection (the site has `proxyProtocol`) and put what it says into `ends`.
+    /// `None` when the connection is refused: its peer is not trusted, or it did not send a valid header in time.
+    /// Returns the payload bytes that came in after the header.
+    async fn read_proxy_header(
+        &self,
+        accept: &Accept,
+        downstream: &mut Stream,
+        ends: &mut Endpoints,
+    ) -> Option<Vec<u8>> {
+        let peer = ends.client?; // a client with no IP address (a unix socket) cannot be trusted
+        if !accept.cfg.trusts(&peer.ip()) {
+            if let Some(n) = accept.refused.note() {
+                tracing::warn!(
+                    port = self.port,
+                    peer = %peer.ip(),
+                    refused = n,
+                    "TCP proxy: connection from an address not in proxyProtocol.trustedSources closed"
+                );
+            }
+            return None;
+        }
+        // A trusted peer that has not sent its header yet holds a connection, so the site cap applies while it waits.
+        let waiting = match self.limits.admit(None) {
+            Ok(permit) => permit,
+            Err(_) => {
+                if let Some(n) = self.limits.note_refusal() {
+                    tracing::warn!(
+                        port = self.port,
+                        refusal = "maxConnections",
+                        refused = n,
+                        "TCP proxy: connections refused because a limit is reached"
+                    );
+                }
+                return None;
+            }
+        };
+        let read = pp::read_header(downstream, accept.cfg.header_cap(), accept.cfg.timeout()).await;
+        drop(waiting);
+        match read {
+            Ok((
+                Header::Proxy {
+                    source,
+                    destination,
+                },
+                rest,
+            )) => {
+                ends.client = Some(source);
+                ends.destination = Some(destination);
+                Some(rest)
+            }
+            // A health check of the load balancer itself: the socket address stays the client's.
+            Ok((Header::Local, rest)) => Some(rest),
+            Err(e) => {
+                if let Some(n) = accept.refused.note() {
+                    let why = match &e {
+                        ReadError::Refused(why) => (*why).to_owned(),
+                        ReadError::Timeout => "no complete header within timeoutMs".to_owned(),
+                        ReadError::Io(e) => e.to_string(),
+                    };
+                    tracing::warn!(
+                        port = self.port,
+                        peer = %peer.ip(),
+                        refused = n,
+                        "TCP proxy: connection closed, no valid PROXY protocol header: {why}"
+                    );
+                }
+                None
+            }
+        }
+    }
+
+    /// What the upstream gets before the relay starts: the PROXY protocol header (`sendProxyProtocol`), then the
+    /// payload bytes that were read together with the client's header.
+    async fn write_preamble(
+        &self,
+        upstream: &mut TcpStream,
+        ends: &Endpoints,
+        first_bytes: &[u8],
+    ) -> std::io::Result<()> {
+        let mut out = Vec::new();
+        if let Some(version) = self.send {
+            out = match (ends.client, ends.destination) {
+                (Some(client), Some(destination)) => pp::encode(version, client, destination),
+                // Without both ends the header says "no client known" (the receiver keeps the socket address).
+                (Some(client), None) => {
+                    pp::encode(version, client, unspecified_like(client.ip(), 0))
+                }
+                _ => pp::encode_local(version),
+            };
+        }
+        out.extend_from_slice(first_bytes);
+        if out.is_empty() {
+            return Ok(());
+        }
+        tokio::time::timeout(self.connect_timeout, upstream.write_all(&out))
+            .await
+            .unwrap_or_else(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the upstream did not take the first bytes in time",
+                ))
+            })
+    }
+
     /// Pick a target index using round-robin or random selection.
     fn pick_index(&self) -> usize {
         let n = self.targets.len();
@@ -177,22 +320,45 @@ impl TcpProxy {
     }
 }
 
+/// The unspecified address (`0.0.0.0` / `::`) of the family of `ip`, with `port`.
+fn unspecified_like(ip: IpAddr, port: u16) -> SocketAddr {
+    match ip {
+        IpAddr::V4(_) => SocketAddr::from(([0, 0, 0, 0], port)),
+        IpAddr::V6(_) => SocketAddr::from(([0u16; 8], port)),
+    }
+}
+
 #[async_trait]
 impl ServerApp for TcpProxy {
     /// Accept a downstream stream, connect to an upstream, and relay bytes
     /// bidirectionally until either side closes.
     async fn process_new(
         self: &Arc<Self>,
-        downstream: Stream,
+        mut downstream: Stream,
         _shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
         if self.targets.is_empty() {
             tracing::warn!("TCP proxy: no upstream targets configured");
             return None;
         }
-        let client = downstream
+        let socket_peer = downstream
             .get_socket_digest()
-            .and_then(|digest| digest.peer_addr().and_then(|a| a.as_inet().map(|a| a.ip())));
+            .and_then(|digest| digest.peer_addr().and_then(|a| a.as_inet().copied()));
+        let socket_local = downstream
+            .get_socket_digest()
+            .and_then(|digest| digest.local_addr().and_then(|a| a.as_inet().copied()));
+        let mut ends = Endpoints {
+            client: socket_peer,
+            destination: socket_local,
+        };
+        // Bytes the header read pulled in after the header: payload, sent on before anything else.
+        let mut first_bytes = Vec::new();
+        if let Some(accept) = &self.accept {
+            first_bytes = self
+                .read_proxy_header(accept, &mut downstream, &mut ends)
+                .await?;
+        }
+        let client = ends.client.map(|a| a.ip());
         // Held until the relay ends, however it ends.
         let _permit = match self.limits.admit(client) {
             Ok(permit) => permit,
@@ -217,6 +383,15 @@ impl ServerApp for TcpProxy {
         };
 
         tracing::debug!(target, "TCP proxy: relaying connection");
+
+        let mut upstream = upstream;
+        if let Err(e) = self
+            .write_preamble(&mut upstream, &ends, &first_bytes)
+            .await
+        {
+            tracing::warn!(target, "TCP proxy: could not write to the upstream: {e}");
+            return None;
+        }
 
         match relay(downstream, upstream, self.idle_timeout).await {
             Ok(Outcome::Closed(down_bytes, up_bytes)) => {
@@ -434,7 +609,11 @@ mod tests {
 
     /// The proxy on a loopback listener, serving every accepted connection the way Pingora's listening service does.
     async fn serve(cfg: TcpConfig) -> std::net::SocketAddr {
-        let proxy = Arc::new(TcpProxy::new(&cfg));
+        serve_proxy(TcpProxy::new(&cfg)).await
+    }
+
+    async fn serve_proxy(proxy: TcpProxy) -> std::net::SocketAddr {
+        let proxy = Arc::new(proxy);
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = l.local_addr().unwrap();
         let (_tx, shutdown) = tokio::sync::watch::channel(false);
@@ -551,5 +730,217 @@ mod tests {
         assert_eq!(t(None), Some(Duration::from_secs(3600)));
         assert_eq!(t(Some(90)), Some(Duration::from_secs(90)));
         assert_eq!(t(Some(0)), None);
+    }
+
+    // ── PROXY protocol, through real sockets (#757) ──────────────────────────
+
+    fn pp_cfg(sources: &[&str]) -> ProxyProtocolConfig {
+        ProxyProtocolConfig {
+            trusted_sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Everything the client reads until the proxy closes the connection (EOF, or a reset because it closed with our bytes
+    /// unread). A connection still open after `wait` fails the test: a timeout is not a refusal.
+    async fn read_all(c: &mut tokio::net::TcpStream, wait: Duration) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            match tokio::time::timeout(wait, c.read(&mut buf)).await {
+                Err(_) => {
+                    panic!("the connection was left open for {wait:?} instead of being closed")
+                }
+                Ok(Ok(0)) => return out,
+                Ok(Err(e))
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    ) =>
+                {
+                    return out;
+                }
+                Ok(Err(e)) => panic!("expected EOF or a reset, got {e:?}"),
+                Ok(Ok(n)) => out.extend_from_slice(&buf[..n]),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_trusted_peers_header_is_consumed_and_the_payload_after_it_is_relayed() {
+        let up = echo_upstream().await;
+        let addr = serve_proxy(
+            TcpProxy::new(&TcpConfig {
+                targets: vec![up],
+                ..Default::default()
+            })
+            .with_proxy_protocol(&pp_cfg(&["127.0.0.0/8"])),
+        )
+        .await;
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        // Header and payload in one write: the bytes after the header must not be lost.
+        c.write_all(b"PROXY TCP4 203.0.113.9 192.0.2.1 51000 443\r\nhi")
+            .await
+            .unwrap();
+        let mut buf = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(2), c.read_exact(&mut buf))
+            .await
+            .expect("echo")
+            .unwrap();
+        assert_eq!(&buf, b"hi", "the upstream got the payload, not the header");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn send_proxy_protocol_passes_the_client_named_by_the_header_to_the_upstream() {
+        let up = echo_upstream().await;
+        let addr = serve_proxy(
+            TcpProxy::new(&TcpConfig {
+                targets: vec![up],
+                send_proxy_protocol: Some(pp::Version::V1),
+                ..Default::default()
+            })
+            .with_proxy_protocol(&pp_cfg(&["127.0.0.1"])),
+        )
+        .await;
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(b"PROXY TCP4 203.0.113.9 192.0.2.1 51000 443\r\nhi")
+            .await
+            .unwrap();
+        let want = b"PROXY TCP4 203.0.113.9 192.0.2.1 51000 443\r\nhi";
+        let mut got = vec![0u8; want.len()];
+        tokio::time::timeout(Duration::from_secs(2), c.read_exact(&mut got))
+            .await
+            .expect("echo")
+            .unwrap();
+        assert_eq!(got, want, "the echo upstream shows what it was sent");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn send_proxy_protocol_without_accept_names_the_socket_peer() {
+        let up = echo_upstream().await;
+        let addr = serve(TcpConfig {
+            targets: vec![up],
+            send_proxy_protocol: Some(pp::Version::V2),
+            ..Default::default()
+        })
+        .await;
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let me = c.local_addr().unwrap();
+        c.write_all(b"hi").await.unwrap();
+        let mut got = vec![0u8; 28 + 2];
+        tokio::time::timeout(Duration::from_secs(2), c.read_exact(&mut got))
+            .await
+            .expect("echo")
+            .unwrap();
+        let parsed = pp::parse(&got, 4096).expect("a v2 header first");
+        let Header::Proxy {
+            source,
+            destination,
+        } = parsed.header
+        else {
+            panic!("expected a PROXY header, got {:?}", parsed.header);
+        };
+        assert_eq!(source, me, "the client is the socket peer");
+        assert_eq!(destination, addr, "the destination is the listener");
+        assert_eq!(&got[parsed.len..], b"hi");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_untrusted_peer_and_a_trusted_peer_without_a_header_are_closed() {
+        let up = echo_upstream().await;
+        for sources in [&["192.0.2.0/24"][..], &["127.0.0.0/8"][..]] {
+            let addr = serve_proxy(
+                TcpProxy::new(&TcpConfig {
+                    targets: vec![up.clone()],
+                    ..Default::default()
+                })
+                .with_proxy_protocol(&pp_cfg(sources)),
+            )
+            .await;
+            let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let _ = c.write_all(b"GET / HTTP/1.1\r\n\r\n").await;
+            let got = read_all(&mut c, Duration::from_secs(2)).await;
+            assert!(
+                got.is_empty(),
+                "{sources:?}: nothing is relayed, got {got:?}"
+            );
+        }
+        // a trusted peer that sends a header with the real thing after it is fine
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_trusted_peer_that_never_finishes_the_header_is_closed_and_frees_its_slot() {
+        let up = echo_upstream().await;
+        let addr = serve_proxy(
+            TcpProxy::new(&TcpConfig {
+                targets: vec![up],
+                max_connections: Some(1),
+                ..Default::default()
+            })
+            .with_proxy_protocol(&ProxyProtocolConfig {
+                trusted_sources: vec!["127.0.0.0/8".into()],
+                timeout_ms: Some(300),
+                ..Default::default()
+            }),
+        )
+        .await;
+        let mut slow = tokio::net::TcpStream::connect(addr).await.unwrap();
+        slow.write_all(b"PROXY TCP4 1.2.3.4 ").await.unwrap(); // and then nothing
+        let started = Instant::now();
+        let got = read_all(&mut slow, Duration::from_secs(3)).await;
+        assert!(got.is_empty());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "closed at the deadline, not {:?}",
+            started.elapsed()
+        );
+        // the single slot is free again
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(b"PROXY UNKNOWN\r\nhi").await.unwrap();
+        let mut buf = [0u8; 2];
+        tokio::time::timeout(Duration::from_secs(2), c.read_exact(&mut buf))
+            .await
+            .expect("echo")
+            .unwrap();
+        assert_eq!(&buf, b"hi");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn max_connections_per_ip_counts_the_client_the_header_names() {
+        let up = echo_upstream().await;
+        let addr = serve_proxy(
+            TcpProxy::new(&TcpConfig {
+                targets: vec![up],
+                max_connections_per_ip: Some(1),
+                ..Default::default()
+            })
+            .with_proxy_protocol(&pp_cfg(&["127.0.0.0/8"])),
+        )
+        .await;
+        let open = |client: &'static str| async move {
+            let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+            c.write_all(format!("PROXY TCP4 {client} 192.0.2.1 1000 443\r\nhi").as_bytes())
+                .await
+                .unwrap();
+            let mut buf = [0u8; 2];
+            let ok = matches!(
+                tokio::time::timeout(Duration::from_secs(2), c.read_exact(&mut buf)).await,
+                Ok(Ok(_))
+            );
+            (ok, c)
+        };
+        // All three arrive from 127.0.0.1; only the named client counts.
+        let (a, _a) = open("203.0.113.1").await;
+        let (a2, _a2) = open("203.0.113.1").await;
+        let (b, _b) = open("203.0.113.2").await;
+        assert!(a, "first from 203.0.113.1");
+        assert!(!a2, "a second from the same named client is over the cap");
+        assert!(b, "another named client is not affected");
     }
 }

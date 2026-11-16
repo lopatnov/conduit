@@ -22,6 +22,8 @@ cache = ["dep:url"]
 lopatnov-conduit-runtime = { workspace = true }
 # The config schema types the upstream listing walks (`SiteConfig`, `ProxyConfig`, ...) and, in tests, the parser.
 lopatnov-conduit-config  = { workspace = true }
+# The one CIDR validity check (`ipFilter`, `trustedSources` and this deny list must agree on what a rule means).
+lopatnov-conduit-config-core = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 tokio       = { workspace = true }
