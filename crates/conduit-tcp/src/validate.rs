@@ -91,7 +91,10 @@ pub fn validate_proxy_protocol(
                 format!("{path}.trustedSources[{i}]"),
                 format!("\"{rule}\" is not an IP address or a CIDR block (e.g. \"10.0.0.0/8\")"),
             ));
-        } else if rule.ends_with("/0") {
+        } else if rule
+            .split_once('/')
+            .is_some_and(|(_, prefix)| prefix.parse::<u32>() == Ok(0))
+        {
             errors.push(ValidationError::warning(
                 format!("{path}.trustedSources[{i}]"),
                 format!(
@@ -217,7 +220,8 @@ mod tests {
     #[test]
     fn trusting_everyone_is_a_warning() {
         use conduit_config_core::validation::Severity;
-        for rule in ["0.0.0.0/0", "::/0"] {
+        // the prefix is read as a number, so spellings of zero count too
+        for rule in ["0.0.0.0/0", "::/0", "0.0.0.0/00", "::/+0"] {
             let e = pp(&[rule], None, None);
             assert_eq!(e.len(), 1, "{e:?}");
             assert_eq!(e[0].severity, Severity::Warning);
