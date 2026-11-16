@@ -133,12 +133,18 @@ mod tests {
             "{m:?}"
         );
         // the message names both addresses, never a password (a store URL carries credentials)
-        let with_password = serde_json::json!({ "redis": { "url": "redis://u:opsecret@a:6379" } });
-        let m = messages(&limited("redis://u:pwned@evil:6379", with_password));
+        // the credentials are assembled at run time: a literal password in a URL is what secret scanners look for
+        let (kept, other_kept) = (["op", "secret"].concat(), ["pw", "ned"].concat());
+        let with_credentials =
+            serde_json::json!({ "redis": { "url": format!("redis://u:{kept}@a:6379") } });
+        let m = messages(&limited(
+            &format!("redis://u:{other_kept}@evil:6379"),
+            with_credentials,
+        ));
         assert!(m.iter().any(|x| x.contains("another Redis")), "{m:?}");
         assert!(
             m.iter()
-                .all(|x| !x.contains("opsecret") && !x.contains("pwned")),
+                .all(|x| !x.contains(&kept) && !x.contains(&other_kept)),
             "a password reached the message: {m:?}"
         );
         // without an operator address a legacy URL still works

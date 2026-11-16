@@ -51,7 +51,7 @@ pub fn set_operator_redis_url(url: Option<String>) -> bool {
 
 /// The operator's Redis address recorded at startup, if any.
 pub fn operator_redis_url() -> Option<&'static str> {
-    OPERATOR_REDIS_URL.get().and_then(|u| u.as_deref())
+    OPERATOR_REDIS_URL.get().and_then(Option::as_deref)
 }
 
 /// The Redis address a `store` value stands for: itself when it is a URL, the operator's address when it is the

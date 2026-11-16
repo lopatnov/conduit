@@ -6,7 +6,7 @@ use conduit_ratelimit::redis::RedisRateLimiter;
 
 use crate::config::rate_limit_scan::find_redis_rate_limit_store;
 
-/// Connect to Redis for rate limiting if any site, route, or consumer has a
+/// Connect to Redis for rate limiting if the operator set an address, or any site, route, or consumer has a
 /// `redis://` store configured.
 ///
 /// A temporary single-threaded Tokio runtime is used for the async handshake so
@@ -138,7 +138,7 @@ mod tests {
             find_redis_rate_limit_store(&mixed).as_deref(),
             Some("redis://a:6379")
         );
-        // an address and no redis store: nothing to connect
+        // an address and no redis store yet: still connected, so a store added later shares the limit (#763 review)
         let unused = AppConfig {
             global: global("redis://a:6379"),
             sites: vec![SiteConfig {
@@ -147,7 +147,10 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(find_redis_rate_limit_store(&unused), None);
+        assert_eq!(
+            find_redis_rate_limit_store(&unused).as_deref(),
+            Some("redis://a:6379")
+        );
     }
 
     #[test]

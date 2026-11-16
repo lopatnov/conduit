@@ -3180,7 +3180,7 @@ bucket's burst.
 whatever level needs Redis (site, route, consumer, and `cache.store`), and set the address in
 [`global.redis.url`](#global-redis), or in the `CONDUIT_REDIS_URL` environment variable (a pod that reads
 `ConduitSite` objects cannot set `global`). Every level shares the one connection, so a limit is shared by all
-replicas. The address is read at startup only: a change takes a restart, and a reload that changes it is refused (cold field).
+replicas. The address is read at startup only: a change takes a restart, and a reload that changes it is refused (cold field). With `--features redis` the connection is made at start whenever an address is set, even if no site uses `store: redis` yet, so a `ConduitSite` added later shares the limit without a restart.
 
 A `store: "redis://host:port"` written on a site or route still works, as before, but is **deprecated**: it
 is a warning when the config is loaded. When `global.redis.url` is set it must be that same address; another

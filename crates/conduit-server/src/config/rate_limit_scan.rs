@@ -55,26 +55,28 @@ pub(crate) fn iter_rate_limit_configs(site: &SiteConfig) -> impl Iterator<Item =
 /// used *only* at the route/consumer layer (issue #322).
 ///
 /// The address is the operator's ([`operator_redis_address`]: `global.redis.url`, else `CONDUIT_REDIS_URL`,
-/// issue #760); a config without one falls back to the first legacy `redis://`/`rediss://` store URL found
-/// (site → `proxy` map → `routes[]` → consumer, across sites in declaration order; #357). A bare `store: redis`
-/// with no operator address is a validation error, so it never reaches the connection.
+/// issue #760), and it is connected as soon as it is set, even when no store uses it yet (a site added later
+/// would otherwise count per replica until a restart). A config without one falls back to the first legacy
+/// `redis://`/`rediss://` store URL found (site → `proxy` map → `routes[]` → consumer, across sites in declaration
+/// order; #357). A bare `store: redis` with no operator address is a validation error, so it never reaches the
+/// connection.
 ///
 /// The scan order is shared with `config::validate`'s Redis-consistency checks via [`iter_rate_limit_configs`] —
 /// see that module for why the walk lives in exactly one place.
 pub(crate) fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
-    let mut stores = config
+    // When the operator set an address it is connected whether or not a store uses it yet: the connection is
+    // made once, at start, and a `ConduitSite` that writes `store: redis` later (or a reload that adds the first
+    // one) must share the limit instead of silently counting per replica (review of #763).
+    if let Some(address) = operator_redis_address(config) {
+        return Some(address);
+    }
+    config
         .sites
         .iter()
         .flat_map(iter_rate_limit_configs)
         .filter_map(|rl| rl.store.as_deref())
-        .filter(|store| conduit_config_core::scheme::is_redis_store(store))
-        .peekable();
-    stores.peek()?;
-    operator_redis_address(config).or_else(|| {
-        stores
-            .find(|s| conduit_config_core::scheme::is_redis_url(s))
-            .map(str::to_owned)
-    })
+        .find(|store| conduit_config_core::scheme::is_redis_url(store))
+        .map(str::to_owned)
 }
 
 /// The operator's Redis address for `config`: `global.redis.url` when set, else `CONDUIT_REDIS_URL` (issue #760).
