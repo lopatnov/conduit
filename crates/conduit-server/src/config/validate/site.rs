@@ -146,6 +146,45 @@ fn validate_site_limits(site: &SiteConfig, prefix: &str, errors: &mut Vec<Valida
     }
 }
 
+/// `tls` on a `tcp` site terminates TLS with a certificate and key (and optionally `clientAuth`). What belongs to an HTTP
+/// listener does not apply: `acme` (its HTTP-01 challenge is answered on a plain HTTP port, which this site does not
+/// have) and `httpRedirectPort` (there is no HTTP to redirect). Each is refused, so a key that does nothing is never
+/// mistaken for one that works (issue #757).
+fn validate_tcp_site_tls(site: &SiteConfig, prefix: &str, errors: &mut Vec<ValidationError>) {
+    let Some(tls) = &site.tls else {
+        return;
+    };
+    if tls.acme.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.tls.acme"),
+            "tls.acme does not apply to a tcp site: the certificate is ordered over HTTP-01 on a plain HTTP port, which \
+             a tcp site does not have. Set tls.cert and tls.key (renew them with a tool of your own and restart)",
+        ));
+    }
+    if tls.http_redirect_port.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.tls.httpRedirectPort"),
+            "tls.httpRedirectPort does not apply to a tcp site: there is no HTTP to redirect",
+        ));
+    }
+    // A site without a port is on 80 as a tcp site and on 443 as an HTTPS one: a TLS port that depends on which was
+    // meant is a guess, so it has to be written down.
+    if site.port.is_none() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.port"),
+            "a tcp site with tls needs an explicit port",
+        ));
+    }
+    // The header is read in a hook before the handshake and its policy is found by the local port: port 0 would refuse to
+    // start (fail closed), which `validate` should say first.
+    if site.port == Some(0) && site.proxy_protocol.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.port"),
+            "proxyProtocol on a tcp site with tls needs a fixed port: port 0 binds an OS-assigned port, so the PROXY protocol policy cannot match it",
+        ));
+    }
+}
+
 /// Validate a TCP proxy site configuration.
 fn validate_tcp_site(
     tcp: &TcpConfig,
@@ -154,6 +193,7 @@ fn validate_tcp_site(
     errors: &mut Vec<ValidationError>,
 ) {
     validate_tcp(tcp, prefix, errors);
+    validate_tcp_site_tls(site, prefix, errors);
     // TCP sites cannot be combined with HTTP features.
     if site.proxy.is_some() {
         errors.push(ValidationError::new(

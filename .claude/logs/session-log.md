@@ -2932,3 +2932,13 @@ recurrence of this specific (now-disproven) mechanism.
 - **Находки по ходу:** upstream e2e 9301 не отвечал, пока клиент молчал (клиент шлёт строку `x`); 9302 не видел приветствия, пока сайт не слал заголовок; флак upload-теста (`SendError`) — гонка закрытия сервером; у `same_policy` порядок и повторы trustedSources не должны давать «изменение»; тесты отказа принимали таймаут чтения.
 - **Уроки** — в выжимке `CLAUDE.md`. Диск облачного контейнера кончился на `target/` (~10 ГБ): сначала чистка, потом clippy.
 - **Здоровье:** production code 28 483 строки в 342 файлах, 33 крейта; инструкции 58 КБ (ok); `--no-default-features` 13,3 MiB. Выбрал бы Conduit для другого проекта? **Пока с оговорками**: функция покрыта тестами на трёх уровнях, но тесты отказа сначала проходили вхолостую, а e2e-проверка кода curl не проверена на других версиях curl.
+
+### 2026-11-16 (TLS на tcp-сайтах, #757 п. 3)
+
+- **Решение:** Pingora `ListeningService::add_tls_with_settings` оборачивает listener в TLS, `process_new` получает расшифрованный поток; с `proxyProtocol` pre-TLS хук читает заголовок до рукопожатия (тот же `PreTlsProxyProtocol`, `for_tcp_site(port, pp)`). Сертификат один на порт, без SNI-карты; пересшифровка к апстриму и выбор сертификата по SNI — вне объёма.
+- **Валидация:** `validate_tcp_site_tls` — ACME (нужен HTTP-01 на открытом HTTP-порту), `httpRedirectPort`, явный `port` (иначе tcp-сайт сел бы на 80, а TLS ждали бы на 443); неполный `tls` уже отклонял `validate_tls` (#509).
+- **Reload:** `listeners[{port}].tls.clientAuth` (HTTPS) и `sites[port N].tls` (tcp) — холодные (`admin/cold_keys.rs`: `https_client_auth_by_port`, `tcp_tls_by_port`; тесты `the_client_auth_of_an_https_listener_is_cold`, `the_tls_of_a_tcp_site_is_cold`).
+- **Тесты:** `tests/tcp_tls.rs` (TLS + апстрим видит открытый текст; `clientAuth` не пускает клиента без сертификата; PROXY protocol до рукопожатия), мутационные контроли проверены по перечитанному исходнику; `scripts/e2e/tcp-tls.sh` (порты 9400-9402) в Docker-CI.
+- **Находки:** `UnexpectedEof` после TLS-клиента без `close_notify` печатал WARN в relay — теперь не ошибка; тест «клиент без сертификата» сначала проходил: сервер отдавал данные, пока не включили `clientAuth` в конфиге теста.
+- **Здоровье:** production code 28 618 строк в 342 файлах, 33 крейта; инструкции 58 КБ (ok); `--no-default-features` 13,3 MiB (Footprint-отчёт PR #778). Выбрал бы Conduit для другого проекта? **Пока с оговорками**: Docker-e2e этой функции пока не проходил.
+

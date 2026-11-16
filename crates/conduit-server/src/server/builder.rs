@@ -225,7 +225,7 @@ pub fn run_server(
 
     // Raw TCP proxy services.
     #[cfg(feature = "tcp")]
-    let tcp_ports = register_tcp_proxy_services(&config, &mut server);
+    let tcp_ports = register_tcp_proxy_services(&config, &mut server)?;
     #[cfg(not(feature = "tcp"))]
     let tcp_ports: Vec<u16> = Vec::new();
 
@@ -275,7 +275,10 @@ pub fn run_server(
 #[cfg(feature = "tcp")]
 ///
 /// Returns the ports that were bound.
-fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) -> Vec<u16> {
+fn register_tcp_proxy_services(
+    config: &AppConfig,
+    server: &mut Server,
+) -> anyhow::Result<Vec<u16>> {
     let mut bound = Vec::new();
     for site in &config.sites {
         let Some(ref tcp_cfg) = site.tcp else {
@@ -287,21 +290,70 @@ fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) -> Vec<u
         }
         let port = site.port.unwrap_or(80);
         let mut proxy = conduit_tcp::proxy::TcpProxy::new(tcp_cfg).with_port(port);
-        if let Some(pp) = &site.proxy_protocol {
-            proxy = proxy.with_proxy_protocol(pp);
-        }
+        let addr = format!("0.0.0.0:{port}");
+        // Written before the service takes the proxy: it needs the settings only to bind the listener.
+        let tls_settings = tcp_tls_settings(site, port)?;
+        let terminates_tls = tls_settings.is_some();
+        // With TLS the header comes before the handshake, so the pre-TLS hook reads it (and the relay does not);
+        // without TLS the relay reads it.
+        let hook = match (&site.proxy_protocol, terminates_tls) {
+            (Some(pp), true) => Some(PreTlsProxyProtocol::for_tcp_site(port, pp)?),
+            (Some(pp), false) => {
+                proxy = proxy.with_proxy_protocol(pp);
+                None
+            }
+            (None, _) => None,
+        };
         let mut tcp_svc = ListeningService::new(format!("Conduit TCP Proxy :{port}"), proxy);
-        tcp_svc.add_tcp(&format!("0.0.0.0:{port}"));
+        match tls_settings {
+            Some(settings) => tcp_svc.add_tls_with_settings(&addr, None, settings),
+            None => tcp_svc.add_tcp(&addr),
+        }
+        if let Some(hook) = hook {
+            tcp_svc.endpoints().set_pre_tls_callback(hook);
+        }
         server.add_service(tcp_svc);
         bound.push(port);
         tracing::info!(
             port,
             targets = tcp_cfg.targets.join(", "),
+            tls = terminates_tls,
+            client_cert_required = site
+                .tls
+                .as_ref()
+                .and_then(|t| t.client_auth.as_ref())
+                .is_some_and(|c| !c.optional),
             proxy_protocol = site.proxy_protocol.is_some(),
             "TCP proxy service registered"
         );
     }
-    bound
+    Ok(bound)
+}
+
+/// The TLS settings of a `tcp` site that terminates TLS (`tls` with a certificate and key), or `None` for a plain one.
+///
+/// A site with a `tls` block and no certificate and key (or one with `acme`) is refused at validation; the error here is
+/// the second guard, so a port that was meant to be TLS can never come up as plaintext.
+#[cfg(feature = "tcp")]
+fn tcp_tls_settings(
+    site: &crate::config::schema::SiteConfig,
+    port: u16,
+) -> anyhow::Result<Option<pingora_core::listeners::tls::TlsSettings>> {
+    use super::tls as tls_util;
+    let Some(tls) = &site.tls else {
+        return Ok(None);
+    };
+    let (Some(cert), Some(key)) = (&tls.cert, &tls.key) else {
+        anyhow::bail!(
+            "tcp site on port {port} has a tls block without cert and key: not serving it as plaintext"
+        );
+    };
+    let settings = match &tls.client_auth {
+        Some(ca) => tls_util::make_tls_settings_with_client_auth(cert, key, false, ca),
+        None => tls_util::make_tls_settings(cert, key, false),
+    }
+    .map_err(|e| anyhow::anyhow!("TLS setup failed for tcp site on port {port}: {e}"))?;
+    Ok(Some(settings))
 }
 
 /// Register HTTP → HTTPS redirect services for sites with `tls.httpRedirectPort`.
@@ -389,6 +441,120 @@ mod tests {
             build_server_conf(&config).threads,
             ServerConf::default().threads
         );
+    }
+
+    /// A self-signed certificate and key written under `dir`; returns their paths.
+    #[cfg(feature = "tcp")]
+    fn write_cert(dir: &tempfile::TempDir) -> (String, String) {
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .expect("params")
+            .self_signed(&key_pair)
+            .expect("self-signed cert");
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        std::fs::write(&cert_path, cert.pem()).expect("write cert");
+        std::fs::write(&key_path, key_pair.serialize_pem()).expect("write key");
+        (
+            cert_path.to_string_lossy().into_owned(),
+            key_path.to_string_lossy().into_owned(),
+        )
+    }
+
+    #[cfg(feature = "tcp")]
+    fn sites(value: serde_json::Value) -> AppConfig {
+        crate::config::from_str(&value.to_string()).expect("a valid test config")
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn a_tcp_site_terminates_tls_only_with_a_certificate_and_key() {
+        // The client-certificate verifier needs a process-default crypto provider; install it here so the test also
+        // passes when run alone or first, as the sibling TLS tests do.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = write_cert(&dir);
+        let site = |tls: serde_json::Value| {
+            sites(serde_json::json!([{ "port": 9000, "tcp": { "targets": ["a:1"] }, "tls": tls }]))
+                .sites[0]
+                .clone()
+        };
+        let plain = sites(serde_json::json!([{ "port": 9000, "tcp": { "targets": ["a:1"] } }]));
+        assert!(tcp_tls_settings(&plain.sites[0], 9000).unwrap().is_none());
+
+        let with_cert = site(serde_json::json!({ "cert": cert, "key": key }));
+        assert!(tcp_tls_settings(&with_cert, 9000).unwrap().is_some());
+
+        // the certificate doubles as the CA that signs the client certificates
+        let with_ca =
+            site(serde_json::json!({ "cert": cert, "key": key, "clientAuth": { "ca": cert } }));
+        assert!(tcp_tls_settings(&with_ca, 9000).unwrap().is_some());
+
+        // a tls block that cannot be served must never come up as plaintext
+        let no_pair = site(serde_json::json!({}));
+        let err = tcp_tls_settings(&no_pair, 9000)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains("not serving it as plaintext"), "{err}");
+
+        // Pingora reads the certificate and key when the listener is built, but the CA of `clientAuth` right here
+        let missing_ca = site(
+            serde_json::json!({ "cert": cert, "key": key, "clientAuth": { "ca": "/nonexistent/ca.pem" } }),
+        );
+        let err = tcp_tls_settings(&missing_ca, 9000)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(
+            err.contains("TLS setup failed for tcp site on port 9000"),
+            "{err}"
+        );
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn tcp_services_are_registered_for_plain_tls_and_proxy_protocol_sites() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = write_cert(&dir);
+        let pp = serde_json::json!({ "trustedSources": ["10.0.0.0/8"] });
+        let config = sites(serde_json::json!([
+            { "port": 9000, "tcp": { "targets": ["a:1"] } },
+            { "port": 9001, "tcp": { "targets": ["a:1"] }, "proxyProtocol": pp },
+            { "port": 9002, "tcp": { "targets": ["a:1"] }, "tls": { "cert": cert, "key": key } },
+            { "port": 9003, "tcp": { "targets": ["a:1"] }, "tls": { "cert": cert, "key": key,
+                "clientAuth": { "ca": cert } }, "proxyProtocol": pp },
+            { "port": 9004, "tcp": { "targets": [] } },
+            { "port": 9005 }
+        ]));
+        let mut server = Server::new(None).expect("a server that is not run");
+        let bound = register_tcp_proxy_services(&config, &mut server).unwrap();
+        // the site without targets is skipped, the HTTP site is not a tcp one
+        assert_eq!(bound, vec![9000, 9001, 9002, 9003]);
+
+        // the policy of a TLS site with proxyProtocol is found by its own port; port 0 cannot be
+        let hook = PreTlsProxyProtocol::for_tcp_site(
+            9003,
+            config.sites[3].proxy_protocol.as_ref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(hook.ports(), vec![9003]);
+        let err =
+            PreTlsProxyProtocol::for_tcp_site(0, config.sites[3].proxy_protocol.as_ref().unwrap())
+                .err()
+                .expect("port 0 is refused")
+                .to_string();
+        assert!(err.contains("port 0"), "{err}");
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn a_tcp_site_with_an_unusable_tls_block_stops_the_registration() {
+        let config = sites(serde_json::json!([
+            { "port": 9000, "tcp": { "targets": ["a:1"] }, "tls": {} }
+        ]));
+        let mut server = Server::new(None).expect("a server that is not run");
+        assert!(register_tcp_proxy_services(&config, &mut server).is_err());
     }
 
     #[test]

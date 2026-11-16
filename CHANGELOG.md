@@ -38,6 +38,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **TLS termination on `tcp` sites** (#757, item 3 of 5): a `tcp` site with `tls: { cert, key }` terminates TLS and relays the
+  decrypted bytes to the upstream; `tls.clientAuth` (mutual TLS) keeps a client without a certificate of the CA from the
+  upstream; `proxyProtocol` on such a site is read before the handshake, so the client address in the header is the one the
+  caps count and `sendProxyProtocol` passes on. Refused on such a site: `tls.acme`, `tls.httpRedirectPort` and a missing
+  `port`, and `port: 0` together with `proxyProtocol`. A changed `tls` block of a `tcp` site is a cold change (restart), and so is a changed `tls.clientAuth` of an HTTPS port, ACME ones included (it was not detected before). Before, a `tls` block with a certificate on a
+  `tcp` site was accepted and ignored, so the port served plaintext. Tests: `tests/tcp_tls.rs` (real TLS client) and
+  `scripts/e2e/tcp-tls.sh`.
 - **The Redis address is set once, by the operator** (#760). `global.redis.url` in a file config, or the `CONDUIT_REDIS_URL`
   environment variable for a pod that reads `ConduitSite` objects (a `ConduitSite` cannot set `global`; the value is trimmed,
   and `global.redis.url` wins when both are set). Sites, routes and consumers write `store: redis` (rate limits and caches),
@@ -191,6 +198,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A missing or non-PEM TLS certificate or key file, or a key that does not belong to the certificate, stops the start with an
+  error that names the file** (HTTPS ports and `tcp` sites with `tls`). Before, the paths were only stored and Pingora read
+  the files when the listener was built, so such a start ended in a panic with no port or file in the message.
 - The first rate-limited request of every instance that uses `store: redis` was counted in the in-memory fallback, not in the
   shared bucket (the connection is made at start in a throw-away runtime, so the first command failed with a broken pipe and
   only the next one worked). The first use of the connection now sends a `PING` (which changes nothing and is repeated if it fails) before the check, so the connection is back when the request is counted; the check itself is never retried, so a request cannot be counted twice. With N instances

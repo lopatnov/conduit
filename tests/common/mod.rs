@@ -487,3 +487,60 @@ pub fn make_self_signed_cert() -> (tempfile::TempDir, String, String) {
         key_path.to_string_lossy().into_owned(),
     )
 }
+
+// ── A CA and the client certificates it signs (mutual TLS) ────────────────────
+
+/// Self-signed CA certificate and its `Issuer` handle, which signs client certificates.
+pub fn new_ca() -> (rcgen::Certificate, rcgen::Issuer<'static, rcgen::KeyPair>) {
+    use rcgen::{
+        BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    };
+
+    let mut params =
+        CertificateParams::new(Vec::default()).expect("empty SAN can't produce an error");
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "conduit test CA");
+    params.key_usages.push(KeyUsagePurpose::KeyCertSign);
+    params.key_usages.push(KeyUsagePurpose::CrlSign);
+
+    let key_pair = KeyPair::generate().expect("CA keypair");
+    let cert = params.clone().self_signed(&key_pair).expect("self-sign CA");
+    (cert, Issuer::new(params, key_pair))
+}
+
+/// A client leaf certificate signed by `issuer`, with the `ClientAuth` extended key usage mutual TLS needs.
+pub fn new_client_cert(
+    issuer: &rcgen::Issuer<'static, rcgen::KeyPair>,
+) -> (rcgen::Certificate, rcgen::KeyPair) {
+    use rcgen::{CertificateParams, DnType, ExtendedKeyUsagePurpose, KeyPair, KeyUsagePurpose};
+
+    let mut params =
+        CertificateParams::new(Vec::default()).expect("empty SAN can't produce an error");
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "conduit test client");
+    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
+    params
+        .extended_key_usages
+        .push(ExtendedKeyUsagePurpose::ClientAuth);
+
+    let key_pair = KeyPair::generate().expect("client keypair");
+    let cert = params
+        .signed_by(&key_pair, issuer)
+        .expect("sign client cert");
+    (cert, key_pair)
+}
+
+/// Writes a CA certificate into `dir` as `ca.pem` and returns its path.
+pub fn write_ca_pem(dir: &tempfile::TempDir, ca_cert: &rcgen::Certificate) -> String {
+    use std::io::Write;
+
+    let path = dir.path().join("ca.pem");
+    std::fs::File::create(&path)
+        .expect("create ca.pem")
+        .write_all(ca_cert.pem().as_bytes())
+        .expect("write ca.pem");
+    path.to_string_lossy().into_owned()
+}

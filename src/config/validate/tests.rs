@@ -2739,6 +2739,78 @@ fn proxy_protocol_on_an_https_site_needs_a_fixed_port() {
 }
 
 #[test]
+fn a_tcp_site_can_terminate_tls_with_a_certificate_and_key() {
+    let tls = r#"{ "port": 993, "tcp": { "targets": ["mail:143"] }, "tls": { "cert": "c.pem", "key": "k.pem" } }"#;
+    assert!(
+        errs(tls)
+            .iter()
+            .all(|e| !e.path.contains("tls") && e.path != "sites[0].port"),
+        "{:?}",
+        errs(tls)
+    );
+    // with a client-certificate rule, and with the PROXY protocol read before the handshake
+    let more = r#"{ "port": 993, "tcp": { "targets": ["mail:143"] },
+        "tls": { "cert": "c.pem", "key": "k.pem", "clientAuth": { "ca": "ca.pem" } },
+        "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#;
+    assert!(
+        errs(more)
+            .iter()
+            .all(|e| !e.path.contains("tls") && !e.path.contains("proxyProtocol")),
+        "{:?}",
+        errs(more)
+    );
+}
+
+#[test]
+fn what_belongs_to_an_http_listener_is_refused_on_a_tcp_site_with_tls() {
+    let site = |tls: &str, port: &str| {
+        format!(r#"{{ {port} "tcp": {{ "targets": ["mail:143"] }}, "tls": {tls} }}"#)
+    };
+    let acme = errs(&site(
+        r#"{ "acme": { "email": "a@example.com" } }"#,
+        r#""port": 993,"#,
+    ));
+    assert!(
+        acme.iter()
+            .any(|e| e.path == "sites[0].tls.acme" && e.message.contains("plain HTTP port")),
+        "{acme:?}"
+    );
+    let redirect = errs(&site(
+        r#"{ "cert": "c.pem", "key": "k.pem", "httpRedirectPort": 80 }"#,
+        r#""port": 993,"#,
+    ));
+    assert!(
+        redirect
+            .iter()
+            .any(|e| e.path == "sites[0].tls.httpRedirectPort"),
+        "{redirect:?}"
+    );
+    // a TLS tcp site without a port would be on 80 as a tcp site and on 443 as an HTTPS one
+    let no_port = errs(&site(r#"{ "cert": "c.pem", "key": "k.pem" }"#, ""));
+    assert!(
+        no_port
+            .iter()
+            .any(|e| e.path == "sites[0].port" && e.message.contains("explicit port")),
+        "{no_port:?}"
+    );
+    // the header is matched by the port a connection arrived on, so port 0 cannot work with it on a TLS site
+    let pp_port0 = errs(
+        r#"{ "port": 0, "tcp": { "targets": ["mail:143"] }, "tls": { "cert": "c.pem", "key": "k.pem" },
+             "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#,
+    );
+    assert!(
+        pp_port0
+            .iter()
+            .any(|e| e.path == "sites[0].port" && e.message.contains("fixed port")),
+        "{pp_port0:?}"
+    );
+    // a tcp site without tls needs no port, as before
+    assert!(errs(r#"{ "tcp": { "targets": ["db:3306"] } }"#)
+        .iter()
+        .all(|e| e.path != "sites[0].port"));
+}
+
+#[test]
 fn proxy_protocol_on_a_plain_http_site_is_refused() {
     let e = pp_errs(r#"{ "port": 8080, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#);
     assert_eq!(e.len(), 1, "{e:?}");

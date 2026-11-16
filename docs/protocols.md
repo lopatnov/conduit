@@ -41,9 +41,11 @@ Several targets (`strategy: round-robin` or `random`) are for interchangeable ba
 a site of their own. Do not list a primary and a replica together: Conduit does not know their roles.
 
 - It relays bytes both ways and passes a half-close on, so a client that finishes sending and waits for the answer works.
-- It does **not** terminate TLS. A TLS client talks to the upstream through Conduit and verifies the **upstream's**
-  certificate (checked in `protocols.sh` with `openssl s_server`). That is also how `STARTTLS`-style upgrades and
-  PostgreSQL's `SSLRequest` pass through.
+- By default it does **not** terminate TLS. A TLS client talks to the upstream through Conduit and verifies the
+  **upstream's** certificate (checked in `protocols.sh` with `openssl s_server`). That is also how `STARTTLS`-style upgrades
+  and PostgreSQL's `SSLRequest` pass through. With a `tls` block on the site (`cert` and `key`, optionally `clientAuth`)
+  Conduit **terminates** TLS instead: the client verifies Conduit's certificate and the upstream gets the decrypted bytes
+  (see [TLS on a TCP site](#tls-on-a-tcp-site)).
 - It adds nothing to the stream: the upstream sees Conduit's address as the client, unless `tcp.sendProxyProtocol` writes a
   [PROXY protocol](configuration.md#proxy-protocol) header first. Anything that decides by client address on the backend
   (`pg_hba.conf`, mail relay rules, fail2ban) sees Conduit otherwise, and the upstream must be set up to expect the header
@@ -61,6 +63,39 @@ a site of their own. Do not list a primary and a replica together: Conduit does 
 - Several upstreams are load-balanced per **connection**, not per message, and a target that fails to connect is passed
   over for a few seconds (see [TCP Proxy](configuration.md#tcp-proxy)). A connection that is already relayed is never
   moved. For a database that means Conduit balances connections, not queries; it knows nothing of primary or replica roles.
+
+### TLS on a TCP site
+
+```yaml
+sites:
+  - port: 993
+    tls:
+      cert: /etc/conduit/mail.crt
+      key: /etc/conduit/mail.key
+      clientAuth: { ca: /etc/conduit/clients-ca.pem }   # optional: only clients with a certificate of this CA
+    tcp:
+      targets: ["dovecot.internal:143"]                 # the upstream speaks plaintext
+```
+
+- The handshake happens in Conduit, so a client that does not speak TLS is closed and the upstream never sees its bytes.
+  The upstream receives the decrypted stream, which suits mail, MQTT, Redis and the like on a port that is TLS-only for
+  clients. Caps, `idleTimeoutSecs` and `sendProxyProtocol` work as on a plain site.
+- `clientAuth` (mutual TLS) is checked in the handshake: a client without a certificate of that CA never reaches the
+  upstream. `optional: true` asks for a certificate but does not require one; Conduit does not pass the certificate on.
+- `proxyProtocol` on such a site reads the load balancer's header **before** the handshake (the header is outside the TLS
+  stream); the client address it carries is the one `maxConnectionsPerIp` counts and `sendProxyProtocol` passes on.
+- **Not supported on a TCP site:** `tls.acme` (its HTTP-01 challenge needs a plain HTTP port; use `cert` and `key`),
+  `tls.httpRedirectPort`, `tls.versions` and `tls.ciphers` (refused everywhere, [#189](https://github.com/lopatnov/conduit/issues/189)),
+  one certificate per SNI name, and TLS **to** the upstream (the upstream connection is plain). The site needs an explicit
+  `port`. A changed `tls` block needs a restart.
+- `maxConnections` and `maxConnectionsPerIp` count a connection **after** its handshake completes: a client that connects and
+  never finishes the handshake is not counted, as on an HTTPS port. Keep the port behind a firewall or the load balancer.
+- Terminating TLS drops the TLS end-of-stream protection towards the upstream: a client that closes without `close_notify`
+  looks to a plaintext upstream like a normal close (Conduit logs it at debug level only). Do not put a protocol on such
+  a port that treats a closed connection as a complete message.
+
+Shown by `tests/tcp_tls.rs` (real TLS client: decrypted relay, plaintext refused, client certificates, header then handshake)
+and `scripts/e2e/tcp-tls.sh` (Python TLS client and a plaintext echo upstream in the Docker network).
 
 ## Server-Sent Events (SSE)
 
@@ -349,7 +384,8 @@ If Conduit's own host needs SSH on port 22, put Conduit on another port (`ssh -p
 These are gaps rather than choices; each is a candidate feature:
 
 - UDP proxying (WebRTC media, QUIC, DNS, syslog).
-- TLS termination for TCP sites, and an access filter (IP allow/deny) on TCP sites.
+- An access filter (IP allow/deny) on TCP sites, and TLS **to** the upstream of a TCP site (TLS termination on the client side
+  works, see [TLS on a TCP site](#tls-on-a-tcp-site)).
 - The PROXY protocol on plain-HTTP ports, and writing it to an HTTP upstream (it works on TLS ports and on `tcp` sites, see
   [PROXY protocol](configuration.md#proxy-protocol)).
 - Port ranges (FTP passive ports need one site each).

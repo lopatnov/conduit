@@ -553,7 +553,7 @@ tracing-subscriber.workspace = true
 # feature.)
 
 # --- TLS ---
-# rustls: the PROXY protocol integration test (`tests/proxy_protocol.rs`) drives a TLS client directly.
+# rustls: the integration tests `tests/proxy_protocol.rs` and `tests/tcp_tls.rs` drive a TLS client directly.
 rustls.workspace = true
 
 # --- Utilities ---
@@ -1084,6 +1084,10 @@ required-features = ["upload"]
 
 [[test]]
 name = "tcp_proxy"
+required-features = ["tcp"]
+
+[[test]]
+name = "tcp_tls"
 required-features = ["tcp"]
 
 # ── Tests that proxy real traffic (issue #144) ───────────────────────────────

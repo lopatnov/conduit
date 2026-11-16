@@ -2,64 +2,9 @@ mod common;
 
 use std::io::Write;
 
-use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    Issuer, KeyPair, KeyUsagePurpose,
-};
+use common::{new_ca, new_client_cert, write_ca_pem};
 use serial_test::serial;
 use tempfile::TempDir;
-
-// ── Helpers: build a CA + client cert chain with rcgen ─────────────────────────
-//
-// Mirrors tests/tls.rs's `make_self_signed_cert` for the server side, and adds
-// the CA-signing pattern from rcgen's own `examples/sign-leaf-with-ca.rs` for
-// the client side, since mTLS needs a CA to hand to `tls.clientAuth.ca` plus a
-// client cert/key that CA actually signed.
-
-/// Self-signed CA cert + its `Issuer` handle (used to sign client certs).
-fn new_ca() -> (Certificate, Issuer<'static, KeyPair>) {
-    let mut params =
-        CertificateParams::new(Vec::default()).expect("empty SAN can't produce an error");
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "conduit test CA");
-    params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-    params.key_usages.push(KeyUsagePurpose::CrlSign);
-
-    let key_pair = KeyPair::generate().expect("CA keypair");
-    let cert = params.clone().self_signed(&key_pair).expect("self-sign CA");
-    (cert, Issuer::new(params, key_pair))
-}
-
-/// A client leaf cert signed by `issuer`, with the `ClientAuth` EKU mTLS needs.
-fn new_client_cert(issuer: &Issuer<'static, KeyPair>) -> (Certificate, KeyPair) {
-    let mut params =
-        CertificateParams::new(Vec::default()).expect("empty SAN can't produce an error");
-    params
-        .distinguished_name
-        .push(DnType::CommonName, "conduit test client");
-    params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-    params
-        .extended_key_usages
-        .push(ExtendedKeyUsagePurpose::ClientAuth);
-
-    let key_pair = KeyPair::generate().expect("client keypair");
-    let cert = params
-        .signed_by(&key_pair, issuer)
-        .expect("sign client cert");
-    (cert, key_pair)
-}
-
-/// Writes a CA cert to a temp dir, returning (tempdir, ca_cert_path).
-fn write_ca_pem(dir: &TempDir, ca_cert: &Certificate) -> String {
-    let path = dir.path().join("ca.pem");
-    std::fs::File::create(&path)
-        .expect("create ca.pem")
-        .write_all(ca_cert.pem().as_bytes())
-        .expect("write ca.pem");
-    path.to_string_lossy().into_owned()
-}
 
 /// A self-signed server cert for `localhost`/127.0.0.1 (same as tests/tls.rs).
 fn make_server_cert(dir: &TempDir) -> (String, String) {

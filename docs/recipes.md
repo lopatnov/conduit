@@ -606,7 +606,9 @@ sites:
 ```
 
 > TCP sites are separate from HTTP sites — they cannot share a port. Health
-> checks and TLS termination are not available in TCP mode.
+> checks are not available in TCP mode. TLS passes through untouched unless the site has
+> its own `tls: { cert, key }` block, which makes Conduit terminate it
+> ([TLS on a TCP site](protocols.md#tls-on-a-tcp-site)).
 
 ---
 

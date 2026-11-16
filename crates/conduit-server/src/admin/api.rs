@@ -9,7 +9,9 @@ use pingora_core::server::ShutdownWatch;
 use pingora_core::services::background::BackgroundService;
 use serde_json::{json, Value};
 
-use super::cold_keys::{acme_by_host, proxy_protocol_by_port, tcp_by_port};
+use super::cold_keys::{
+    acme_by_host, https_client_auth_by_port, proxy_protocol_by_port, tcp_by_port, tcp_tls_by_port,
+};
 use crate::config;
 use crate::config::schema::LoggingConfig;
 use crate::config::validate;
@@ -376,8 +378,8 @@ fn bound_listeners(
 /// require a server restart (cold fields).
 ///
 /// Cold fields: `global.workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`, `global.redis.url`,
-/// the set of bound listener ports, each port's `tls.cert`/`tls.key`, every field of a site's `tls.acme`, and the `tcp`
-/// block of every TCP site (the TCP services are registered once, at start).
+/// the set of bound listener ports, each port's `tls.cert`/`tls.key`/`tls.clientAuth`, every field of a site's `tls.acme`, the `tcp`
+/// block and the `tls` block of every TCP site (the TCP services are registered once, at start).
 pub(crate) fn detect_cold_changes(
     old: &crate::config::schema::AppConfig,
     new: &crate::config::schema::AppConfig,
@@ -448,6 +450,18 @@ pub(crate) fn detect_cold_changes_in(
         }
     }
 
+    // `tls.clientAuth` of an HTTP listener is loaded into it when it is built: a reload that adds, drops or changes the rule
+    // would otherwise keep the old one (a client certificate still required, or still not) without a word.
+    let old_ca = https_client_auth_by_port(old);
+    let new_ca = https_client_auth_by_port(new);
+    for (port, old_rule) in &old_ca {
+        if let Some(new_rule) = new_ca.get(port) {
+            if old_rule != new_rule {
+                cold.push(format!("listeners[{port}].tls.clientAuth"));
+            }
+        }
+    }
+
     // TCP sites: the services are registered once, at start, with their `tcp` block, so adding, removing or changing
     // one (its targets, limits or timeouts) would silently keep the old behaviour until a restart (issue #757).
     let old_t = tcp_by_port(old);
@@ -459,6 +473,19 @@ pub(crate) fn detect_cold_changes_in(
     {
         if old_t.get(port) != new_t.get(port) {
             cold.push(format!("sites[port {port}].tcp"));
+        }
+    }
+
+    // `tls` of a TCP site: the certificate, the key and `clientAuth` are loaded when its listener is built (issue #757).
+    let old_tt = tcp_tls_by_port(old);
+    let new_tt = tcp_tls_by_port(new);
+    for port in old_tt
+        .keys()
+        .chain(new_tt.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        if old_tt.get(port) != new_tt.get(port) {
+            cold.push(format!("sites[port {port}].tls"));
         }
     }
 
@@ -612,6 +639,40 @@ mod tests {
     }
 
     #[test]
+    fn the_tls_of_a_tcp_site_is_cold() {
+        let site = |tls: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"port":993,"tcp":{{"targets":["mail:143"]}}{tls}}},{{"port":8080}}]}}"#
+            ))
+        };
+        let tls =
+            |cert: &str, extra: &str| format!(r#","tls":{{"cert":"{cert}","key":"k.pem"{extra}}}"#);
+        assert!(
+            detect_cold_changes_in(&site(&tls("a.pem", "")), &site(&tls("a.pem", "")), None)
+                .is_empty()
+        );
+        let one = vec!["sites[port 993].tls".to_string()];
+        for (old, new) in [
+            (site(""), site(&tls("a.pem", ""))),                // TLS added
+            (site(&tls("a.pem", "")), site("")),                // TLS removed
+            (site(&tls("a.pem", "")), site(&tls("b.pem", ""))), // another certificate
+            (
+                site(&tls("a.pem", "")),
+                site(&tls("a.pem", r#","clientAuth":{"ca":"ca.pem"}"#)), // a client certificate now required
+            ),
+            (
+                site(&tls("a.pem", r#","clientAuth":{"ca":"ca.pem"}"#)),
+                site(&tls(
+                    "a.pem",
+                    r#","clientAuth":{"ca":"ca.pem","optional":true}"#,
+                )),
+            ),
+        ] {
+            assert_eq!(detect_cold_changes_in(&old, &new, None), one);
+        }
+    }
+
+    #[test]
     fn a_proxy_protocol_change_is_cold() {
         let site = |extra: &str| {
             cfg(&format!(
@@ -687,6 +748,61 @@ mod tests {
             cold.iter().any(|f| f.contains("tls.cert")),
             "cert change must be cold: {cold:?}"
         );
+    }
+
+    #[test]
+    fn the_client_auth_of_an_https_listener_is_cold() {
+        let site = |auth: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"port":443,"tls":{{"cert":"c.pem","key":"k.pem"{auth}}}}},{{"port":443,"host":"b.test"}}]}}"#
+            ))
+        };
+        let ca = |name: &str, optional: bool| {
+            format!(r#","clientAuth":{{"ca":"{name}","optional":{optional}}}"#)
+        };
+        assert!(detect_cold_changes_in(
+            &site(&ca("a.pem", false)),
+            &site(&ca("a.pem", false)),
+            None
+        )
+        .is_empty());
+        let one = vec!["listeners[443].tls.clientAuth".to_string()];
+        for (old, new) in [
+            (site(""), site(&ca("a.pem", false))), // a client certificate becomes required
+            (site(&ca("a.pem", false)), site("")), // and the other way
+            (site(&ca("a.pem", false)), site(&ca("b.pem", false))), // another CA
+            (site(&ca("a.pem", false)), site(&ca("a.pem", true))), // optional now
+        ] {
+            assert_eq!(detect_cold_changes_in(&old, &new, None), one);
+        }
+    }
+
+    #[test]
+    fn the_client_auth_of_an_acme_https_listener_is_cold_too() {
+        // an ACME site decides the listener's rule as well, and a manual site behind it may take over when ACME fails
+        let acme = |auth: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"port":443,"host":"a.example.com","tls":{{"acme":{{"email":"a@example.com","directory":"d","storage":"s"}}{auth}}}}},{{"port":443,"host":"b.test","tls":{{"cert":"c.pem","key":"k.pem"}}}}]}}"#
+            ))
+        };
+        let ca = r#","clientAuth":{"ca":"a.pem"}"#;
+        assert!(detect_cold_changes_in(&acme(ca), &acme(ca), None).is_empty());
+        let one = vec!["listeners[443].tls.clientAuth".to_string()];
+        assert_eq!(detect_cold_changes_in(&acme(""), &acme(ca), None), one);
+        assert_eq!(detect_cold_changes_in(&acme(ca), &acme(""), None), one);
+    }
+
+    #[test]
+    fn a_second_https_host_with_its_own_certificate_is_a_hot_reload() {
+        // only the first site with a certificate decides the listener's client-certificate rule
+        let one = cfg(
+            r#"{"sites":[{"port":443,"host":"a.test","tls":{"cert":"a.pem","key":"a.key","clientAuth":{"ca":"ca.pem"}}}]}"#,
+        );
+        let two = cfg(
+            r#"{"sites":[{"port":443,"host":"a.test","tls":{"cert":"a.pem","key":"a.key","clientAuth":{"ca":"ca.pem"}}},{"port":443,"host":"b.test","tls":{"cert":"b.pem","key":"b.key"}}]}"#,
+        );
+        assert!(detect_cold_changes_in(&one, &two, None).is_empty());
+        assert!(detect_cold_changes_in(&two, &one, None).is_empty());
     }
 
     fn acme_site(email: &str, directory: &str, storage: &str) -> crate::config::schema::AppConfig {

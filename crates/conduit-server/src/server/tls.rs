@@ -36,6 +36,31 @@ pub fn make_tls_settings(
 ) -> anyhow::Result<TlsSettings> {
     let mut settings = TlsSettings::intermediate(cert_path, key_path)
         .map_err(|e| anyhow::anyhow!("failed to load TLS certificate from {cert_path}: {e}"))?;
+    // `intermediate` only stores the paths and Pingora reads the files later, in `build()`, which panics on a missing or
+    // unparseable one. The setters read and check them now, so the error names the file and stops the start cleanly.
+    settings
+        .set_certificate_chain_file(cert_path)
+        .map_err(|e| anyhow::anyhow!("failed to load TLS certificate from {cert_path}: {e}"))?;
+    settings
+        .set_private_key_file(key_path)
+        .map_err(|e| anyhow::anyhow!("failed to load TLS private key from {key_path}: {e}"))?;
+    // Each file is valid on its own at this point, but `build()` also unwraps rustls's check that the key belongs to the
+    // certificate: a valid certificate with another valid key would still panic there. The admin API's check runs the same
+    // rustls call, so a mismatched pair is refused here, naming both files.
+    // The files are read as bytes and converted lossily, like Pingora's loader reads them: text outside the BEGIN/END
+    // blocks (a Latin-1 comment, `openssl x509 -text` output) is ignored by the PEM parser and must not make a file that
+    // starts today fail on UTF-8 here.
+    let cert_pem = std::fs::read(cert_path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .map_err(|e| anyhow::anyhow!("failed to read TLS certificate {cert_path}: {e}"))?;
+    let key_pem = std::fs::read(key_path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .map_err(|e| anyhow::anyhow!("failed to read TLS private key {key_path}: {e}"))?;
+    validate_cert_key_pem(&cert_pem, &key_pem).map_err(|e| {
+        anyhow::anyhow!(
+            "TLS certificate {cert_path} and private key {key_path} cannot be used together: {e}"
+        )
+    })?;
 
     if enable_h2 {
         settings.enable_h2();
@@ -121,6 +146,46 @@ mod tests {
             .self_signed(&key_pair)
             .expect("self-signed cert");
         (cert.pem(), key_pair.serialize_pem())
+    }
+
+    /// Pingora's `TlsSettings::intermediate` only stores the paths and reads the files in `build()`, which panics: the
+    /// settings must read them, so a missing or non-PEM file is an error that names the file.
+    #[test]
+    fn make_tls_settings_reports_a_missing_or_unreadable_file() {
+        use super::make_tls_settings;
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = generate_self_signed();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+        std::fs::write(path("cert.pem"), cert).unwrap();
+        std::fs::write(path("key.pem"), key).unwrap();
+        std::fs::write(path("junk.pem"), "this is not PEM").unwrap();
+        // A valid certificate with the valid key of another pair: each file is fine alone, the pair is not.
+        std::fs::write(path("other-key.pem"), generate_self_signed().1).unwrap();
+        assert!(make_tls_settings(&path("cert.pem"), &path("key.pem"), false).is_ok());
+
+        // Bytes outside the PEM blocks are ignored by the parsers, even when they are not UTF-8 (a Latin-1 comment): such
+        // a file starts today and must keep starting.
+        let mut with_comment = b"# issued by caf\xe9 CA\n".to_vec();
+        with_comment.extend(std::fs::read(path("cert.pem")).unwrap());
+        std::fs::write(path("commented-cert.pem"), with_comment).unwrap();
+        assert!(
+            make_tls_settings(&path("commented-cert.pem"), &path("key.pem"), false).is_ok(),
+            "a non-UTF-8 comment outside the PEM block must not stop the start"
+        );
+
+        for (cert_file, key_file, named) in [
+            ("missing-cert.pem", "key.pem", "missing-cert.pem"),
+            ("cert.pem", "missing-key.pem", "missing-key.pem"),
+            ("junk.pem", "key.pem", "junk.pem"),
+            ("cert.pem", "junk.pem", "junk.pem"),
+            ("cert.pem", "other-key.pem", "other-key.pem"),
+        ] {
+            let err = make_tls_settings(&path(cert_file), &path(key_file), false)
+                .err()
+                .unwrap_or_else(|| panic!("{cert_file} + {key_file} must be refused"))
+                .to_string();
+            assert!(err.contains(named), "the error must name {named}: {err}");
+        }
     }
 
     #[test]
