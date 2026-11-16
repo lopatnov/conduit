@@ -91,6 +91,7 @@ pub(crate) fn find_redis_rate_limit_store_in(
 }
 
 /// The operator's Redis address for `config`: `global.redis.url` when set, else `CONDUIT_REDIS_URL` (issue #760).
+#[cfg(feature = "redis")]
 pub(crate) fn operator_redis_address(config: &AppConfig) -> Option<String> {
     operator_redis_address_in(
         config,
