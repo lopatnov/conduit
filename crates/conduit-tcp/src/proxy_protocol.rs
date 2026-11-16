@@ -188,15 +188,14 @@ fn parse_v2(buf: &[u8], max: usize) -> Result<Parsed, Error> {
         });
     }
     // PROXY. Over a TCP listener only a stream (or unspecified) transport makes sense; a datagram header is a mistake.
-    if protocol > 1 && !(family == 0 && protocol == 0) {
+    if protocol > 1 {
         return Err(Error::Invalid(
             "v2 header is for a transport other than a stream",
         ));
     }
     let (addresses, rest) = match family {
-        // UNSPEC and UNIX (a socket path, not an IP): no address Conduit can use.
-        0 | 3 => {
-            check_tlvs(body)?;
+        // UNSPEC: the receiver ignores whatever the block holds and uses the address of the socket.
+        0 => {
             return Ok(Parsed {
                 header: Header::Local,
                 len: total,
@@ -204,6 +203,15 @@ fn parse_v2(buf: &[u8], max: usize) -> Result<Parsed, Error> {
         }
         1 => split_block(body, 12)?,
         2 => split_block(body, 36)?,
+        // UNIX (two 108-byte socket paths): not an IP address Conduit can use, but the TLVs after them are still checked.
+        3 => {
+            let (_, tlvs) = split_block(body, 216)?;
+            check_tlvs(tlvs)?;
+            return Ok(Parsed {
+                header: Header::Local,
+                len: total,
+            });
+        }
         _ => return Err(Error::Invalid("v2 header has an unknown address family")),
     };
     check_tlvs(rest)?;

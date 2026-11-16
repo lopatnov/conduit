@@ -4247,6 +4247,8 @@ Limits of this version:
 - A connection refused on an HTTPS port is logged by the server as `Downstream handshake error from <address>:
   ProxyProtocol context: <reason>`, one line per connection at `error` level; on a `tcp` site the refusals are one `warn`
   line per port every 10 seconds, with their count.
+- The `tls.httpRedirectPort` listener of a site is a plain-HTTP port and does not read the header either: a load balancer that
+  sends the header to every port needs that port left out, or its redirect done by the load balancer.
 - Writing a header to an HTTP upstream is not supported (only `tcp.sendProxyProtocol`).
 - `proxyProtocol` is read at start: a reload that adds, removes or changes one is refused as a cold change (restart to apply).
 - `0.0.0.0/0` (or `::/0`) in `trustedSources` is a warning: it trusts every client, and any of them can name any address
