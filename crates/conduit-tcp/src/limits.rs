@@ -108,9 +108,9 @@ impl Limits {
     /// Count a refusal; `Some(n)` when it is time to log (`n` refusals since the last logged one).
     pub fn note_refusal(&self) -> Option<u64> {
         self.refused.fetch_add(1, Ordering::Relaxed);
-        let now = self.epoch.elapsed().as_millis() as u64 + 1;
+        let now = crate::relay::millis(self.epoch.elapsed()).saturating_add(1);
         let last = self.last_logged_ms.load(Ordering::Relaxed);
-        let due = last == 0 || now.saturating_sub(last) >= self.log_interval.as_millis() as u64;
+        let due = last == 0 || now.saturating_sub(last) >= crate::relay::millis(self.log_interval);
         if due
             && self
                 .last_logged_ms

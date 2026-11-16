@@ -595,6 +595,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_tcp_site_change_is_cold() {
+        let site = |extra: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"port":3306,"tcp":{{"targets":["db:3306"]{extra}}}}},{{"port":8080}}]}}"#
+            ))
+        };
+        let plain = cfg(r#"{"sites":[{"port":8080}]}"#);
+        // identical: nothing
+        assert!(detect_cold_changes_in(&site(""), &site(""), None).is_empty());
+        let one = vec!["sites[port 3306].tcp".to_string()];
+        // a field of the block changed (a cap, a timeout, a target), added, or removed
+        for (old, new) in [
+            (site(""), site(r#","maxConnections":10"#)),
+            (
+                site(r#","maxConnections":10"#),
+                site(r#","maxConnections":20"#),
+            ),
+            (site(""), site(r#","idleTimeoutSecs":60"#)),
+            (plain.clone(), site("")),
+            (site(""), plain),
+        ] {
+            assert_eq!(detect_cold_changes_in(&old, &new, None), one);
+        }
+    }
+
     // the environment is part of the address: the same file with a different environment value is not a change of
     // the file, and a file address wins over the environment
     #[test]

@@ -278,7 +278,7 @@ fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) -> Vec<u
             continue;
         }
         let port = site.port.unwrap_or(80);
-        let proxy = conduit_tcp::proxy::TcpProxy::new(tcp_cfg);
+        let proxy = conduit_tcp::proxy::TcpProxy::new(tcp_cfg).with_port(port);
         let mut tcp_svc = ListeningService::new(format!("Conduit TCP Proxy :{port}"), proxy);
         tcp_svc.add_tcp(&format!("0.0.0.0:{port}"));
         server.add_service(tcp_svc);

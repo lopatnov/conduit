@@ -80,13 +80,18 @@ where
     }
 }
 
+/// Milliseconds of a duration, saturating: a huge `idleTimeoutSecs` must not wrap to a tiny timeout.
+pub(crate) fn millis(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
 fn elapsed_ms(epoch: Instant) -> u64 {
-    epoch.elapsed().as_millis() as u64
+    millis(epoch.elapsed())
 }
 
 /// Completes once `idle` has passed since the last activity.
 async fn watchdog(last: &AtomicU64, epoch: Instant, idle: Duration) {
-    let idle_ms = idle.as_millis() as u64;
+    let idle_ms = millis(idle);
     loop {
         let quiet_since = last.load(Ordering::Relaxed);
         let deadline = quiet_since.saturating_add(idle_ms);
@@ -100,6 +105,14 @@ async fn watchdog(last: &AtomicU64, epoch: Instant, idle: Duration) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_huge_duration_saturates_instead_of_wrapping() {
+        // 18446744073709552 s is 2^64 + 384 ms: a plain `as u64` would give 384 ms
+        let huge = std::time::Duration::from_secs(18_446_744_073_709_552);
+        assert_eq!(millis(huge), u64::MAX);
+        assert_eq!(millis(std::time::Duration::from_millis(1500)), 1500);
+    }
+
     use super::*;
     use tokio::io::duplex;
 

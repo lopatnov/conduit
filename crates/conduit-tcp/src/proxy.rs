@@ -70,6 +70,8 @@ pub struct TcpProxy {
     limits: Arc<Limits>,
     /// Quiet time after which a connection is closed (`None` = never).
     idle_timeout: Option<Duration>,
+    /// Names the site in log lines (its port); 0 until [`TcpProxy::with_port`].
+    port: u16,
 }
 
 impl TcpProxy {
@@ -92,12 +94,19 @@ impl TcpProxy {
                 0 => None,
                 secs => Some(Duration::from_secs(secs)),
             },
+            port: 0,
         }
+    }
+
+    /// The port the site listens on, named in the log line about refused connections.
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
     }
 
     fn now_ms(&self) -> u64 {
         // +1 so that a mark made at the very first millisecond is not the "not down" value 0.
-        self.epoch.elapsed().as_millis() as u64 + 1
+        crate::relay::millis(self.epoch.elapsed()).saturating_add(1)
     }
 
     fn is_down(&self, idx: usize) -> bool {
@@ -105,7 +114,7 @@ impl TcpProxy {
     }
 
     fn mark_down(&self, idx: usize) {
-        let until = self.now_ms() + DOWN_FOR.as_millis() as u64;
+        let until = self.now_ms().saturating_add(crate::relay::millis(DOWN_FOR));
         self.down_until_ms[idx].store(until, Ordering::Relaxed);
     }
 
@@ -190,6 +199,7 @@ impl ServerApp for TcpProxy {
             Err(refusal) => {
                 if let Some(n) = self.limits.note_refusal() {
                     tracing::warn!(
+                        port = self.port,
                         refusal = match refusal {
                             Refusal::SiteFull => "maxConnections",
                             Refusal::ClientFull => "maxConnectionsPerIp",
