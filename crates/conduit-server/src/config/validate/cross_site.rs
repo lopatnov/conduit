@@ -157,6 +157,35 @@ pub(super) fn validate_no_duplicate_host_port(
     }
 }
 
+/// Sites that share a port share its listener, and the PROXY protocol is read before the site is known (before the TLS
+/// handshake names a host), so they must agree on it: one with `proxyProtocol` and one without, or two different
+/// blocks, could not both be honoured (issue #757).
+pub(super) fn validate_proxy_protocol_per_port(
+    config: &AppConfig,
+    errors: &mut Vec<ValidationError>,
+) {
+    let mut first: HashMap<u16, usize> = HashMap::new();
+    for (i, site) in config.sites.iter().enumerate() {
+        if site.tcp.is_some() {
+            continue; // a tcp port is exclusive to its site (checked above)
+        }
+        let port = effective_port(site);
+        let Some(&j) = first.get(&port) else {
+            first.insert(port, i);
+            continue;
+        };
+        if config.sites[j].proxy_protocol != site.proxy_protocol {
+            errors.push(ValidationError::new(
+                format!("sites[{i}].proxyProtocol"),
+                format!(
+                    "sites[{i}] and sites[{j}] share port {port}, so they must have the same proxyProtocol: it is read \
+                     before the TLS handshake, when the site is not known yet"
+                ),
+            ));
+        }
+    }
+}
+
 /// Where the Admin API listens: the host and port of `global.admin.bind` when it parses, else the
 /// documented default ([`DEFAULT_ADMIN_BIND`]). A forwardAuth URL must not point at it (#447, #470).
 pub(super) fn admin_endpoint(config: &AppConfig) -> AdminEndpoint {

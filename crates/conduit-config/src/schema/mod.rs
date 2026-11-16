@@ -44,8 +44,8 @@ pub use limits::{IpFilterConfig, LimitsConfig};
 pub use logging::{LogFormat, LoggingConfig, LoggingOptions};
 pub use middleware::{FaultAbort, FaultDelay, FaultInjectionConfig, MiddlewareEntry};
 pub use proxy::{
-    CacheConfig, ConnectionPoolConfig, ProxyConfig, ProxyRouteConfig, ProxyRouteTarget,
-    ProxyTimeout, RetryConfig, RewriteRule, StickyConfig, TcpConfig,
+    CacheConfig, ConnectionPoolConfig, ProxyConfig, ProxyProtocolConfig, ProxyRouteConfig,
+    ProxyRouteTarget, ProxyTimeout, RetryConfig, RewriteRule, StickyConfig, TcpConfig,
 };
 pub use routing::{MatchConfig, RedirectRule, RouteConfig};
 pub use site::SiteConfig;

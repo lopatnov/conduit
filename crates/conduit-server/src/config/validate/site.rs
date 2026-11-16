@@ -14,7 +14,7 @@ use conduit_proxy_http::validate::{validate_proxy, validate_route_config};
 use conduit_ratelimit::validate::validate_rate_limit;
 use conduit_redirects::validate::validate_redirect_rules;
 use conduit_static::validate::validate_fallback;
-use conduit_tcp::validate::validate_tcp;
+use conduit_tcp::validate::{validate_proxy_protocol, validate_tcp};
 use conduit_upload::validate::validate_upload;
 
 use super::auth::validate_api_key;
@@ -44,6 +44,18 @@ fn validate_site_transport(site: &SiteConfig, prefix: &str, errors: &mut Vec<Val
     }
     if let Some(tcp) = &site.tcp {
         validate_tcp_site(tcp, site, prefix, errors);
+    }
+    if let Some(pp) = &site.proxy_protocol {
+        validate_proxy_protocol(pp, prefix, errors);
+        // The header is read before the TLS handshake (HTTPS) or before the relay (tcp). A plain-HTTP listener has no
+        // such hook yet, and a key that is silently ignored would leave the operator believing the client address is
+        // the real one, so it is refused (issue #757).
+        if site.tcp.is_none() && site.tls.is_none() {
+            errors.push(ValidationError::new(
+                format!("{prefix}.proxyProtocol"),
+                "proxyProtocol needs tls or tcp on the same site: plain HTTP ports do not read the PROXY protocol yet",
+            ));
+        }
     }
 }
 

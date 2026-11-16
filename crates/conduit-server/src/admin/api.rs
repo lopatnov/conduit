@@ -461,6 +461,21 @@ pub(crate) fn detect_cold_changes_in(
         }
     }
 
+    // `proxyProtocol`: the pre-handshake hook of the HTTPS listeners and the accept side of the tcp services are built at
+    // start, so a new list of trusted sources would keep the old one (and a removed block would keep requiring the
+    // header) until a restart (issue #757).
+    let old_p = proxy_protocol_by_port(old);
+    let new_p = proxy_protocol_by_port(new);
+    for port in old_p
+        .keys()
+        .chain(new_p.keys())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        if old_p.get(port) != new_p.get(port) {
+            cold.push(format!("sites[port {port}].proxyProtocol"));
+        }
+    }
+
     // `tls.acme`: every field is read when the certificate is ordered at start-up and by the renewal loop, which
     // a reload does not restart (issue #555). A change here would silently keep the old account, directory,
     // storage directory or contact. Sites are matched by `host`, the name the certificate is ordered for.
@@ -501,6 +516,23 @@ fn tcp_by_port(
     for site in &cfg.sites {
         if let Some(tcp) = site.tcp.as_ref() {
             out.entry(site.port.unwrap_or(80)).or_insert(tcp);
+        }
+    }
+    out
+}
+
+/// The `proxyProtocol` block of every site that has one, by the port it listens on (the first site wins for a repeated
+/// port; validation requires sites that share a port to agree).
+fn proxy_protocol_by_port(
+    cfg: &crate::config::schema::AppConfig,
+) -> std::collections::BTreeMap<u16, &crate::config::schema::ProxyProtocolConfig> {
+    let mut out = std::collections::BTreeMap::new();
+    for site in &cfg.sites {
+        if let Some(pp) = site.proxy_protocol.as_ref() {
+            let port = site
+                .port
+                .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
+            out.entry(port).or_insert(pp);
         }
     }
     out
@@ -619,6 +651,36 @@ mod tests {
         ] {
             assert_eq!(detect_cold_changes_in(&old, &new, None), one);
         }
+    }
+
+    #[test]
+    fn a_proxy_protocol_change_is_cold() {
+        let site = |extra: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"port":3306,"tcp":{{"targets":["db:3306"]}}{extra}}},{{"port":8080}}]}}"#
+            ))
+        };
+        let pp = |src: &str| format!(r#","proxyProtocol":{{"trustedSources":["{src}"]}}"#);
+        assert!(
+            detect_cold_changes_in(&site(&pp("10.0.0.0/8")), &site(&pp("10.0.0.0/8")), None)
+                .is_empty()
+        );
+        let one = vec!["sites[port 3306].proxyProtocol".to_string()];
+        for (old, new) in [
+            (site(""), site(&pp("10.0.0.0/8"))),
+            (site(&pp("10.0.0.0/8")), site(&pp("192.0.2.1"))),
+            (site(&pp("10.0.0.0/8")), site("")),
+        ] {
+            assert_eq!(detect_cold_changes_in(&old, &new, None), one);
+        }
+        // an HTTPS port counts too, under its own default port
+        let https = |extra: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"tls":{{"cert":"c.pem","key":"k.pem"}}{extra}}}]}}"#
+            ))
+        };
+        let cold = detect_cold_changes_in(&https(""), &https(&pp("10.0.0.0/8")), None);
+        assert_eq!(cold, vec!["sites[port 443].proxyProtocol".to_string()]);
     }
 
     // the environment is part of the address: the same file with a different environment value is not a change of

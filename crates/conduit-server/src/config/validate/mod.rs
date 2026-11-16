@@ -13,6 +13,7 @@ mod warnings;
 use self::cross_site::check_redis_store_consistency;
 use self::cross_site::{
     admin_endpoint, validate_global, validate_http_redirect_ports, validate_no_duplicate_host_port,
+    validate_proxy_protocol_per_port,
 };
 use self::proxy_loop::check_proxy_loop_warnings;
 use self::redis_operator::{check_redis_legacy_warnings, check_redis_operator};
@@ -38,6 +39,7 @@ pub fn validate(config: &AppConfig) -> Vec<ValidationError> {
     let mut errors = Vec::new();
 
     validate_no_duplicate_host_port(config, &mut errors);
+    validate_proxy_protocol_per_port(config, &mut errors);
     validate_http_redirect_ports(config, &mut errors);
     validate_global(config, &mut errors);
     check_redis_operator(config, &mut errors);

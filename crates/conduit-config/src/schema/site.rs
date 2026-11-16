@@ -10,9 +10,9 @@ use super::{
     ApiKeyConfig, BasicAuthConfig, CompressionConfig, ConsumersConfig, CorsConfig, FallbackConfig,
     FaultInjectionConfig, ForwardAuthConfig, HeaderTransformConfig, HealthCheckConfig,
     HotReloadConfig, Http2Config, IpFilterConfig, JwtAuthConfig, LimitsConfig, LoggingConfig,
-    MetricsConfig, MiddlewareEntry, OutlierDetectionConfig, ProxyConfig, RateLimitConfig,
-    RedirectRule, ResponseTimeConfig, RouteConfig, SecurityHeadersConfig, StaticConfig,
-    StaticOptions, TcpConfig, TlsConfig, UploadConfig,
+    MetricsConfig, MiddlewareEntry, OutlierDetectionConfig, ProxyConfig, ProxyProtocolConfig,
+    RateLimitConfig, RedirectRule, ResponseTimeConfig, RouteConfig, SecurityHeadersConfig,
+    StaticConfig, StaticOptions, TcpConfig, TlsConfig, UploadConfig,
 };
 
 // ── Site config ────────────────────────────────────────────────────────────
@@ -107,6 +107,19 @@ pub struct SiteConfig {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tcp: Option<TcpConfig>,
+    /// Accept the PROXY protocol (v1 and v2) on this site's port: the load balancer in front of Conduit sends the
+    /// real client address and Conduit uses it for `ipFilter`, rate limits, connection caps, logs and
+    /// `X-Forwarded-For`. Needs `tls` or `tcp` on the site (see [`ProxyProtocolConfig`]).
+    ///
+    /// ```yaml
+    /// sites:
+    ///   - port: 443
+    ///     tls: { cert: cert.pem, key: key.pem }
+    ///     proxyProtocol:
+    ///       trustedSources: ["10.0.0.0/8"]
+    /// ```
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_protocol: Option<ProxyProtocolConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upload: Option<UploadConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]

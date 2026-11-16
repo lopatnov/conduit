@@ -33,4 +33,4 @@ pub mod relay;
 pub mod validate;
 pub mod warnings;
 
-pub use config::TcpConfig;
+pub use config::{ProxyProtocolConfig, TcpConfig};

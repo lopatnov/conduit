@@ -64,4 +64,4 @@ pub use conduit_proxy_http::config::RetryConfig;
 /// Extracted into `crates/conduit-tcp` (issue #114/#131) — this is a facade
 /// re-export so `crate::config::schema::TcpConfig` keeps resolving to the
 /// same type at the same location for every existing call site/test.
-pub use conduit_tcp::TcpConfig;
+pub use conduit_tcp::{ProxyProtocolConfig, TcpConfig};

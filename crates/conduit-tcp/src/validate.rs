@@ -2,7 +2,7 @@
 
 use conduit_config_core::validation::ValidationError;
 
-use crate::config::TcpConfig;
+use crate::config::{ProxyProtocolConfig, TcpConfig};
 
 /// Validate the `targets` of a TCP proxy site (`tcp: { targets: [..] }`).
 ///
@@ -67,6 +67,57 @@ pub fn validate_tcp(tcp: &TcpConfig, prefix: &str, errors: &mut Vec<ValidationEr
                     ),
                 ));
             }
+        }
+    }
+}
+
+/// Validate `sites[].proxyProtocol` (`prefix` is the site's path, e.g. `sites[0]`).
+pub fn validate_proxy_protocol(
+    pp: &ProxyProtocolConfig,
+    prefix: &str,
+    errors: &mut Vec<ValidationError>,
+) {
+    let path = format!("{prefix}.proxyProtocol");
+    if pp.trusted_sources.is_empty() {
+        errors.push(ValidationError::new(
+            format!("{path}.trustedSources"),
+            "at least one trusted source is required: the header is believed only from a listed address (use \
+             \"0.0.0.0/0\" to trust every client, which lets any of them claim any address)",
+        ));
+    }
+    for (i, rule) in pp.trusted_sources.iter().enumerate() {
+        if !conduit_config_core::cidr::is_valid_ip_or_cidr(rule) {
+            errors.push(ValidationError::new(
+                format!("{path}.trustedSources[{i}]"),
+                format!("\"{rule}\" is not an IP address or a CIDR block (e.g. \"10.0.0.0/8\")"),
+            ));
+        } else if rule.ends_with("/0") {
+            errors.push(ValidationError::warning(
+                format!("{path}.trustedSources[{i}]"),
+                format!(
+                    "\"{rule}\" trusts every address, so any client can send a header that names any address \
+                     as its own and slip past ipFilter and rate limits: list the load balancers instead"
+                ),
+            ));
+        }
+    }
+    if pp.timeout_ms == Some(0) {
+        errors.push(ValidationError::new(
+            format!("{path}.timeoutMs"),
+            "timeoutMs must be at least 1 (omit it for the default)",
+        ));
+    }
+    if let Some(n) = pp.max_header_bytes {
+        let range = ProxyProtocolConfig::MIN_HEADER_BYTES..=ProxyProtocolConfig::MAX_HEADER_BYTES;
+        if !range.contains(&n) {
+            errors.push(ValidationError::new(
+                format!("{path}.maxHeaderBytes"),
+                format!(
+                    "maxHeaderBytes must be between {} and {} (the longest v1 header and the longest v2 header)",
+                    range.start(),
+                    range.end()
+                ),
+            ));
         }
     }
 }
@@ -136,5 +187,71 @@ mod tests {
             assert!(errors[0].message.contains("plain host:port"), "{target}");
         }
         assert!(errors_for(&["db:5432"]).is_empty());
+    }
+
+    fn pp(sources: &[&str], timeout: Option<u64>, max: Option<usize>) -> Vec<ValidationError> {
+        let cfg = ProxyProtocolConfig {
+            trusted_sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+            timeout_ms: timeout,
+            max_header_bytes: max,
+        };
+        let mut errors = Vec::new();
+        validate_proxy_protocol(&cfg, "sites[2]", &mut errors);
+        errors
+    }
+
+    #[test]
+    fn proxy_protocol_needs_trusted_sources_that_parse() {
+        use conduit_config_core::validation::Severity;
+        assert!(pp(&["10.0.0.0/8", "2001:db8::1", "192.0.2.7"], None, None).is_empty());
+        let e = pp(&[], None, None);
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].path, "sites[2].proxyProtocol.trustedSources");
+        assert_eq!(e[0].severity, Severity::Error);
+        let e = pp(&["10.0.0.0/8", "lb.example.com", "10.0.0.0/33"], None, None);
+        assert_eq!(e.len(), 2, "{e:?}");
+        assert_eq!(e[0].path, "sites[2].proxyProtocol.trustedSources[1]");
+        assert_eq!(e[1].path, "sites[2].proxyProtocol.trustedSources[2]");
+    }
+
+    #[test]
+    fn trusting_everyone_is_a_warning() {
+        use conduit_config_core::validation::Severity;
+        for rule in ["0.0.0.0/0", "::/0"] {
+            let e = pp(&[rule], None, None);
+            assert_eq!(e.len(), 1, "{e:?}");
+            assert_eq!(e[0].severity, Severity::Warning);
+            assert!(e[0].message.contains("any client"), "{}", e[0].message);
+        }
+    }
+
+    #[test]
+    fn proxy_protocol_bounds() {
+        assert!(pp(&["10.0.0.1"], Some(1), Some(107)).is_empty());
+        assert!(pp(&["10.0.0.1"], None, Some(65551)).is_empty());
+        assert_eq!(
+            pp(&["10.0.0.1"], Some(0), None)[0].path,
+            "sites[2].proxyProtocol.timeoutMs"
+        );
+        for bad in [0, 106, 65552] {
+            let e = pp(&["10.0.0.1"], None, Some(bad));
+            assert_eq!(e.len(), 1, "{bad}: {e:?}");
+            assert_eq!(e[0].path, "sites[2].proxyProtocol.maxHeaderBytes");
+        }
+    }
+
+    #[test]
+    fn a_peer_is_trusted_by_address_or_network() {
+        let cfg = ProxyProtocolConfig {
+            trusted_sources: vec!["10.0.0.0/8".into(), "2001:db8::1".into()],
+            ..ProxyProtocolConfig::default()
+        };
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        assert!(cfg.trusts(&ip("10.1.2.3")));
+        assert!(cfg.trusts(&ip("::ffff:10.1.2.3")));
+        assert!(cfg.trusts(&ip("2001:db8::1")));
+        assert!(!cfg.trusts(&ip("11.0.0.1")));
+        assert!(!cfg.trusts(&ip("2001:db8::2")));
+        assert!(!ProxyProtocolConfig::default().trusts(&ip("10.1.2.3")));
     }
 }

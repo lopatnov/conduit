@@ -340,8 +340,9 @@ pub async fn read_header<R: AsyncRead + Unpin>(
         .unwrap_or(Err(ReadError::Timeout))
 }
 
-/// A header for the upstream: v1 text or v2 binary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A header for the upstream: v1 text or v2 binary (`"v1"` / `"v2"` in the config).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Version {
     V1,
     V2,
