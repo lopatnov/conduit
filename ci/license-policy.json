@@ -6,6 +6,7 @@
   "allow_exceptions": ["LLVM-exception"],
   "clarify": {},
   "bundled_notices": {
-    "libmimalloc-sys": ["c_src/mimalloc/v2/LICENSE"]
+    "libmimalloc-sys": ["c_src/mimalloc/v2/LICENSE"],
+    "tikv-jemalloc-sys": ["jemalloc/COPYING"]
   }
 }
