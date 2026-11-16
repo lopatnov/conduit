@@ -74,13 +74,16 @@ handle_pr() {
   fi
   [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { fail "#$n: unexpected head sha"; return 1; }
 
-  local f
+  # Captured first, so that a failed request stops this PR (set -e) instead of reading as an empty list.
+  local f files
+  files=$(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
+  [ -n "$files" ] || { fail "#$n: the API listed no changed files"; return 1; }
   while IFS= read -r f; do
     if ! allowed_path "$f"; then
       note "#$n skipped: it changes $f, not only Cargo.toml / Cargo.lock (regenerate the file by hand)"
       return 0
     fi
-  done < <(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
+  done <<<"$files"
 
   # 2. Up to date with main, so the file is made for the Cargo.lock CI tests (the merge result).
   local behind updated=0
@@ -123,7 +126,11 @@ handle_pr() {
   fi
   if git -C "$dir" diff --quiet -- "$LICENSE_FILE"; then
     note "#$n: $LICENSE_FILE is already current"
-    if [ "$updated" = "1" ]; then dispatch_ci "$n" "$ref"; fi
+    # A head with no CI run yet (the branch was just updated, or an earlier run pushed and then failed to dispatch)
+    # gets one; a head that has one is left alone.
+    local runs
+    runs=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=1" --jq '.total_count')
+    if [ "$updated" = "1" ] || [ "$runs" = "0" ]; then dispatch_ci "$n" "$ref"; fi
     return 0
   fi
 
@@ -150,8 +157,10 @@ dispatch_ci() {
 
 prs=("$@")
 if [ "${#prs[@]}" -eq 0 ]; then
-  mapfile -t prs < <(gh api --paginate "repos/$REPO/pulls?state=open&base=main&per_page=100" \
+  # Captured first (set -e stops the script on a failed request); an empty answer means no open Dependabot Cargo PR.
+  found=$(gh api --paginate "repos/$REPO/pulls?state=open&base=main&per_page=100" \
     --jq '.[] | select(.user.login == "dependabot[bot]" and (.head.ref | startswith("dependabot/cargo/"))) | .number')
+  if [ -n "$found" ]; then mapfile -t prs <<<"$found"; else note "no open Dependabot Cargo PR"; fi
 fi
 status=0
 for n in "${prs[@]}"; do
