@@ -273,3 +273,82 @@ fn tcp_site_refuses_keys_that_would_be_ignored() {
             .expect("parses");
     assert!(conduit::config::validate::validate(&config).is_empty());
 }
+
+/// `proxyProtocol` and `tcp.sendProxyProtocol` on a real server (issue #757): the header from the (trusted) client is
+/// consumed, its client address goes on to the upstream in a header of the configured version, and a connection that
+/// opens without a header gets nothing.
+#[test]
+#[serial]
+fn tcp_site_reads_the_proxy_protocol_and_sends_it_on() {
+    // An upstream that answers with every byte it was sent, once it has seen the payload line.
+    let upstream = TcpListener::bind("127.0.0.1:0").expect("bind upstream");
+    let upstream_addr = upstream.local_addr().expect("local_addr");
+    std::thread::spawn(move || {
+        for stream in upstream.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut got = Vec::new();
+            let mut buf = [0u8; 256];
+            while !got.ends_with(b"hi\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = stream.write_all(&got);
+        }
+    });
+
+    let port = common::free_port();
+    let admin_port = common::free_port();
+    let server = common::TestServer::start_with_config(
+        port,
+        admin_port,
+        serde_json::json!({
+            "global": { "admin": { "bind": format!("127.0.0.1:{admin_port}") } },
+            "sites": [{
+                "port": port,
+                "proxyProtocol": { "trustedSources": ["127.0.0.0/8"], "timeoutMs": 1000 },
+                "tcp": { "targets": [upstream_addr.to_string()], "sendProxyProtocol": "v1" }
+            }]
+        }),
+    );
+
+    let read_all = |mut s: TcpStream| {
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out);
+        String::from_utf8_lossy(&out).into_owned()
+    };
+
+    // v1 in, v1 out: the upstream sees the client of the header, not 127.0.0.1, and then only the payload
+    let mut c = TcpStream::connect(("127.0.0.1", server.port)).expect("connect");
+    c.write_all(b"PROXY TCP4 203.0.113.9 192.0.2.1 51000 443\r\nhi\n")
+        .unwrap();
+    assert_eq!(
+        read_all(c),
+        "PROXY TCP4 203.0.113.9 192.0.2.1 51000 443\r\nhi\n"
+    );
+
+    // v2 in (binary), v1 out: the version is converted
+    let mut hdr = b"\r\n\r\n\0\r\nQUIT\n".to_vec();
+    hdr.extend_from_slice(&[0x21, 0x11, 0x00, 0x0c, 198, 51, 100, 7, 192, 0, 2, 1]);
+    hdr.extend_from_slice(&40000u16.to_be_bytes());
+    hdr.extend_from_slice(&443u16.to_be_bytes());
+    let mut c = TcpStream::connect(("127.0.0.1", server.port)).expect("connect");
+    c.write_all(&hdr).unwrap();
+    c.write_all(b"hi\n").unwrap();
+    assert_eq!(
+        read_all(c),
+        "PROXY TCP4 198.51.100.7 192.0.2.1 40000 443\r\nhi\n"
+    );
+
+    // no header: closed, and nothing reaches the upstream
+    let mut c = TcpStream::connect(("127.0.0.1", server.port)).expect("connect");
+    c.write_all(b"hi\n").unwrap();
+    assert_eq!(
+        read_all(c),
+        "",
+        "a connection without a header gets nothing"
+    );
+}
