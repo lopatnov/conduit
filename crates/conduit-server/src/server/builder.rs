@@ -443,6 +443,117 @@ mod tests {
         );
     }
 
+    /// A self-signed certificate and key written under `dir`; returns their paths.
+    #[cfg(feature = "tcp")]
+    fn write_cert(dir: &tempfile::TempDir) -> (String, String) {
+        let key_pair = rcgen::KeyPair::generate().expect("keygen");
+        let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+            .expect("params")
+            .self_signed(&key_pair)
+            .expect("self-signed cert");
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        std::fs::write(&cert_path, cert.pem()).expect("write cert");
+        std::fs::write(&key_path, key_pair.serialize_pem()).expect("write key");
+        (
+            cert_path.to_string_lossy().into_owned(),
+            key_path.to_string_lossy().into_owned(),
+        )
+    }
+
+    #[cfg(feature = "tcp")]
+    fn sites(value: serde_json::Value) -> AppConfig {
+        crate::config::from_str(&value.to_string()).expect("a valid test config")
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn a_tcp_site_terminates_tls_only_with_a_certificate_and_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = write_cert(&dir);
+        let site = |tls: serde_json::Value| {
+            sites(serde_json::json!([{ "port": 9000, "tcp": { "targets": ["a:1"] }, "tls": tls }]))
+                .sites[0]
+                .clone()
+        };
+        let plain = sites(serde_json::json!([{ "port": 9000, "tcp": { "targets": ["a:1"] } }]));
+        assert!(tcp_tls_settings(&plain.sites[0], 9000).unwrap().is_none());
+
+        let with_cert = site(serde_json::json!({ "cert": cert, "key": key }));
+        assert!(tcp_tls_settings(&with_cert, 9000).unwrap().is_some());
+
+        // the certificate doubles as the CA that signs the client certificates
+        let with_ca =
+            site(serde_json::json!({ "cert": cert, "key": key, "clientAuth": { "ca": cert } }));
+        assert!(tcp_tls_settings(&with_ca, 9000).unwrap().is_some());
+
+        // a tls block that cannot be served must never come up as plaintext
+        let no_pair = site(serde_json::json!({}));
+        let err = tcp_tls_settings(&no_pair, 9000)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains("not serving it as plaintext"), "{err}");
+
+        // Pingora reads the certificate and key when the listener is built, but the CA of `clientAuth` right here
+        let missing_ca = site(
+            serde_json::json!({ "cert": cert, "key": key, "clientAuth": { "ca": "/nonexistent/ca.pem" } }),
+        );
+        let err = tcp_tls_settings(&missing_ca, 9000)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(
+            err.contains("TLS setup failed for tcp site on port 9000"),
+            "{err}"
+        );
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn tcp_services_are_registered_for_plain_tls_and_proxy_protocol_sites() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = write_cert(&dir);
+        let pp = serde_json::json!({ "trustedSources": ["10.0.0.0/8"] });
+        let config = sites(serde_json::json!([
+            { "port": 9000, "tcp": { "targets": ["a:1"] } },
+            { "port": 9001, "tcp": { "targets": ["a:1"] }, "proxyProtocol": pp },
+            { "port": 9002, "tcp": { "targets": ["a:1"] }, "tls": { "cert": cert, "key": key } },
+            { "port": 9003, "tcp": { "targets": ["a:1"] }, "tls": { "cert": cert, "key": key,
+                "clientAuth": { "ca": cert } }, "proxyProtocol": pp },
+            { "port": 9004, "tcp": { "targets": [] } },
+            { "port": 9005 }
+        ]));
+        let mut server = Server::new(None).expect("a server that is not run");
+        let bound = register_tcp_proxy_services(&config, &mut server).unwrap();
+        // the site without targets is skipped, the HTTP site is not a tcp one
+        assert_eq!(bound, vec![9000, 9001, 9002, 9003]);
+
+        // the policy of a TLS site with proxyProtocol is found by its own port; port 0 cannot be
+        let hook = PreTlsProxyProtocol::for_tcp_site(
+            9003,
+            config.sites[3].proxy_protocol.as_ref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(hook.ports(), vec![9003]);
+        let err =
+            PreTlsProxyProtocol::for_tcp_site(0, config.sites[3].proxy_protocol.as_ref().unwrap())
+                .err()
+                .expect("port 0 is refused")
+                .to_string();
+        assert!(err.contains("port 0"), "{err}");
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn a_tcp_site_with_an_unusable_tls_block_stops_the_registration() {
+        let config = sites(serde_json::json!([
+            { "port": 9000, "tcp": { "targets": ["a:1"] }, "tls": {} }
+        ]));
+        let mut server = Server::new(None).expect("a server that is not run");
+        assert!(register_tcp_proxy_services(&config, &mut server).is_err());
+    }
+
     #[test]
     fn build_server_conf_defaults_when_global_absent() {
         let config = AppConfig::default();
