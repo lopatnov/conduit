@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+
+use crate::throttle::Throttle;
 
 /// Why a connection was not admitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,16 +47,9 @@ pub struct Limits {
     // One lock for both counts, so that a refusal never leaves a slot reserved for a moment (a refused connection
     // must not make a legitimate one look over the cap). Connections are accepted at a human rate, not per request.
     state: Mutex<State>,
-    refused: AtomicU64,
-    /// Milliseconds after `epoch` of the last refusal that was logged (0 = none yet).
-    last_logged_ms: AtomicU64,
-    log_interval: Duration,
-    epoch: Instant,
+    /// Decides which refusals are logged: one line per interval, so a flood does not become a flood of log lines.
+    throttle: Throttle,
 }
-
-/// How often a refusal is logged at `warn`: one line per site and interval, with the count since the last one, so a
-/// flood of refused connections does not become a flood of log lines.
-const LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 impl Limits {
     pub fn new(max_connections: Option<u32>, max_per_ip: Option<u32>) -> Arc<Self> {
@@ -64,10 +57,7 @@ impl Limits {
             max_connections: max_connections.map(|n| n as usize),
             max_per_ip: max_per_ip.map(|n| n as usize),
             state: Mutex::new(State::default()),
-            refused: AtomicU64::new(0),
-            last_logged_ms: AtomicU64::new(0),
-            log_interval: LOG_INTERVAL,
-            epoch: Instant::now(),
+            throttle: Throttle::default(),
         })
     }
 
@@ -107,19 +97,7 @@ impl Limits {
 
     /// Count a refusal; `Some(n)` when it is time to log (`n` refusals since the last logged one).
     pub fn note_refusal(&self) -> Option<u64> {
-        self.refused.fetch_add(1, Ordering::Relaxed);
-        let now = crate::relay::millis(self.epoch.elapsed()).saturating_add(1);
-        let last = self.last_logged_ms.load(Ordering::Relaxed);
-        let due = last == 0 || now.saturating_sub(last) >= crate::relay::millis(self.log_interval);
-        if due
-            && self
-                .last_logged_ms
-                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-        {
-            return Some(self.refused.swap(0, Ordering::Relaxed));
-        }
-        None
+        self.throttle.note()
     }
 }
 
@@ -147,6 +125,8 @@ impl Drop for Permit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -252,7 +232,7 @@ mod tests {
     #[test]
     fn refusals_are_logged_at_a_limited_rate() {
         let mut l = Limits::new(Some(0), None);
-        Arc::get_mut(&mut l).unwrap().log_interval = Duration::from_millis(300);
+        Arc::get_mut(&mut l).unwrap().throttle = Throttle::new(Duration::from_millis(300));
         assert_eq!(l.note_refusal(), Some(1), "the first one is logged");
         for _ in 0..50 {
             assert_eq!(l.note_refusal(), None, "then none for a while");

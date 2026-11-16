@@ -30,6 +30,7 @@ pub mod proxy;
 pub mod proxy_protocol;
 #[cfg(feature = "tcp")]
 pub mod relay;
+pub mod throttle;
 pub mod validate;
 pub mod warnings;
 
