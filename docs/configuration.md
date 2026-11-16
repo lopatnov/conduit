@@ -4179,8 +4179,20 @@ sites:
 > **Note:** `tcp` cannot be combined with `proxy`, `static`, or other HTTP
 > features on the same site. Use a separate port/site for HTTP traffic.
 
-> **Not supported on a TCP site:** TLS termination (TLS passes through untouched and the client verifies the
-> upstream's certificate), UDP, and port ranges. The upstream sees Conduit's address unless `sendProxyProtocol` is set. `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` and
+> **TLS on a TCP site:** without a `tls` block, TLS passes through untouched and the client verifies the upstream's
+> certificate. With `tls: { cert, key }` on the site Conduit terminates TLS and relays the decrypted bytes; `tls.clientAuth`
+> requires a client certificate, and `proxyProtocol` is then read before the handshake. `tls.acme`, `tls.httpRedirectPort`,
+> `tls.versions` and `tls.ciphers` are refused on such a site, it needs an explicit `port`, and a changed `tls` block needs a
+> restart. See [TLS on a TCP site](protocols.md#tls-on-a-tcp-site).
+>
+> ```yaml
+> sites:
+>   - port: 993
+>     tls: { cert: ./mail.crt, key: ./mail.key }
+>     tcp: { targets: ["dovecot.internal:143"] }
+> ```
+
+> **Not supported on a TCP site:** UDP, port ranges, TLS **to** the upstream, and one certificate per SNI name. The upstream sees Conduit's address unless `sendProxyProtocol` is set. `ipFilter`, `rateLimit`, `basicAuth`, `apiKey`, `consumers`, `limits` and
 > `middleware` next to `tcp` are refused at validation (they would be ignored). See the [guide](protocols.md#what-a-tcp-site-does-and-does-not-do).
 
 ---

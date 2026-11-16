@@ -242,7 +242,7 @@
     },
     "TcpConfig": {
       "type": "object",
-      "description": "Raw TCP proxy site (--features tcp): bytes are relayed both ways, nothing is parsed. Cannot be combined with proxy, static, or the HTTP guards.",
+      "description": "Raw TCP proxy site (--features tcp): bytes are relayed both ways, nothing is parsed. Cannot be combined with proxy, static, or the HTTP guards. Add a tls block (manual cert and key, optional clientAuth, explicit port) to terminate TLS here: the upstream then gets plaintext.",
       "required": ["targets"],
       "properties": {
         "targets":             { "type": "array", "minItems": 1, "items": { "type": "string", "description": "Plain host:port, no scheme. IPv6 as [::1]:3306." } },

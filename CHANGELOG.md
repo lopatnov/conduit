@@ -31,6 +31,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **TLS termination on `tcp` sites** (#757, item 3 of 5): a `tcp` site with `tls: { cert, key }` terminates TLS and relays the
+  decrypted bytes to the upstream; `tls.clientAuth` (mutual TLS) keeps a client without a certificate of the CA from the
+  upstream; `proxyProtocol` on such a site is read before the handshake, so the client address in the header is the one the
+  caps count and `sendProxyProtocol` passes on. Refused on such a site: `tls.acme`, `tls.httpRedirectPort` and a missing
+  `port`. A changed `tls` block of a `tcp` site is a cold change (restart). Before, a `tls` block with a certificate on a
+  `tcp` site was accepted and ignored, so the port served plaintext. Tests: `tests/tcp_tls.rs` (real TLS client) and
+  `scripts/e2e/tcp-tls.sh`.
 - **The Redis address is set once, by the operator** (#760). `global.redis.url` in a file config, or the `CONDUIT_REDIS_URL`
   environment variable for a pod that reads `ConduitSite` objects (a `ConduitSite` cannot set `global`; the value is trimmed,
   and `global.redis.url` wins when both are set). Sites, routes and consumers write `store: redis` (rate limits and caches),

@@ -1100,6 +1100,10 @@ required-features = ["upload"]
 name = "tcp_proxy"
 required-features = ["tcp"]
 
+[[test]]
+name = "tcp_tls"
+required-features = ["tcp"]
+
 # ── Tests that proxy real traffic (issue #144) ───────────────────────────────
 # Every test in these files sends requests through Conduit to a mock upstream,
 # so without `proxy` there is nothing to test (and they would only fail). They

@@ -65,6 +65,19 @@ impl PreTlsProxyProtocol {
         Ok((!ports.is_empty()).then(|| Arc::new(Self { ports })))
     }
 
+    /// The callback for one `tcp` site that terminates TLS: the header comes before the handshake, so the relay (which
+    /// only sees the decrypted bytes) cannot read it. The site is its own listener, so the callback has one port.
+    #[cfg(feature = "tcp")]
+    pub(super) fn for_tcp_site(port: u16, pp: &ProxyProtocolConfig) -> anyhow::Result<Arc<Self>> {
+        anyhow::ensure!(
+            port != 0,
+            "a tcp site has proxyProtocol on port 0, which binds a port the policy cannot be found by"
+        );
+        Ok(Arc::new(Self {
+            ports: HashMap::from([(port, pp.clone())]),
+        }))
+    }
+
     /// The ports with a `proxyProtocol`, sorted (for the start-up log).
     pub(super) fn ports(&self) -> Vec<u16> {
         let mut ports: Vec<u16> = self.ports.keys().copied().collect();

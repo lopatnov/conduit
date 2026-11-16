@@ -225,7 +225,7 @@ pub fn run_server(
 
     // Raw TCP proxy services.
     #[cfg(feature = "tcp")]
-    let tcp_ports = register_tcp_proxy_services(&config, &mut server);
+    let tcp_ports = register_tcp_proxy_services(&config, &mut server)?;
     #[cfg(not(feature = "tcp"))]
     let tcp_ports: Vec<u16> = Vec::new();
 
@@ -275,7 +275,10 @@ pub fn run_server(
 #[cfg(feature = "tcp")]
 ///
 /// Returns the ports that were bound.
-fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) -> Vec<u16> {
+fn register_tcp_proxy_services(
+    config: &AppConfig,
+    server: &mut Server,
+) -> anyhow::Result<Vec<u16>> {
     let mut bound = Vec::new();
     for site in &config.sites {
         let Some(ref tcp_cfg) = site.tcp else {
@@ -287,21 +290,70 @@ fn register_tcp_proxy_services(config: &AppConfig, server: &mut Server) -> Vec<u
         }
         let port = site.port.unwrap_or(80);
         let mut proxy = conduit_tcp::proxy::TcpProxy::new(tcp_cfg).with_port(port);
-        if let Some(pp) = &site.proxy_protocol {
-            proxy = proxy.with_proxy_protocol(pp);
-        }
+        let addr = format!("0.0.0.0:{port}");
+        // Written before the service takes the proxy: it needs the settings only to bind the listener.
+        let tls_settings = tcp_tls_settings(site, port)?;
+        let terminates_tls = tls_settings.is_some();
+        // With TLS the header comes before the handshake, so the pre-TLS hook reads it (and the relay does not);
+        // without TLS the relay reads it.
+        let hook = match (&site.proxy_protocol, terminates_tls) {
+            (Some(pp), true) => Some(PreTlsProxyProtocol::for_tcp_site(port, pp)?),
+            (Some(pp), false) => {
+                proxy = proxy.with_proxy_protocol(pp);
+                None
+            }
+            (None, _) => None,
+        };
         let mut tcp_svc = ListeningService::new(format!("Conduit TCP Proxy :{port}"), proxy);
-        tcp_svc.add_tcp(&format!("0.0.0.0:{port}"));
+        match tls_settings {
+            Some(settings) => tcp_svc.add_tls_with_settings(&addr, None, settings),
+            None => tcp_svc.add_tcp(&addr),
+        }
+        if let Some(hook) = hook {
+            tcp_svc.endpoints().set_pre_tls_callback(hook);
+        }
         server.add_service(tcp_svc);
         bound.push(port);
         tracing::info!(
             port,
             targets = tcp_cfg.targets.join(", "),
+            tls = terminates_tls,
+            client_cert_required = site
+                .tls
+                .as_ref()
+                .and_then(|t| t.client_auth.as_ref())
+                .is_some_and(|c| !c.optional),
             proxy_protocol = site.proxy_protocol.is_some(),
             "TCP proxy service registered"
         );
     }
-    bound
+    Ok(bound)
+}
+
+/// The TLS settings of a `tcp` site that terminates TLS (`tls` with a certificate and key), or `None` for a plain one.
+///
+/// A site with a `tls` block and no certificate and key (or one with `acme`) is refused at validation; the error here is
+/// the second guard, so a port that was meant to be TLS can never come up as plaintext.
+#[cfg(feature = "tcp")]
+fn tcp_tls_settings(
+    site: &crate::config::schema::SiteConfig,
+    port: u16,
+) -> anyhow::Result<Option<pingora_core::listeners::tls::TlsSettings>> {
+    use super::tls as tls_util;
+    let Some(tls) = &site.tls else {
+        return Ok(None);
+    };
+    let (Some(cert), Some(key)) = (&tls.cert, &tls.key) else {
+        anyhow::bail!(
+            "tcp site on port {port} has a tls block without cert and key: not serving it as plaintext"
+        );
+    };
+    let settings = match &tls.client_auth {
+        Some(ca) => tls_util::make_tls_settings_with_client_auth(cert, key, false, ca),
+        None => tls_util::make_tls_settings(cert, key, false),
+    }
+    .map_err(|e| anyhow::anyhow!("TLS setup failed for tcp site on port {port}: {e}"))?;
+    Ok(Some(settings))
 }
 
 /// Register HTTP → HTTPS redirect services for sites with `tls.httpRedirectPort`.
