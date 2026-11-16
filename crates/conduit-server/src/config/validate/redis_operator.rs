@@ -30,20 +30,20 @@ fn check_redis_operator_in(
         .and_then(|r| r.url.as_deref());
     let operator = conduit_config_core::scheme::resolve_operator_redis_url(global_url, env_url);
     // The address the process would use is a Redis URL, wherever it comes from: a bad one (an `http://` value in the
-    // environment of a pod) makes the connection fail at start and every limit count per replica.
-    if let Some(url) = operator.as_deref() {
-        if !is_redis_url(url) {
-            let name = if global_url.is_some_and(|g| g.trim() == url) {
-                "global.redis.url"
-            } else {
-                conduit_config_core::scheme::REDIS_URL_ENV
-            };
+    // environment of a pod) makes the connection fail at start and every limit count per replica. A value that is
+    // present in the file is judged even when blank (it was an error before the environment was an alternative).
+    // The message never quotes the value: a wrong one is often a bare secret or `user:pw@host` with no scheme, which
+    // no redaction recognises, and this error reaches the log, `/reload` and a Kubernetes event.
+    let checked = match global_url {
+        Some(g) => Some(("global.redis.url", g.trim())),
+        None => env_url.map(|e| (conduit_config_core::scheme::REDIS_URL_ENV, e.trim())),
+    };
+    if let Some((name, url)) = checked.filter(|(_, u)| !is_redis_url(u)) {
+        // a blank value of the variable counts as unset (a Secret with a trailing newline)
+        if !(name != "global.redis.url" && url.is_empty()) {
             errors.push(ValidationError::new(
                 name,
-                format!(
-                    "{name} must be a redis:// URL (plaintext) or a rediss:// URL (TLS), not \"{}\"",
-                    redact_url(url)
-                ),
+                format!("{name} must be a redis:// URL (plaintext) or a rediss:// URL (TLS)"),
             ));
         }
     }
@@ -63,7 +63,11 @@ fn check_redis_operator_in(
                     ));
                 }
             } else if is_redis_url(store) {
-                if let Some(op) = operator.as_deref().filter(|op| *op != store) {
+                if let Some(op) = operator
+                    .as_deref()
+                    // a bad address is reported above, and is never quoted (it may hold a bare secret)
+                    .filter(|op| is_redis_url(op) && *op != store)
+                {
                     errors.push(ValidationError::new(
                         format!("sites[{i}].{field}"),
                         format!(
@@ -195,6 +199,36 @@ mod tests {
             "{m:?}"
         );
         assert!(m.iter().all(|x| !x.contains("pw@")), "credentials in {m:?}");
+        // a value without a scheme (a bare secret, `user:pw@host`) is never quoted either
+        let pw = ["s3", "cret"].concat();
+        for bare in [
+            format!(":{pw}@redis:6379"),
+            format!("user:{pw}@host:6379"),
+            pw.clone(),
+        ] {
+            let file = serde_json::json!({ "redis": { "url": bare } });
+            let m = messages_in(&limited("redis", file), None);
+            assert!(
+                m.iter().any(|x| x.starts_with("Error global.redis.url")),
+                "{m:?}"
+            );
+            let m = messages_in(&limited("redis", serde_json::json!({})), Some(&bare));
+            assert!(
+                m.iter().any(|x| x.starts_with("Error CONDUIT_REDIS_URL")),
+                "{m:?}"
+            );
+            assert!(m.iter().all(|x| !x.contains(&pw)), "a secret reached {m:?}");
+        }
+        // a legacy store URL next to a bad operator address does not quote the address either
+        let file = serde_json::json!({ "redis": { "url": format!("user:{pw}@host:6379") } });
+        let m = messages_in(&limited("redis://a:6379", file), None);
+        assert!(m.iter().all(|x| !x.contains(&pw)), "a secret reached {m:?}");
+        // a blank file value is an error as before; a blank variable counts as unset
+        let blank = serde_json::json!({ "redis": { "url": "  " } });
+        assert!(messages_in(&limited("memory", blank), None)
+            .iter()
+            .any(|x| x.starts_with("Error global.redis.url")));
+        assert!(messages_in(&limited("memory", serde_json::json!({})), Some("\n")).is_empty());
         // a good one is the address: a bare `redis` needs nothing else
         assert!(messages_in(&limited("redis", no_global), Some("redis://env:6379")).is_empty());
         // the file wins; a bad file value is reported by its own name even when the environment is fine
