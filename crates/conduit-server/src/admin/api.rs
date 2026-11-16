@@ -792,6 +792,19 @@ mod tests {
         assert_eq!(detect_cold_changes_in(&acme(ca), &acme(""), None), one);
     }
 
+    #[test]
+    fn a_second_https_host_with_its_own_certificate_is_a_hot_reload() {
+        // only the first site with a certificate decides the listener's client-certificate rule
+        let one = cfg(
+            r#"{"sites":[{"port":443,"host":"a.test","tls":{"cert":"a.pem","key":"a.key","clientAuth":{"ca":"ca.pem"}}}]}"#,
+        );
+        let two = cfg(
+            r#"{"sites":[{"port":443,"host":"a.test","tls":{"cert":"a.pem","key":"a.key","clientAuth":{"ca":"ca.pem"}}},{"port":443,"host":"b.test","tls":{"cert":"b.pem","key":"b.key"}}]}"#,
+        );
+        assert!(detect_cold_changes_in(&one, &two, None).is_empty());
+        assert!(detect_cold_changes_in(&two, &one, None).is_empty());
+    }
+
     fn acme_site(email: &str, directory: &str, storage: &str) -> crate::config::schema::AppConfig {
         cfg(&format!(
             r#"{{"sites":[{{"port":443,"host":"a.example.com","tls":{{"acme":{{"email":"{email}","directory":"{directory}","storage":"{storage}"}}}}}}]}}"#

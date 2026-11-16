@@ -14,10 +14,11 @@ pub(super) fn tcp_by_port(
     out
 }
 
-/// The `tls.clientAuth` rules of every HTTP listener, by port: one entry per HTTP site on the port that can supply the
-/// listener's certificate (a manual cert and key, or `acme`), in config order. The listener takes the rule of the first
-/// of them that has a certificate when it is built (`classify_site_port` in `listeners.rs`; whether an ACME site has one
-/// is only known at run time), so every such site is watched: a change anywhere in the list is a cold change.
+/// The `tls.clientAuth` rules that can decide an HTTP listener's client-certificate rule, by port, in config order: those
+/// of the HTTP sites on the port with `acme` and of the first one with a complete manual cert and key. The listener takes
+/// the rule of the first site that has a certificate when it is built (`classify_site_port` in `listeners.rs`); a manual
+/// site always has one, so sites after it never matter (a second host with its own certificate stays a hot reload), while
+/// an ACME site only maybe does (that is known at run time), so each ACME site before it is watched too.
 pub(super) fn https_client_auth_by_port(
     cfg: &crate::config::schema::AppConfig,
 ) -> std::collections::BTreeMap<u16, Vec<Option<&crate::config::schema::TlsClientAuth>>> {
@@ -25,15 +26,24 @@ pub(super) fn https_client_auth_by_port(
         u16,
         Vec<Option<&crate::config::schema::TlsClientAuth>>,
     > = std::collections::BTreeMap::new();
+    let mut decided = std::collections::BTreeSet::new();
     for site in cfg.sites.iter().filter(|s| s.tcp.is_none()) {
         let port = site
             .port
             .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
         let rules = out.entry(port).or_default();
-        if let Some(t) = site.tls.as_ref() {
-            if t.acme.is_some() || (t.cert.is_some() && t.key.is_some()) {
-                rules.push(t.client_auth.as_ref());
-            }
+        let Some(t) = site.tls.as_ref() else {
+            continue;
+        };
+        if decided.contains(&port) {
+            continue;
+        }
+        let manual = t.acme.is_none() && t.cert.is_some() && t.key.is_some();
+        if t.acme.is_some() || manual {
+            rules.push(t.client_auth.as_ref());
+        }
+        if manual {
+            decided.insert(port);
         }
     }
     out
