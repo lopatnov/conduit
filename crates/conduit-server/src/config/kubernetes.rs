@@ -743,6 +743,8 @@ mod tests {
     /// is refused here, where the test environment has none; the message says what to set.)
     #[test]
     fn crd_spec_cannot_name_a_redis_address() {
+        // hermetic: this process must have no operator address, whatever the developer's shell exports
+        std::env::remove_var(conduit_config_core::scheme::REDIS_URL_ENV);
         let site_with = |body: &str| {
             let yaml = format!(
                 "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {{name: a}}\nspec:\n  port: 8080\n{body}"

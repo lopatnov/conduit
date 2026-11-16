@@ -3502,7 +3502,8 @@ hotReload:
 `requestTransform`, `responseTransform`, `maskErrors`.
 
 **Requires cold restart:** `port`, `tls.cert/key`, every field of `tls.acme` (and adding or removing it on a site),
-`workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`. (`tls.versions`/`tls.ciphers` are not listed here
+`workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`, `global.redis.url` (the one Redis connection is made at
+start-up; a reload that changes it is refused). (`tls.versions`/`tls.ciphers` are not listed here
 because they're rejected at validate-time — see [TLS field reference]
 (#tls-field-reference) — not merely cold-restart-only.)
 

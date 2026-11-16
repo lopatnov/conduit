@@ -374,7 +374,7 @@ fn bound_listeners(
 /// Return the list of field paths that changed between `old` and `new` and
 /// require a server restart (cold fields).
 ///
-/// Cold fields: `global.workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`,
+/// Cold fields: `global.workers`, `global.shutdownTimeoutSecs`, `global.admin.bind`, `global.redis.url`,
 /// the set of bound listener ports, each port's `tls.cert`/`tls.key`, and every field of a site's `tls.acme`.
 pub(crate) fn detect_cold_changes(
     old: &crate::config::schema::AppConfig,
@@ -399,6 +399,14 @@ pub(crate) fn detect_cold_changes(
         .and_then(|a| a.bind.as_deref());
     if old_bind != new_bind {
         cold.push("global.admin.bind".to_string());
+    }
+    // The one Redis connection of the process is made at start-up from the operator's address (issue #760): a
+    // changed `global.redis.url` would leave every store named `redis` on the old address. Compared as resolved
+    // (file value, else `CONDUIT_REDIS_URL`), so a change the environment overrides is not reported.
+    if crate::config::rate_limit_scan::operator_redis_address(old)
+        != crate::config::rate_limit_scan::operator_redis_address(new)
+    {
+        cold.push("global.redis.url".to_string());
     }
 
     // Listeners: the set of bound ports and each port's TLS cert/key. Sites are matched by listener,
@@ -521,6 +529,27 @@ mod tests {
             cold.iter().any(|f| f.contains("workers")),
             "workers must be cold: {cold:?}"
         );
+    }
+
+    #[test]
+    fn redis_url_change_is_cold() {
+        // the address is `global.redis.url`, else the environment: make sure the environment is not what answers
+        std::env::remove_var(conduit_config_core::scheme::REDIS_URL_ENV);
+        let with = |url: &str| {
+            cfg(&format!(
+                r#"{{"global":{{"redis":{{"url":"{url}"}}}},"sites":[{{"port":8080}}]}}"#
+            ))
+        };
+        let none = cfg(r#"{"sites":[{"port":8080}]}"#);
+        assert!(detect_cold_changes(&with("redis://a:6379"), &with("redis://a:6379")).is_empty());
+        for (old, new) in [
+            (&with("redis://a:6379"), &with("redis://b:6379")),
+            (&none, &with("redis://a:6379")),
+            (&with("redis://a:6379"), &none),
+        ] {
+            let cold = detect_cold_changes(old, new);
+            assert_eq!(cold, vec!["global.redis.url".to_string()], "{cold:?}");
+        }
     }
 
     #[test]

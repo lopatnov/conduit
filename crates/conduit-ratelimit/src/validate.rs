@@ -1,6 +1,7 @@
 //! Config validation for `rateLimit` (site, route and per-consumer): called by the root crate's `config::validate`.
 
 use crate::config::RateLimitConfig;
+use conduit_config_core::redact::redact_url;
 use conduit_config_core::scheme::is_redis_store;
 use conduit_config_core::validation::ValidationError;
 
@@ -58,8 +59,10 @@ pub fn validate_rate_limit(cfg: &RateLimitConfig, prefix: &str, errors: &mut Vec
             errors.push(ValidationError::new(
                 format!("{prefix}.rateLimit.store"),
                 format!(
-                    "invalid store \"{store}\" — must be \"memory\", \"redis\" \
-                     (the address is global.redis.url), a redis:// URL (plaintext), or a rediss:// URL (TLS)"
+                    "invalid store \"{}\" — must be \"memory\", \"redis\" \
+                     (the address is global.redis.url), a redis:// URL (plaintext), or a rediss:// URL (TLS)",
+                    // a mistyped value (`Redis://user:pass@host`) is echoed back: never with its credentials
+                    redact_url(store)
                 ),
             ));
         }

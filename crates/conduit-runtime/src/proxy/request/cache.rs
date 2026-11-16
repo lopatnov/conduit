@@ -5,6 +5,8 @@
 //! Split out of the former monolithic `request_phase.rs` (issue #144 prep,
 //! PR 1 of 2) -- pure code relocation, no behavioral change.
 
+#[cfg(feature = "cache")]
+use conduit_config_core::redact::redact_url;
 use pingora_cache::CacheKey;
 use pingora_core::Result;
 use pingora_proxy::Session;
@@ -58,7 +60,7 @@ pub(crate) fn request_cache_filter(
                     Some(s) => s,
                     None => {
                         tracing::warn!(
-                            store = %cfg.store,
+                            store = %redact_url(&cfg.store),
                             "Redis cache unavailable — caching disabled for this request"
                         );
                         return Ok(());
@@ -68,7 +70,7 @@ pub(crate) fn request_cache_filter(
             #[cfg(not(feature = "redis"))]
             {
                 tracing::warn!(
-                    store = %cfg.store,
+                    store = %redact_url(&cfg.store),
                     "Redis cache requires --features redis — caching disabled"
                 );
                 return Ok(());
@@ -84,14 +86,14 @@ pub(crate) fn request_cache_filter(
                 // Said once at start-up and on reload (`feature_warnings`, `disk_feature_warning`); here, per
                 // request, it is only a debug line.
                 tracing::debug!(
-                    store = %cfg.store,
+                    store = %redact_url(&cfg.store),
                     "disk cache requires --features disk-cache — caching disabled"
                 );
                 return Ok(());
             }
         } else {
             tracing::warn!(
-                store = %cfg.store,
+                store = %redact_url(&cfg.store),
                 "unsupported cache store — caching disabled for this route"
             );
             return Ok(());

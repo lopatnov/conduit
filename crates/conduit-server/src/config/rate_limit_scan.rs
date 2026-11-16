@@ -107,19 +107,6 @@ pub(crate) fn redis_rate_limit_change_warning(new: &AppConfig) -> Option<String>
         startup.as_deref(),
         find_redis_rate_limit_store(new).as_deref(),
     )
-    .or_else(|| operator_address_change_warning(new))
-}
-
-/// A warning when the operator's Redis address (issue #760) differs from the one recorded at startup: every
-/// bare `store: redis`, of a limit or a cache, keeps using the startup address until the process restarts.
-fn operator_address_change_warning(new: &AppConfig) -> Option<String> {
-    let startup = conduit_config_core::scheme::operator_redis_url();
-    let now = operator_redis_address(new);
-    (now.as_deref() != startup).then(|| {
-        "global.redis.url: the Redis address is read at startup only; this change takes effect after a \
-         restart (stores named `redis` keep using the startup address)"
-            .to_owned()
-    })
 }
 
 fn redis_store_change_warning(startup: Option<&str>, new: Option<&str>) -> Option<String> {

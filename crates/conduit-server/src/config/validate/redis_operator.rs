@@ -103,7 +103,9 @@ mod tests {
 
     #[test]
     fn a_bare_redis_needs_an_address() {
-        // CONDUIT_REDIS_URL is not set in the test environment
+        // hermetic: a developer's exported CONDUIT_REDIS_URL must not turn "no address" into an address
+        // (nothing in this crate sets it, so removing it cannot race another test)
+        std::env::remove_var(conduit_config_core::scheme::REDIS_URL_ENV);
         let none = messages(&limited("redis", serde_json::json!({})));
         assert_eq!(none.len(), 1, "{none:?}");
         assert!(none[0].contains("no address"), "{none:?}");
@@ -129,6 +131,15 @@ mod tests {
             m.iter()
                 .any(|x| x.starts_with("Error") && x.contains("another Redis")),
             "{m:?}"
+        );
+        // the message names both addresses, never a password (a store URL carries credentials)
+        let with_password = serde_json::json!({ "redis": { "url": "redis://u:opsecret@a:6379" } });
+        let m = messages(&limited("redis://u:pwned@evil:6379", with_password));
+        assert!(m.iter().any(|x| x.contains("another Redis")), "{m:?}");
+        assert!(
+            m.iter()
+                .all(|x| !x.contains("opsecret") && !x.contains("pwned")),
+            "a password reached the message: {m:?}"
         );
         // without an operator address a legacy URL still works
         assert!(messages(&limited("redis://a:6379", serde_json::json!({}))).is_empty());
