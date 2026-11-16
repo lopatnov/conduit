@@ -339,10 +339,12 @@ async fn redis_fixed_window_check(
     Ok(count <= limit.saturating_add(burst))
 }
 
-/// True only when the command was certainly not delivered: the connection was already broken or not
-/// established when it was written (`BrokenPipe`, `NotConnected`). `ConnectionReset` or `UnexpectedEof`
-/// can also happen after the server received the command, so they are not retried (the increment
-/// would be replayed). `redis` keeps its io error private, so it is found through `source()`.
+/// True only when the command was certainly not delivered: `redis` itself reported the connection as closed
+/// before anything was written (a synthetic `BrokenPipe` or `NotConnected`, which carries no OS error code).
+/// A `BrokenPipe` with an OS error code (`EPIPE`) comes from a write or flush on the socket, and `redis`
+/// hands that error to the oldest in-flight command, which the server may already have executed; a reset or an
+/// end of stream can follow a delivered command too. Those are not retried: the increment would be replayed.
+/// `redis` keeps its io error private, so it is found through `source()`.
 fn write_never_reached_server(e: &redis::RedisError) -> bool {
     use std::error::Error as _;
     use std::io::ErrorKind::{BrokenPipe, NotConnected};
@@ -350,7 +352,9 @@ fn write_never_reached_server(e: &redis::RedisError) -> bool {
     e.source()
         .and_then(|s| s.downcast_ref::<Arc<dyn std::error::Error + Send + Sync>>())
         .and_then(|inner| inner.downcast_ref::<std::io::Error>())
-        .is_some_and(|io| matches!(io.kind(), BrokenPipe | NotConnected))
+        .is_some_and(|io| {
+            io.raw_os_error().is_none() && matches!(io.kind(), BrokenPipe | NotConnected)
+        })
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -374,6 +378,11 @@ mod tests {
             |k: ErrorKind| write_never_reached_server(&redis::RedisError::from(Error::from(k)));
         assert!(retried(ErrorKind::BrokenPipe));
         assert!(retried(ErrorKind::NotConnected));
+        // a real socket write failure (EPIPE) is ambiguous too: the command may have been flushed earlier
+        #[cfg(unix)]
+        assert!(!write_never_reached_server(&redis::RedisError::from(
+            Error::from_raw_os_error(32)
+        )));
         // ambiguous: the server may have counted the request already
         assert!(!retried(ErrorKind::ConnectionReset));
         assert!(!retried(ErrorKind::UnexpectedEof));
@@ -582,6 +591,61 @@ mod tests {
             !fallback_check_impl(&fallback, "site-a", "2.2.2.2", 1, 0, 60),
             "burst=0 must reject the 2nd request against limit=1, exactly like before #306"
         );
+    }
+
+    /// The connection is made in a throw-away runtime that is then dropped (as `conduit-server`'s bootstrap does), so
+    /// its driver is dead and the very first command fails with a synthetic broken pipe. The request must still
+    /// be counted in Redis (retried once), not in the memory fallback: a real Redis holds the key afterwards.
+    ///
+    /// Requires a real Redis at `REDIS_URL`; skips when unset.
+    #[test]
+    fn the_first_command_after_a_throw_away_runtime_is_counted_in_redis() {
+        let Ok(url) = std::env::var("REDIS_URL") else {
+            eprintln!("skipping the_first_command_after_a_throw_away_runtime: REDIS_URL not set");
+            return;
+        };
+        let limiter = {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(RedisRateLimiter::connect(&url))
+                .expect("connect")
+        }; // the runtime, and with it the connection's driver, is gone
+        let scope = format!("test-first-command-{}", std::process::id());
+        let key = build_redis_key(&scope, 60, "client");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut conn = redis::Client::open(url.as_str())
+                .unwrap()
+                .get_multiplexed_async_connection()
+                .await
+                .unwrap();
+            let _: () = redis::cmd("DEL")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await
+                .unwrap();
+            assert!(limiter.check(&scope, "client", 5, 0, 60).await);
+            let count: Option<i64> = redis::cmd("GET")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await
+                .unwrap();
+            assert_eq!(
+                count,
+                Some(1),
+                "counted once in Redis, not in the memory fallback"
+            );
+            let _: () = redis::cmd("DEL")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await
+                .unwrap();
+        });
     }
 
     /// Ported from `main`'s #345 fix: a key already leaked by the pre-atomic-
