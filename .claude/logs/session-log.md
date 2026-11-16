@@ -2940,5 +2940,5 @@ recurrence of this specific (now-disproven) mechanism.
 - **Reload:** `listeners[{port}].tls.clientAuth` (HTTPS) и `sites[port N].tls` (tcp) — холодные (`admin/cold_keys.rs`: `https_client_auth_by_port`, `tcp_tls_by_port`; тесты `the_client_auth_of_an_https_listener_is_cold`, `the_tls_of_a_tcp_site_is_cold`).
 - **Тесты:** `tests/tcp_tls.rs` (TLS + апстрим видит открытый текст; `clientAuth` не пускает клиента без сертификата; PROXY protocol до рукопожатия), мутационные контроли проверены по перечитанному исходнику; `scripts/e2e/tcp-tls.sh` (порты 9400-9402) в Docker-CI.
 - **Находки:** `UnexpectedEof` после TLS-клиента без `close_notify` печатал WARN в relay — теперь не ошибка; тест «клиент без сертификата» сначала проходил: сервер отдавал данные, пока не включили `clientAuth` в конфиге теста.
-- **Здоровье:** production code 28 618 строк в 342 файлах, 33 крейта; инструкции 58 КБ (ok). Выбрал бы Conduit для другого проекта? **Пока с оговорками**: Docker-e2e этой функции пока не проходил.
+- **Здоровье:** production code 28 618 строк в 342 файлах, 33 крейта; инструкции 58 КБ (ok); `--no-default-features` 13,3 MiB (Footprint-отчёт PR #778). Выбрал бы Conduit для другого проекта? **Пока с оговорками**: Docker-e2e этой функции пока не проходил.
 
