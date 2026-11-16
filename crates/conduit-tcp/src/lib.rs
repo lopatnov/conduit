@@ -24,7 +24,11 @@
 
 pub mod config;
 #[cfg(feature = "tcp")]
+pub mod limits;
+#[cfg(feature = "tcp")]
 pub mod proxy;
+#[cfg(feature = "tcp")]
+pub mod relay;
 pub mod validate;
 pub mod warnings;
 

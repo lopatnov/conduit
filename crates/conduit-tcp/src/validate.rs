@@ -15,6 +15,29 @@ pub fn validate_tcp(tcp: &TcpConfig, prefix: &str, errors: &mut Vec<ValidationEr
             "at least one target is required for a TCP proxy site",
         ));
     }
+    // A cap of 0 would refuse every connection: that is a mistake, not "no limit" (omit the field for that).
+    for (field, value) in [
+        ("maxConnections", tcp.max_connections),
+        ("maxConnectionsPerIp", tcp.max_connections_per_ip),
+    ] {
+        if value == Some(0) {
+            errors.push(ValidationError::new(
+                format!("{prefix}.tcp.{field}"),
+                format!("{field} must be at least 1 (omit it for no limit)"),
+            ));
+        }
+    }
+    if let (Some(site), Some(per_ip)) = (tcp.max_connections, tcp.max_connections_per_ip) {
+        if per_ip > site {
+            errors.push(ValidationError::warning(
+                format!("{prefix}.tcp.maxConnectionsPerIp"),
+                format!(
+                    "maxConnectionsPerIp ({per_ip}) is above maxConnections ({site}), so one client can use the whole \
+                     site and the per-client limit never applies"
+                ),
+            ));
+        }
+    }
     for (i, t) in tcp.targets.iter().enumerate() {
         // Targets must be "host:port" — no URL scheme.
         if ["http://", "https://", "ws://", "wss://"]
@@ -60,6 +83,44 @@ mod tests {
         let mut errors = Vec::new();
         validate_tcp(&tcp, "sites[0]", &mut errors);
         errors
+    }
+
+    fn limit_findings(site: Option<u32>, per_ip: Option<u32>) -> Vec<ValidationError> {
+        let tcp = TcpConfig {
+            targets: vec!["db:5432".to_owned()],
+            max_connections: site,
+            max_connections_per_ip: per_ip,
+            ..TcpConfig::default()
+        };
+        let mut errors = Vec::new();
+        validate_tcp(&tcp, "sites[0]", &mut errors);
+        errors
+    }
+
+    #[test]
+    fn a_zero_cap_is_a_hard_error_and_a_positive_one_is_clean() {
+        use conduit_config_core::validation::Severity;
+        for (site, per_ip, path) in [
+            (Some(0), None, "sites[0].tcp.maxConnections"),
+            (None, Some(0), "sites[0].tcp.maxConnectionsPerIp"),
+        ] {
+            let e = limit_findings(site, per_ip);
+            assert_eq!(e.len(), 1, "{e:?}");
+            assert_eq!(e[0].path, path);
+            assert_eq!(e[0].severity, Severity::Error);
+        }
+        assert!(limit_findings(Some(100), Some(10)).is_empty());
+        assert!(limit_findings(None, None).is_empty());
+        assert!(limit_findings(Some(10), Some(10)).is_empty());
+    }
+
+    #[test]
+    fn a_per_client_cap_above_the_site_cap_is_a_warning() {
+        use conduit_config_core::validation::Severity;
+        let e = limit_findings(Some(10), Some(20));
+        assert_eq!(e.len(), 1, "{e:?}");
+        assert_eq!(e[0].severity, Severity::Warning);
+        assert!(e[0].message.contains("never applies"), "{e:?}");
     }
 
     #[test]

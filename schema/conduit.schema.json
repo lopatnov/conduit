@@ -171,6 +171,7 @@
           "description": "Explicit route table with match criteria. Matched in order; first match wins. Backward-compatible with top-level 'proxy' and 'static'.",
           "items": { "$ref": "#/$defs/RouteConfig" }
         },
+        "tcp": { "$ref": "#/$defs/TcpConfig" },
         "upload": {
           "type": "object",
           "required": ["path", "dir"],
@@ -237,6 +238,19 @@
       },
       "additionalProperties": true,
       "$comment": "additionalProperties is deliberately true (not the schema default's implicit true made explicit, but a documented choice): SiteConfig.extra (#[serde(flatten)] IndexMap<String, serde_json::Value>, see conduit-config's schema/site.rs) captures any top-level key this struct doesn't name — a typo, or a feature-gated field this binary wasn't compiled with (config::validate::feature_warnings() surfaces it as a warning, not a hard parse error). Rejecting unknown keys here would make the schema stricter than the real Rust parser."
+    },
+    "TcpConfig": {
+      "type": "object",
+      "description": "Raw TCP proxy site (--features tcp): bytes are relayed both ways, nothing is parsed. Cannot be combined with proxy, static, or the HTTP guards.",
+      "required": ["targets"],
+      "properties": {
+        "targets":             { "type": "array", "minItems": 1, "items": { "type": "string", "description": "Plain host:port, no scheme. IPv6 as [::1]:3306." } },
+        "strategy":            { "type": "string", "default": "round-robin", "description": "round-robin or random (anything else is round-robin)." },
+        "connectTimeoutMs":    { "type": "integer", "minimum": 1, "default": 5000, "description": "Upstream connect timeout." },
+        "maxConnections":      { "type": "integer", "minimum": 1, "description": "Most connections open on the site at once; a connection over it is closed at accept. Default: no limit." },
+        "maxConnectionsPerIp": { "type": "integer", "minimum": 1, "description": "Most connections open at once from one client address (IPv6: per /64). Default: no limit." },
+        "idleTimeoutSecs":     { "type": "integer", "minimum": 0, "default": 3600, "description": "Seconds a connection may be quiet in both directions before it is closed; 0 = never." }
+      }
     },
     "TlsConfig": {
       "type": "object",
