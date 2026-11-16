@@ -552,6 +552,11 @@ tracing-subscriber.workspace = true
 # #140's scope — still pulls it in regardless of this crate's `hotreload`
 # feature.)
 
+# --- TLS (always needed) ---
+x509-parser.workspace = true
+
+rustls.workspace         = true
+
 # --- Utilities ---
 bytes.workspace     = true
 # libc: no longer a direct root-crate dependency — its only caller

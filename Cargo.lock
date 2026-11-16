@@ -2793,6 +2793,7 @@ dependencies = [
  "p256",
  "rcgen",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "serial_test",
@@ -2806,6 +2807,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wat",
+ "x509-parser 0.18.1",
 ]
 
 [[package]]
