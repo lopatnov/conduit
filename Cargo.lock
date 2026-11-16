@@ -2753,16 +2753,12 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 name = "lopatnov-conduit"
 version = "2.4.0"
 dependencies = [
- "anyhow",
  "aws-lc-rs",
- "axum",
  "base64 0.23.1",
  "bytes",
  "clap",
  "criterion",
- "dashmap 6.2.1",
  "http",
- "indexmap 2.14.2",
  "jsonwebtoken",
  "lopatnov-conduit-acme",
  "lopatnov-conduit-auth-consumers",
@@ -2795,15 +2791,10 @@ dependencies = [
  "lopatnov-conduit-upstream",
  "mimalloc",
  "p256",
- "pingora-core",
- "pingora-http",
- "pingora-proxy",
  "rcgen",
  "reqwest",
- "rustls",
  "serde",
  "serde_json",
- "serde_yaml",
  "serial_test",
  "tempfile",
  "time",
@@ -2815,7 +2806,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wat",
- "x509-parser 0.18.1",
 ]
 
 [[package]]
@@ -3269,7 +3259,6 @@ dependencies = [
 name = "lopatnov-conduit-runtime"
 version = "2.4.0"
 dependencies = [
- "anyhow",
  "arc-swap",
  "async-trait",
  "base64 0.23.1",
@@ -3311,10 +3300,8 @@ dependencies = [
  "prometheus",
  "regex",
  "reqwest",
- "serde",
  "serde_json",
  "serial_test",
- "tempfile",
  "tokio",
  "tracing",
  "uuid",

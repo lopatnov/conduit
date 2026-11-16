@@ -269,11 +269,10 @@ name = "conduit"
 path = "src/lib.rs"
 
 [dependencies]
-# --- Pingora core ---
-# pingora-cache dropped (#147): unused in the root crate — `crates/conduit-cache`/`-admin`/`-runtime` carry
-# their own edges to it (confirmed by grep across src/ and tests/ before removal).
-pingora-core.workspace  = true
-pingora-proxy.workspace = true
+# Pingora (`pingora-core`/`-proxy`/`-http`/`-cache`), axum, rustls, x509-parser, dashmap, indexmap, serde_yaml and
+# anyhow are not direct root-crate dependencies: the code that used them moved into the member crates (#114), which
+# carry their own edges. The last of them were removed as unused by `cargo machete --with-metadata` and confirmed by
+# `cargo check --all-targets` with default, no-default and all features (#777).
 
 # --- Global allocator (issue #486) ---
 # Replaces the system allocator of the `conduit` binary (not of the library crates); see the `mimalloc` feature (default,
@@ -509,8 +508,6 @@ lopatnov-conduit-proxy-http         = { workspace = true }
 # --- Config & parsing ---
 serde.workspace      = true
 serde_json.workspace = true
-serde_yaml.workspace = true
-indexmap.workspace   = true
 
 # --- CLI ---
 # clap_complete/clap_mangen/dialoguer/async-trait dropped (#147): `crates/conduit-cli` owns the first three (every
@@ -522,14 +519,8 @@ indexmap.workspace   = true
 # used directly, though: `pingora-core`'s own `Opt` derive depends on it regardless of any feature here.
 clap.workspace = true
 
-# --- Pingora HTTP types ---
-pingora-http.workspace = true
-
-# --- Async runtime & HTTP ---
+# --- Async runtime ---
 tokio.workspace = true
-# axum: Admin API always needs axum; multipart feature only needed for file upload
-# and is gated behind the `upload` feature (see [features] below).
-axum.workspace  = true
 
 # --- Compression ---
 # `CompressOptions`/`effective`/`is_compressible_type`/`best_encoding`/
@@ -547,9 +538,6 @@ axum.workspace  = true
 tracing.workspace            = true
 tracing-subscriber.workspace = true
 
-# --- Performance & state ---
-dashmap.workspace  = true
-
 # --- Functionality ---
 # mime_guess: no longer a direct root-crate dependency — its only caller
 # (`handler/fallback.rs`) moved into `crates/conduit-static` (#114/#139),
@@ -564,13 +552,7 @@ dashmap.workspace  = true
 # #140's scope — still pulls it in regardless of this crate's `hotreload`
 # feature.)
 
-# --- TLS (always needed) ---
-x509-parser.workspace = true
-
-rustls.workspace         = true
-
-# --- Errors & utilities ---
-anyhow.workspace    = true
+# --- Utilities ---
 bytes.workspace     = true
 # libc: no longer a direct root-crate dependency — its only caller
 # (`handler/static_files.rs`'s O_NOFOLLOW open) moved into
