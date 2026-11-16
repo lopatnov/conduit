@@ -9,6 +9,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **An IPv4-mapped IPv6 network shorter than `/96` is refused** in `ipFilter`, `proxyProtocol.trustedSources` and `POST /ip-deny`
+  (`::ffff:10.0.0.0/8`). The prefix of such a network counts bits of the 128-bit address, so it is the IPv6 `::/8` and would
+  name every IPv4 address; write `::ffff:10.0.0.0/104` (96 plus the IPv4 prefix) or plain `10.0.0.0/8`. Before, the prefix was
+  read as an IPv4 one, so a config that spelled it this way now stops at start with an error instead of being widened.
+
 - **A `tcp` connection that is quiet in both directions for an hour is now closed** (`tcp.idleTimeoutSecs`, default 3600;
   `0` keeps the old never-closed behaviour). Before, a connection lived until a side closed it, so a client that vanished
   without closing held a slot for ever. A session that must stay silent for longer (an idle SSH login, a database pool with a

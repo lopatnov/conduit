@@ -2852,6 +2852,7 @@ dependencies = [
  "axum",
  "indexmap 2.14.2",
  "lopatnov-conduit-config",
+ "lopatnov-conduit-config-core",
  "lopatnov-conduit-runtime",
  "pingora-cache",
  "pingora-core",

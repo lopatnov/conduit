@@ -317,15 +317,15 @@ fn tcp_site_reads_the_proxy_protocol_and_sends_it_on() {
     let read_all = |mut s: TcpStream| {
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut out = Vec::new();
-        // The connection must end (EOF, or a reset because the proxy closed with our bytes unread); our own read timing
-        // out on a connection it left open would let "closed, nothing sent" pass without proving it.
+        // The connection must end with EOF, or a reset because the proxy closed with our bytes unread. Our own read timing
+        // out on a connection it left open, or an unrelated error, would let "closed, nothing sent" pass without proof.
         if let Err(e) = s.read_to_end(&mut out) {
             assert!(
-                !matches!(
+                matches!(
                     e.kind(),
-                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
                 ),
-                "the connection was left open until the read timed out: {e:?}"
+                "expected EOF or a reset, got {e:?}"
             );
         }
         String::from_utf8_lossy(&out).into_owned()

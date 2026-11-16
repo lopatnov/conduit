@@ -21,7 +21,8 @@ use serial_test::serial;
 /// An HTTPS GET to `port` over a connection that starts with `preamble` (a PROXY protocol header, or nothing), the way a
 /// load balancer opens one. Trusts only `cert_pem`. Returns the whole response, or the error that ended it.
 fn https_get_after(port: u16, preamble: &[u8], cert_pem: &str) -> std::io::Result<String> {
-    let mut tcp = TcpStream::connect(("127.0.0.1", port))?;
+    // setting up the connection is not what is under test: a failure here must stop the test, not count as a refusal
+    let mut tcp = TcpStream::connect(("127.0.0.1", port)).expect("connect to the listener");
     tcp.set_read_timeout(Some(Duration::from_secs(10)))?;
     tcp.write_all(preamble)?;
 
@@ -40,7 +41,7 @@ fn https_get_after(port: u16, preamble: &[u8], cert_pem: &str) -> std::io::Resul
     .with_no_client_auth();
     let conn =
         rustls::ClientConnection::new(Arc::new(config), "localhost".try_into().expect("name"))
-            .map_err(std::io::Error::other)?;
+            .expect("a TLS client connection");
     let mut tls = rustls::StreamOwned::new(conn, tcp);
     tls.write_all(b"GET /who HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")?;
     let mut out = Vec::new();
@@ -53,22 +54,21 @@ fn https_get_after(port: u16, preamble: &[u8], cert_pem: &str) -> std::io::Resul
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
-/// `true` for the error a read returns when its timeout expires on a connection that is still open.
-fn is_timeout(e: &std::io::Error) -> bool {
-    matches!(
-        e.kind(),
-        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-    )
-}
-
-/// A refusal must be the server closing the connection (EOF, reset, a failed handshake), not our own read timing out on a
-/// connection it left open: that would prove nothing about the header being checked.
+/// A refusal must be the server closing the connection or ending the handshake: EOF, a reset or abort, or a handshake the
+/// server broke off. Anything else (a read timing out on a connection it left open, an unrelated I/O error) proves nothing
+/// about the header being checked, so it fails the test.
 fn assert_closed(result: &std::io::Result<String>, what: &str) {
+    use std::io::ErrorKind::{
+        BrokenPipe, ConnectionAborted, ConnectionReset, InvalidData, UnexpectedEof,
+    };
     match result {
         Ok(body) => panic!("{what}: the connection was served: {body}"),
         Err(e) => assert!(
-            !is_timeout(e),
-            "{what}: the connection was left open until the read timed out: {e:?}"
+            matches!(
+                e.kind(),
+                UnexpectedEof | ConnectionReset | ConnectionAborted | BrokenPipe | InvalidData
+            ),
+            "{what}: expected the server to close the connection, got {e:?}"
         ),
     }
 }
@@ -200,10 +200,7 @@ fn a_connection_without_a_header_or_from_an_untrusted_peer_gets_no_tls() {
     // closed (EOF, or a reset because the server closed with our bytes unread), not a read timeout, and nothing sent back
     match slow.read(&mut buf) {
         Ok(n) => assert_eq!(n, 0, "closed, nothing sent back"),
-        Err(e) => assert!(
-            !is_timeout(&e),
-            "the connection was left open until the read timed out: {e:?}"
-        ),
+        Err(e) => assert_closed(&Err(e), "an incomplete header"),
     }
     assert!(
         started.elapsed() < Duration::from_secs(5),

@@ -192,9 +192,11 @@ ok "ipFilter works on the client of the header: 192.0.2.61 gets 403 through the 
 direct_rc=0
 direct=$(from 60 curl -sS --max-time 10 --cacert /conf/cert.pem -o /dev/null -w '%{http_code}' https://app.test:8443/headers 2>/dev/null) \
   || direct_rc=$?
-# curl prints 000 when no HTTP response completed; any status (200, 403, 500 ...) means TLS was served
-{ [ "$direct" = 000 ] && [ "$direct_rc" != 0 ]; } \
-  || fail "a client that bypassed the load balancer got a response: status '$direct', curl exit $direct_rc"
+# curl prints 000 when no HTTP response completed; any status (200, 403, 500 ...) means TLS was served. The exit code has to
+# say the server broke the connection off: 35 (TLS connect error), 52 (empty reply), 56 (receive failure). 28 (our own
+# timeout on a connection left open) or 7 (could not connect) proves nothing.
+case "$direct_rc" in 35|52|56) ;; *) fail "a client that bypassed the load balancer: curl exit $direct_rc (status '$direct'), expected the server to close it (35, 52 or 56)" ;; esac
+[ "$direct" = 000 ] || fail "a client that bypassed the load balancer got a response: status '$direct'"
 ok "a connection from an address that is not a trusted source gets no TLS (no HTTP response, curl exit $direct_rc)"
 # the same, spoofing a header by hand, then going on to the TLS handshake over the same connection: it has to fail
 spoof_probe='

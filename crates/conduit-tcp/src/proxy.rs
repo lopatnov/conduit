@@ -751,7 +751,16 @@ mod tests {
                 Err(_) => {
                     panic!("the connection was left open for {wait:?} instead of being closed")
                 }
-                Ok(Ok(0) | Err(_)) => return out,
+                Ok(Ok(0)) => return out,
+                Ok(Err(e))
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                    ) =>
+                {
+                    return out;
+                }
+                Ok(Err(e)) => panic!("expected EOF or a reset, got {e:?}"),
                 Ok(Ok(n)) => out.extend_from_slice(&buf[..n]),
             }
         }
