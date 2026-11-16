@@ -1,0 +1,82 @@
+name: Dependabot licences
+
+# Keeps THIRD-PARTY-LICENSES.txt current on Dependabot's Cargo PRs (issue #780): a version bump changes Cargo.lock, the
+# `licenses` job of ci.yml then fails until the file is regenerated, and Dependabot cannot do that. The work is done by
+# scripts/ci/dependabot_licenses.sh; read its header for what it checks before it writes anything.
+#
+# Why `pull_request_target`: a `pull_request` run started by Dependabot gets a read-only token, so it could not push.
+# `pull_request_target` runs this file *as it is on main*, with a write token, in main's checkout. The PR's own code is
+# never executed: the script runs main's generator and policy, reads only Cargo.toml / Cargo.lock from the branch
+# (cargo fetch / cargo metadata run no build script), and skips a PR that touches any other file -- so a PR cannot
+# smuggle in a `.cargo/config.toml` or a changed generator. Only Dependabot's PRs from this repository are handled.
+#
+# `push` to main: a merged bump leaves the other open bumps behind main, with a file made for the old Cargo.lock. The
+# job updates their branches and regenerates. `workflow_dispatch` re-runs it by hand (empty input: every open
+# Dependabot Cargo PR).
+#
+# A push made with GITHUB_TOKEN starts no `pull_request` workflow, so the script starts ci.yml on the branch through
+# `workflow_dispatch` (allowed for GITHUB_TOKEN); its checks attach to the new head commit and show on the PR.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - scripts/third_party_licenses.py
+      - ci/license-policy.json
+      - ci/license-texts/**
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number (empty: every open Dependabot Cargo PR)"
+        required: false
+        default: ""
+
+concurrency:
+  # One run per PR at a time (a queued run replaces an older queued one for the same PR). A per-PR run and an "all"
+  # run can still meet on one branch: the push uses --force-with-lease, so the loser fails instead of overwriting.
+  group: dependabot-licenses-${{ github.event.pull_request.number || inputs.pr || 'all' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    name: Regenerate THIRD-PARTY-LICENSES.txt
+    if: >-
+      github.event_name != 'pull_request_target' ||
+      (github.event.pull_request.user.login == 'dependabot[bot]' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.event.pull_request.head.ref, 'dependabot/cargo/'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write       # push the regenerated file to the dependabot/cargo/* branch
+      pull-requests: write  # "Update branch" on a PR that is behind main
+      actions: write        # start ci.yml on the branch (workflow_dispatch)
+
+    steps:
+      # main, not the PR: the script and the generator it runs are the trusted copies.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+
+      - name: Regenerate on the Dependabot branch(es)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Untrusted values go through env, never into the script text.
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then
+            scripts/ci/dependabot_licenses.sh "$PR_NUMBER"
+          else
+            scripts/ci/dependabot_licenses.sh
+          fi
