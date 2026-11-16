@@ -339,11 +339,15 @@ async fn redis_fixed_window_check(
     Ok(count <= limit.saturating_add(burst))
 }
 
-/// True only when the command was certainly not delivered: `redis` itself reported the connection as closed
-/// before anything was written (a synthetic `BrokenPipe` or `NotConnected`, which carries no OS error code).
+/// True when `redis` reported the connection as closed without a socket error: the synthetic `BrokenPipe` or
+/// `NotConnected` it raises when the driver is gone (no OS error code). That is the first command after the
+/// throw-away bootstrap runtime died, and the command was never handed to a driver.
 /// A `BrokenPipe` with an OS error code (`EPIPE`) comes from a write or flush on the socket, and `redis`
 /// hands that error to the oldest in-flight command, which the server may already have executed; a reset or an
 /// end of stream can follow a delivered command too. Those are not retried: the increment would be replayed.
+/// Residual case, which can only over-count: when a connection dies with several commands in flight, the others
+/// also surface as the synthetic error although they may have been written; one retry then counts that request
+/// twice (a stricter outcome, bounded by the 50 ms deadline).
 /// `redis` keeps its io error private, so it is found through `source()`.
 fn write_never_reached_server(e: &redis::RedisError) -> bool {
     use std::error::Error as _;
