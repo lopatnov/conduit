@@ -1570,6 +1570,33 @@ jobs:
       - name: Run the scenarios
         run: scripts/e2e/run.sh target/debug/conduit
 
+  # ── ConduitSite objects on a real Kubernetes API server (issue #764) ─────────
+  # scripts/e2e/kubernetes.sh: k3s in one privileged container (pinned by digest, kubectl inside), every image imported
+  # from the host, Conduit as the Deployment of contrib/k8s/example-site.yaml built around this binary. Sites added,
+  # edited, broken and deleted live; status written back; the 403 of a Role for the old API group; CONDUIT_REDIS_URL from
+  # a Secret shared by two replicas. Own job: it needs `--features kubernetes,redis`, which the e2e job does not build.
+  e2e-kubernetes:
+    name: End-to-end tests (Kubernetes, k3s)
+    runs-on: ubuntu-24.04  # the binary is built here and run in ubuntu:24.04: the same glibc
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8  # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        continue-on-error: true  # transient cache failures must not abort the build
+
+      - name: Build (debug, standard features, Kubernetes and Redis)
+        run: cargo build --features standard,kubernetes,redis
+
+      - name: Run the Kubernetes scenario
+        run: scripts/e2e/run.sh target/debug/conduit kubernetes
+
   # ── The npm package (issues #711, #712) ──────────────────────────────────────
   # npm/test is the checksum check of the download, the platform table for all 13 targets, the launcher's download at
   # run time, and the proof that the packed package carries no binary (the registry refused 2.3.0, 208.7 MB). Node 18
