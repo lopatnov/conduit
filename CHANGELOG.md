@@ -7,6 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **The `jemalloc` build feature** (and the `tikv-jemallocator` dependency). It was an opt-in alternative to the
+  default mimalloc allocator, in no bundle and not used by any published build; mimalloc in its `secure` mode measured as
+  fast (see `docs/building.md`, "Allocator"). A build that passed `--features jemalloc` now fails with an unknown-feature
+  error: drop the flag to get mimalloc.
+
 ### Changed
 
 - **A `tcp` connection that is quiet in both directions for an hour is now closed** (`tcp.idleTimeoutSecs`, default 3600;
