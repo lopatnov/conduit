@@ -35,10 +35,15 @@ pub fn resolve_operator_redis_url(
         .map(str::to_owned)
 }
 
+/// The value of [`REDIS_URL_ENV`] in the process environment, read once by the caller and passed down, so that code
+/// that compares two configs (or a test) sees one value and never has to change the environment.
+pub fn redis_url_env() -> Option<String> {
+    std::env::var(REDIS_URL_ENV).ok()
+}
+
 /// [`resolve_operator_redis_url`] with the environment read from the process.
 pub fn operator_redis_url_from_env(global_url: Option<&str>) -> Option<String> {
-    let env = std::env::var(REDIS_URL_ENV).ok();
-    resolve_operator_redis_url(global_url, env.as_deref())
+    resolve_operator_redis_url(global_url, redis_url_env().as_deref())
 }
 
 static OPERATOR_REDIS_URL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();

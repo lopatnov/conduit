@@ -743,8 +743,10 @@ mod tests {
     /// is refused here, where the test environment has none; the message says what to set.)
     #[test]
     fn crd_spec_cannot_name_a_redis_address() {
-        // hermetic: this process must have no operator address, whatever the developer's shell exports
-        std::env::remove_var(conduit_config_core::scheme::REDIS_URL_ENV);
+        // The bare `redis` is refused below because this process has no operator address; a shell that exports
+        // CONDUIT_REDIS_URL has one, so that half of the test is skipped there (the environment is not changed:
+        // tests share it).
+        let has_operator_address = conduit_config_core::scheme::redis_url_env().is_some();
         let site_with = |body: &str| {
             let yaml = format!(
                 "apiVersion: conduit.io/v1\nkind: ConduitSite\nmetadata: {{name: a}}\nspec:\n  port: 8080\n{body}"
@@ -767,6 +769,9 @@ mod tests {
                 assert!(err.contains("cannot name a Redis address"), "{err}");
             }
             // the bare `redis` is the allowed form; this process has no operator address, so it says what to set
+            if has_operator_address {
+                continue;
+            }
             let err = site_with(&body.replace("@STORE@", "redis"))
                 .expect_err("no operator address in the test environment")
                 .to_string();

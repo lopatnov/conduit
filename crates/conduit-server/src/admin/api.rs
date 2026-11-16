@@ -380,6 +380,19 @@ pub(crate) fn detect_cold_changes(
     old: &crate::config::schema::AppConfig,
     new: &crate::config::schema::AppConfig,
 ) -> Vec<String> {
+    detect_cold_changes_in(
+        old,
+        new,
+        conduit_config_core::scheme::redis_url_env().as_deref(),
+    )
+}
+
+/// [`detect_cold_changes`] with the value of `CONDUIT_REDIS_URL` given: read once, so both configs see the same one.
+pub(crate) fn detect_cold_changes_in(
+    old: &crate::config::schema::AppConfig,
+    new: &crate::config::schema::AppConfig,
+    env_url: Option<&str>,
+) -> Vec<String> {
     let mut cold = Vec::new();
 
     // global.workers / global.shutdownTimeoutSecs / global.admin.bind
@@ -403,8 +416,8 @@ pub(crate) fn detect_cold_changes(
     // The one Redis connection of the process is made at start-up from the operator's address (issue #760): a
     // changed `global.redis.url` would leave every store named `redis` on the old address. Compared as resolved
     // (file value, else `CONDUIT_REDIS_URL`), so a change the environment overrides is not reported.
-    if crate::config::rate_limit_scan::operator_redis_address(old)
-        != crate::config::rate_limit_scan::operator_redis_address(new)
+    if crate::config::rate_limit_scan::operator_redis_address_in(old, env_url)
+        != crate::config::rate_limit_scan::operator_redis_address_in(new, env_url)
     {
         cold.push("global.redis.url".to_string());
     }
@@ -533,23 +546,37 @@ mod tests {
 
     #[test]
     fn redis_url_change_is_cold() {
-        // the address is `global.redis.url`, else the environment: make sure the environment is not what answers
-        std::env::remove_var(conduit_config_core::scheme::REDIS_URL_ENV);
+        // the address is `global.redis.url`, else the environment: no environment here, whatever the shell exports
         let with = |url: &str| {
             cfg(&format!(
                 r#"{{"global":{{"redis":{{"url":"{url}"}}}},"sites":[{{"port":8080}}]}}"#
             ))
         };
         let none = cfg(r#"{"sites":[{"port":8080}]}"#);
-        assert!(detect_cold_changes(&with("redis://a:6379"), &with("redis://a:6379")).is_empty());
+        assert!(
+            detect_cold_changes_in(&with("redis://a:6379"), &with("redis://a:6379"), None)
+                .is_empty()
+        );
         for (old, new) in [
             (&with("redis://a:6379"), &with("redis://b:6379")),
             (&none, &with("redis://a:6379")),
             (&with("redis://a:6379"), &none),
         ] {
-            let cold = detect_cold_changes(old, new);
+            let cold = detect_cold_changes_in(old, new, None);
             assert_eq!(cold, vec!["global.redis.url".to_string()], "{cold:?}");
         }
+    }
+
+    // the environment is part of the address: the same file with a different environment value is not a change of
+    // the file, and a file address wins over the environment
+    #[test]
+    fn the_environment_is_read_once_and_the_file_address_wins() {
+        let none = cfg(r#"{"sites":[{"port":8080}]}"#);
+        let file = cfg(r#"{"global":{"redis":{"url":"redis://a:6379"}},"sites":[{"port":8080}]}"#);
+        assert!(detect_cold_changes_in(&none, &none, Some("redis://env:6379")).is_empty());
+        assert!(detect_cold_changes_in(&file, &file, Some("redis://env:6379")).is_empty());
+        let cold = detect_cold_changes_in(&none, &file, Some("redis://env:6379"));
+        assert_eq!(cold, vec!["global.redis.url".to_string()], "{cold:?}");
     }
 
     #[test]

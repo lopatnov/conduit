@@ -10,22 +10,44 @@ use conduit_config_core::scheme::{is_redis_url, REDIS_STORE};
 /// Where a `store` value stands: a bare `redis` needs the operator's address, a legacy URL must be that
 /// address when the operator set one.
 pub(super) fn check_redis_operator(config: &AppConfig, errors: &mut Vec<ValidationError>) {
+    check_redis_operator_in(
+        config,
+        conduit_config_core::scheme::redis_url_env().as_deref(),
+        errors,
+    );
+}
+
+/// [`check_redis_operator`] with the value of `CONDUIT_REDIS_URL` given (the tests pass it, never touching the environment).
+fn check_redis_operator_in(
+    config: &AppConfig,
+    env_url: Option<&str>,
+    errors: &mut Vec<ValidationError>,
+) {
     let global_url = config
         .global
         .as_ref()
         .and_then(|g| g.redis.as_ref())
         .and_then(|r| r.url.as_deref());
-    if let Some(url) = global_url {
-        if !is_redis_url(url.trim()) {
+    let operator = conduit_config_core::scheme::resolve_operator_redis_url(global_url, env_url);
+    // The address the process would use is a Redis URL, wherever it comes from: a bad one (an `http://` value in the
+    // environment of a pod) makes the connection fail at start and every limit count per replica.
+    if let Some(url) = operator.as_deref() {
+        if !is_redis_url(url) {
+            let name = if global_url.is_some_and(|g| g.trim() == url) {
+                "global.redis.url"
+            } else {
+                conduit_config_core::scheme::REDIS_URL_ENV
+            };
             errors.push(ValidationError::new(
-                "global.redis.url",
-                "must be a redis:// URL (plaintext) or a rediss:// URL (TLS)",
+                name,
+                format!(
+                    "{name} must be a redis:// URL (plaintext) or a rediss:// URL (TLS), not \"{}\"",
+                    redact_url(url)
+                ),
             ));
         }
     }
-    let operator = conduit_config_core::scheme::operator_redis_url_from_env(global_url);
-    // A bad `global.redis.url` is reported once, above; the stores below are judged against the address
-    // the process would use.
+    // A bad address is reported once, above; the stores below are judged against the address the process would use.
     for (i, site) in config.sites.iter().enumerate() {
         let limits = crate::config::rate_limit_scan::iter_rate_limit_configs(site)
             .filter_map(|rl| rl.store.as_deref())
@@ -85,8 +107,13 @@ mod tests {
     }
 
     fn messages(c: &AppConfig) -> Vec<String> {
+        messages_in(c, None)
+    }
+
+    /// The findings with `CONDUIT_REDIS_URL` given: none by default, so a developer's shell does not matter.
+    fn messages_in(c: &AppConfig, env_url: Option<&str>) -> Vec<String> {
         let mut errors = Vec::new();
-        check_redis_operator(c, &mut errors);
+        check_redis_operator_in(c, env_url, &mut errors);
         errors
             .iter()
             .map(|e| format!("{:?} {}: {}", e.severity, e.path, e.message))
@@ -103,9 +130,6 @@ mod tests {
 
     #[test]
     fn a_bare_redis_needs_an_address() {
-        // hermetic: a developer's exported CONDUIT_REDIS_URL must not turn "no address" into an address
-        // (nothing in this crate sets it, so removing it cannot race another test)
-        std::env::remove_var(conduit_config_core::scheme::REDIS_URL_ENV);
         let none = messages(&limited("redis", serde_json::json!({})));
         assert_eq!(none.len(), 1, "{none:?}");
         assert!(none[0].contains("no address"), "{none:?}");
@@ -158,6 +182,28 @@ mod tests {
             serde_json::json!({ "redis": { "url": "http://x" } }),
         ));
         assert!(m.iter().any(|x| x.contains("global.redis.url")), "{m:?}");
+    }
+
+    #[test]
+    fn an_address_from_the_environment_is_checked_and_used_like_one_from_the_file() {
+        let no_global = serde_json::json!({});
+        // a bad value of the variable is reported, with its name, and without credentials
+        let bad = ["http://u:", "pw", "@redis:6379"].concat();
+        let m = messages_in(&limited("redis", no_global.clone()), Some(&bad));
+        assert!(
+            m.iter().any(|x| x.starts_with("Error CONDUIT_REDIS_URL")),
+            "{m:?}"
+        );
+        assert!(m.iter().all(|x| !x.contains("pw@")), "credentials in {m:?}");
+        // a good one is the address: a bare `redis` needs nothing else
+        assert!(messages_in(&limited("redis", no_global), Some("redis://env:6379")).is_empty());
+        // the file wins; a bad file value is reported by its own name even when the environment is fine
+        let file = serde_json::json!({ "redis": { "url": "http://x" } });
+        let m = messages_in(&limited("redis", file), Some("redis://env:6379"));
+        assert!(
+            m.iter().any(|x| x.starts_with("Error global.redis.url")),
+            "{m:?}"
+        );
     }
 
     #[test]

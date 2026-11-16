@@ -51,6 +51,7 @@ mod tests {
     use indexmap::IndexMap;
 
     use super::*;
+    use crate::config::rate_limit_scan::find_redis_rate_limit_store_in;
     use crate::config::schema::{
         ProxyConfig, ProxyRouteConfig, ProxyRouteTarget, RateLimitConfig, SiteConfig,
     };
@@ -84,7 +85,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(find_redis_rate_limit_store(&config), None);
+        assert_eq!(find_redis_rate_limit_store_in(&config, None), None);
     }
 
     #[test]
@@ -97,7 +98,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            find_redis_rate_limit_store(&config).as_deref(),
+            find_redis_rate_limit_store_in(&config, None).as_deref(),
             Some("redis://127.0.0.1:6379")
         );
     }
@@ -125,7 +126,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            find_redis_rate_limit_store(&bare).as_deref(),
+            find_redis_rate_limit_store_in(&bare, None).as_deref(),
             Some("rediss://redis.internal:6380")
         );
         // a legacy URL equal to the address, next to a bare one: still the operator's address
@@ -135,7 +136,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            find_redis_rate_limit_store(&mixed).as_deref(),
+            find_redis_rate_limit_store_in(&mixed, None).as_deref(),
             Some("redis://a:6379")
         );
         // an address and no redis store yet: still connected, so a store added later shares the limit (#763 review)
@@ -148,7 +149,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            find_redis_rate_limit_store(&unused).as_deref(),
+            find_redis_rate_limit_store_in(&unused, None).as_deref(),
             Some("redis://a:6379")
         );
     }
@@ -177,7 +178,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            find_redis_rate_limit_store(&config).as_deref(),
+            find_redis_rate_limit_store_in(&config, None).as_deref(),
             Some("redis://route-only:6379")
         );
     }
@@ -205,7 +206,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            find_redis_rate_limit_store(&config).as_deref(),
+            find_redis_rate_limit_store_in(&config, None).as_deref(),
             Some("rediss://consumer-only:6380")
         );
     }
@@ -229,7 +230,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            find_redis_rate_limit_store(&config).as_deref(),
+            find_redis_rate_limit_store_in(&config, None).as_deref(),
             Some("redis://site:6379")
         );
     }

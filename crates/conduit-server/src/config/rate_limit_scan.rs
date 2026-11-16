@@ -64,10 +64,21 @@ pub(crate) fn iter_rate_limit_configs(site: &SiteConfig) -> impl Iterator<Item =
 /// The scan order is shared with `config::validate`'s Redis-consistency checks via [`iter_rate_limit_configs`] —
 /// see that module for why the walk lives in exactly one place.
 pub(crate) fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
+    find_redis_rate_limit_store_in(
+        config,
+        conduit_config_core::scheme::redis_url_env().as_deref(),
+    )
+}
+
+/// [`find_redis_rate_limit_store`] with the value of `CONDUIT_REDIS_URL` given (the tests pass `None`).
+pub(crate) fn find_redis_rate_limit_store_in(
+    config: &AppConfig,
+    env_url: Option<&str>,
+) -> Option<String> {
     // When the operator set an address it is connected whether or not a store uses it yet: the connection is
     // made once, at start, and a `ConduitSite` that writes `store: redis` later (or a reload that adds the first
     // one) must share the limit instead of silently counting per replica (review of #763).
-    if let Some(address) = operator_redis_address(config) {
+    if let Some(address) = operator_redis_address_in(config, env_url) {
         return Some(address);
     }
     config
@@ -81,12 +92,23 @@ pub(crate) fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> 
 
 /// The operator's Redis address for `config`: `global.redis.url` when set, else `CONDUIT_REDIS_URL` (issue #760).
 pub(crate) fn operator_redis_address(config: &AppConfig) -> Option<String> {
+    operator_redis_address_in(
+        config,
+        conduit_config_core::scheme::redis_url_env().as_deref(),
+    )
+}
+
+/// [`operator_redis_address`] with the value of `CONDUIT_REDIS_URL` given.
+pub(crate) fn operator_redis_address_in(
+    config: &AppConfig,
+    env_url: Option<&str>,
+) -> Option<String> {
     let global_url = config
         .global
         .as_ref()
         .and_then(|g| g.redis.as_ref())
         .and_then(|r| r.url.as_deref());
-    conduit_config_core::scheme::operator_redis_url_from_env(global_url)
+    conduit_config_core::scheme::resolve_operator_redis_url(global_url, env_url)
 }
 
 /// The Redis rate-limit store the connection was made for at startup (`None` = none configured).

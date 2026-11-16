@@ -116,7 +116,11 @@ pub(crate) fn request_cache_filter(
         // `maxSizeMb` (#520) is enforced by an LRU eviction manager that bounds the total the store holds. There is
         // deliberately no per-body cap (`set_max_file_size_bytes`): for a response without `Content-Length` Pingora
         // aborts the client mid-transfer once the cap is exceeded instead of serving it uncached.
-        let eviction = proxy_cache::eviction_manager(&cfg.store, cfg.max_size_mb);
+        // Routes that name the same Redis (the bare `redis`, or its URL) share one budget: the manager is keyed by
+        // the address the store resolves to, not by how a route wrote it.
+        let eviction_key = conduit_config_core::scheme::redis_address_for(&cfg.store)
+            .unwrap_or(cfg.store.as_str());
+        let eviction = proxy_cache::eviction_manager(eviction_key, cfg.max_size_mb);
         session.cache.enable(
             storage,
             eviction,
