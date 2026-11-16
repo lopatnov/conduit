@@ -9,12 +9,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
-- **The `jemalloc` build feature** (and the `tikv-jemallocator` dependency). It was an opt-in alternative to the
-  default mimalloc allocator, in no bundle and not used by any published build; mimalloc in its `secure` mode measured as
-  fast (see `docs/building.md`, "Allocator"). A build that passed `--features jemalloc` now fails with an unknown-feature
-  error: drop the flag to get mimalloc.
 - Direct dependencies that no code used any more, left over from the move into member crates (#777): `anyhow`, `axum`,
-  `dashmap`, `indexmap`, `pingora-core`, `pingora-http`, `pingora-proxy`, `rustls`, `serde_yaml` and `x509-parser` from the
+  `dashmap`, `indexmap`, `pingora-core`, `pingora-http`, `pingora-proxy` and `serde_yaml` from the
   root crate, `anyhow`, `serde` and `tempfile` from `lopatnov-conduit-runtime`. Every crate stays in the build through the
   member crates that do use it, so binaries are unchanged.
 

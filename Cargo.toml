@@ -275,10 +275,10 @@ path = "src/lib.rs"
 # `cargo check --all-targets` with default, no-default and all features (#777).
 
 # --- Global allocator (issue #486) ---
-# Replaces the system allocator of the `conduit` binary (not of the library crates); see the `mimalloc` feature (default,
-# built in its `secure` mode: encoded free lists, randomised addresses, double-free checks). `--no-default-features`
-# builds without it.
-mimalloc = { version = "0.1", optional = true, default-features = false, features = ["secure"] }
+# One of the two replaces the system allocator of the `conduit` binary (not of the library crates); see the
+# `mimalloc` (default, built in its `secure` mode: encoded free lists, randomised addresses, double-free checks) and `jemalloc` features. `--no-default-features` builds with neither.
+mimalloc          = { version = "0.1", optional = true, default-features = false, features = ["secure"] }
+tikv-jemallocator = { version = "0.6", optional = true }
 
 # --- Conduit workspace member crates ---
 lopatnov-conduit-core.workspace        = true
@@ -809,11 +809,12 @@ wasm = ["lopatnov-conduit-middleware/wasm"]
 ext-proc = ["lopatnov-conduit-middleware/ext-proc", "lopatnov-conduit-runtime/ext-proc"]
 
 # ── Global allocator (issue #486) ──────────────────────────────────────────────
-# `mimalloc` (secure mode; on by default and in every bundle) replaces the system allocator in the `conduit` binary
-# (`src/main.rs`). Not a configuration feature: nothing in a config file needs it, it is a build-time choice;
-# `--no-default-features` without it keeps the system allocator. See `docs/building.md` for what it costs in size and
-# gains in speed. A `jemalloc` alternative existed until it was removed as unused (it measured no faster than mimalloc).
+# `mimalloc` (secure mode; on by default and in every bundle) or `jemalloc` replaces the system allocator in the `conduit` binary
+# (`src/main.rs`). Not a configuration feature: nothing in a config file needs it, it is a build-time choice. With both
+# on, jemalloc is used (an explicit `--features jemalloc` must not be overridden by the default); `--no-default-features`
+# without either keeps the system allocator. See `docs/building.md` for what each costs in size and gains in speed.
 mimalloc = ["dep:mimalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
 
 # ── Protocol extensions ────────────────────────────────────────────────────────
 # TCP passthrough proxy (type: "tcp" site config). `TcpConfig` moved to
@@ -982,7 +983,8 @@ gateway = [
     "mimalloc",
 ]
 
-# Full build: every optional feature enabled.
+# Full build: every optional feature enabled (`jemalloc` is the alternative to the `mimalloc` it already carries, so it is
+# not listed: `--features full,jemalloc` swaps the allocator).
 full = [
     "standard",
     "rhai", "wasm", "ext-proc",
