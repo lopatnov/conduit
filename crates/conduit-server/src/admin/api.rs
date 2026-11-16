@@ -9,6 +9,7 @@ use pingora_core::server::ShutdownWatch;
 use pingora_core::services::background::BackgroundService;
 use serde_json::{json, Value};
 
+use super::cold_keys::{acme_by_host, proxy_protocol_by_port, tcp_by_port};
 use crate::config;
 use crate::config::schema::LoggingConfig;
 use crate::config::validate;
@@ -509,52 +510,6 @@ pub(crate) fn detect_cold_changes_in(
     }
 
     cold
-}
-
-/// The `tcp` block of every TCP site, by the port it listens on (the first site wins for a repeated port).
-fn tcp_by_port(
-    cfg: &crate::config::schema::AppConfig,
-) -> std::collections::BTreeMap<u16, &crate::config::schema::TcpConfig> {
-    let mut out = std::collections::BTreeMap::new();
-    for site in &cfg.sites {
-        if let Some(tcp) = site.tcp.as_ref() {
-            out.entry(site.port.unwrap_or(80)).or_insert(tcp);
-        }
-    }
-    out
-}
-
-/// The `proxyProtocol` block of every site that has one, by the port it listens on (the first site wins for a repeated
-/// port; validation requires sites that share a port to agree).
-fn proxy_protocol_by_port(
-    cfg: &crate::config::schema::AppConfig,
-) -> std::collections::BTreeMap<u16, &crate::config::schema::ProxyProtocolConfig> {
-    let mut out = std::collections::BTreeMap::new();
-    for site in &cfg.sites {
-        if let Some(pp) = site.proxy_protocol.as_ref() {
-            let port = site
-                .port
-                .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
-            out.entry(port).or_insert(pp);
-        }
-    }
-    out
-}
-
-/// The `tls.acme` block of every site that has one, by the site's `host` (the first site wins for a repeated host).
-fn acme_by_host(
-    cfg: &crate::config::schema::AppConfig,
-) -> std::collections::BTreeMap<String, &crate::config::schema::AcmeConfig> {
-    let mut out = std::collections::BTreeMap::new();
-    for site in &cfg.sites {
-        if let (Some(host), Some(acme)) = (
-            site.host.as_ref(),
-            site.tls.as_ref().and_then(|t| t.acme.as_ref()),
-        ) {
-            out.entry(host.clone()).or_insert(acme);
-        }
-    }
-    out
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
