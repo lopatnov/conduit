@@ -19,6 +19,7 @@
 //! not a parsing mechanism, and belongs with
 //! `AppConfig`/`SiteConfig` when those move in Phase 3.
 
+pub mod cidr;
 pub mod env;
 pub mod format;
 pub mod parse;
