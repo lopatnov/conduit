@@ -1,7 +1,7 @@
 //! `feature_warnings()`: advisory messages for configuration that a compile-time feature would
 //! act on but that this build ignores, plus the secret/metrics/unknown-key warnings.
 
-use conduit_config_core::scheme::is_redis_url;
+use conduit_config_core::scheme::is_redis_store;
 
 use crate::config::schema::{AppConfig, SiteConfig};
 
@@ -59,6 +59,9 @@ pub(super) fn check_extra_key_warnings(config: &AppConfig, warnings: &mut Vec<St
         warn_unknown_keys("global.", global.extra.keys(), warnings);
         if let Some(admin) = &global.admin {
             warn_unknown_keys("global.admin.", admin.extra.keys(), warnings);
+        }
+        if let Some(redis) = &global.redis {
+            warn_unknown_keys("global.redis.", redis.extra.keys(), warnings);
         }
     }
     for (i, site) in config.sites.iter().enumerate() {
@@ -241,7 +244,7 @@ fn check_site_simple_feature_warnings(i: usize, site: &SiteConfig, warnings: &mu
 /// Every `cache` block of a proxy route of `site`: the legacy `proxy` route map and each `routes[]` entry's proxy
 /// action (issue #737: the predicates below used to look at the map only, so a `cache` on a `routes[]` entry was
 /// invisible to the feature warnings and to `conduit features`). Only the full route form can carry a cache.
-fn iter_route_cache_configs(
+pub(super) fn iter_route_cache_configs(
     site: &SiteConfig,
 ) -> impl Iterator<Item = &conduit_cache::CacheConfig> {
     let proxy_map = match &site.proxy {
@@ -274,10 +277,21 @@ pub(crate) fn site_uses_disk_store(site: &SiteConfig) -> bool {
     iter_route_cache_configs(site).any(|cache| cache.store.starts_with("disk:"))
 }
 
+/// `true` when `site` names a Redis address of its own: a `redis://`/`rediss://` `rateLimit.store` or `cache.store`
+/// anywhere on it (issue #760). A `ConduitSite` must not: the address belongs to the operator of the process.
+#[cfg(feature = "kubernetes")]
+pub(crate) fn site_names_redis_address(site: &SiteConfig) -> bool {
+    iter_route_cache_configs(site)
+        .any(|cache| conduit_config_core::scheme::is_redis_url(&cache.store))
+        || crate::config::rate_limit_scan::iter_rate_limit_configs(site)
+            .filter_map(|rl| rl.store.as_deref())
+            .any(conduit_config_core::scheme::is_redis_url)
+}
+
 /// `true` when a proxy route of `site` caches in a `redis://`/`rediss://` store (issue #737): the Redis cache store is
 /// the `redis` feature, and a build without it does not cache that route.
 pub(super) fn site_uses_redis_cache_store(site: &SiteConfig) -> bool {
-    iter_route_cache_configs(site).any(|cache| is_redis_url(&cache.store))
+    iter_route_cache_configs(site).any(|cache| is_redis_store(&cache.store))
 }
 
 /// Return `true` when `site`'s site-, route- (`proxy` map or `routes[]`,
@@ -289,7 +303,7 @@ pub(super) fn site_uses_redis_cache_store(site: &SiteConfig) -> bool {
 pub(super) fn site_uses_redis_store(site: &SiteConfig) -> bool {
     crate::config::rate_limit_scan::iter_rate_limit_configs(site)
         .filter_map(|rl| rl.store.as_deref())
-        .any(is_redis_url)
+        .any(is_redis_store)
 }
 
 /// Warn when JWT HMAC secrets are shorter than the 32-byte minimum.

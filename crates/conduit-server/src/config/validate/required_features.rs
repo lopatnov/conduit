@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(required_features(&with_store("memory")), vec!["cache"]);
     }
 
-    /// Issue #737: a cache on a `routes[]` entry counts like one on the `proxy` map, and a `redis://` cache store needs
+    /// Issue #737: a cache on a `routes[]` entry counts like one on the `proxy` map, and a Redis cache store needs
     /// `redis` (it used to look at rate-limit stores only).
     #[test]
     fn caches_on_routes_entries_and_redis_cache_stores_are_seen() {

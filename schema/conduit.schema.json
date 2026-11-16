@@ -42,6 +42,13 @@
             "sampleRate":  { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
             "timeoutMs":   { "type": "integer", "minimum": 1, "default": 5000 }
           }
+        },
+        "redis": {
+          "type": "object",
+          "description": "The one Redis of the process (issue #760), for shared rate limits and caches. Sites write store: \"redis\" without an address. Read at startup only. A process that reads ConduitSite objects takes the address from the CONDUIT_REDIS_URL environment variable instead.",
+          "properties": {
+            "url": { "type": "string", "pattern": "^rediss?://", "description": "redis:// (plaintext) or rediss:// (TLS) URL, with optional credentials.", "examples": ["redis://127.0.0.1:6379", "rediss://redis.internal:6380"] }
+          }
         }
       }
     },
@@ -78,8 +85,8 @@
             "skipPaths":  { "type": "array", "items": { "type": "string" } },
             "store": {
               "type": "string",
-              "description": "Backend for the rate-limiter state. \"memory\" (default) uses an in-process DashMap; a Redis URL (e.g. \"redis://127.0.0.1:6379\") uses a Redis fixed-window counter with automatic fallback to memory on failure.",
-              "examples": ["memory", "redis://127.0.0.1:6379"]
+              "description": "Backend for the rate-limiter state. \"memory\" (default) uses an in-process DashMap; \"redis\" uses a Redis fixed-window counter on the address of global.redis.url (or CONDUIT_REDIS_URL), with automatic fallback to memory on failure. A redis:// URL written here still works (deprecated), and must equal global.redis.url when that is set; a ConduitSite cannot name an address.",
+              "examples": ["memory", "redis"]
             },
             "dryRun": { "type": "boolean", "description": "Log violations but allow requests through instead of returning 429. Site-level and per-consumer only — not a valid field on a per-route rateLimit." }
           },
@@ -486,8 +493,8 @@
             "skipPaths":  { "type": "array", "items": { "type": "string" } },
             "store": {
               "type": "string",
-              "description": "Backend for this route's rate-limiter state (issue #322). \"memory\" (default) uses an in-process DashMap; a Redis URL (e.g. \"redis://127.0.0.1:6379\") uses a Redis fixed-window counter, scoped per route so it never shares a counter with the site-level check or another route.",
-              "examples": ["memory", "redis://127.0.0.1:6379"]
+              "description": "Backend for this route's rate-limiter state (issue #322). \"memory\" (default) uses an in-process DashMap; \"redis\" uses a Redis fixed-window counter on the address of global.redis.url (or CONDUIT_REDIS_URL), scoped per route so it never shares a counter with the site-level check or another route. A redis:// URL still works (deprecated).",
+              "examples": ["memory", "redis"]
             }
           },
           "additionalProperties": false,
@@ -520,7 +527,7 @@
           "type": "object",
           "required": ["store"],
           "properties": {
-            "store":                    { "type": "string" },
+            "store":                    { "type": "string", "description": "\"memory\", \"redis\" (the address is global.redis.url or CONDUIT_REDIS_URL), disk:<path> (file config only), or a legacy redis:// URL (deprecated)." },
             "maxSizeMb":                { "type": "integer", "minimum": 1, "description": "Size budget of the store in MiB (least-recently-used entries are evicted) Unset = unlimited." },
             "ttlSecs":                  { "type": "integer", "minimum": 0 },
             "staleWhileRevalidateSecs": { "type": "integer", "minimum": 0, "description": "Serve stale while refreshing in background (RFC 5861)." },
@@ -841,7 +848,7 @@
         "algorithm":  { "type": "string", "enum": ["token-bucket"] },
         "keyBy":      { "type": "string", "pattern": "^(ip|header:[!#$%&'*+.^_`|~0-9A-Za-z-]+)$", "description": "Validated for syntax, but has no effect at consumer level — the bucket key is always \"consumer:{username}\", not derived from the request." },
         "skipPaths":  { "type": "array", "items": { "type": "string" } },
-        "store":      { "type": "string", "description": "Backend for this consumer's rate-limiter state (issue #322). \"memory\" (default) uses an in-process DashMap; a Redis URL uses a Redis fixed-window counter under the fixed scope \"consumer\", with the username as the client key (the consumer's quota stays global across sites, per its keyBy note above)." },
+        "store":      { "type": "string", "description": "Backend for this consumer's rate-limiter state (issue #322). \"memory\" (default) uses an in-process DashMap; \"redis\" (the address of global.redis.url or CONDUIT_REDIS_URL; a redis:// URL still works, deprecated) uses a Redis fixed-window counter under the fixed scope \"consumer\", with the username as the client key (the consumer's quota stays global across sites, per its keyBy note above)." },
         "dryRun":     { "type": "boolean", "description": "Log violations but allow the request through instead of returning 429." }
       },
       "additionalProperties": false

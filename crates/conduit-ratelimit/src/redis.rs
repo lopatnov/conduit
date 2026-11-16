@@ -59,6 +59,7 @@
 //! `strip_nul`, issue #320) — so the same collision is not reproducible under
 //! the `\0` join, matching the already-\0-based in-memory key format above.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -77,6 +78,8 @@ pub struct RedisRateLimiter {
     conn: ConnectionManager,
     /// In-memory fallback used when Redis is unreachable.
     fallback: Arc<DashMap<String, TokenBucket>>,
+    /// Whether a command has already succeeded on this connection (see the warm-up in `check`).
+    warm: AtomicBool,
 }
 
 impl RedisRateLimiter {
@@ -109,6 +112,7 @@ impl RedisRateLimiter {
         Ok(Self {
             conn,
             fallback: Arc::new(DashMap::new()),
+            warm: AtomicBool::new(false),
         })
     }
 
@@ -150,11 +154,24 @@ impl RedisRateLimiter {
         let redis_key = build_redis_key(scope_label, window_secs, client_key);
         let mut conn = self.conn.clone();
 
-        // Wrap the two-command sequence in a 50 ms deadline.
-        let result = tokio::time::timeout(
-            Duration::from_millis(50),
-            redis_fixed_window_check(&mut conn, &redis_key, limit, burst, window_secs),
-        )
+        // Wrap the sequence in a 50 ms deadline.
+        //
+        // The check itself is never retried: after a connection error the server may already have counted the
+        // request, and a replay would count it twice. The connection is made at start in a throw-away runtime
+        // (`redis_bootstrap`), and its driver dies with it, so the first command of the process fails with a
+        // broken pipe; the manager reconnects on that failure and the very next command works. So the first
+        // use of the connection sends a `PING` first, which changes nothing and may be repeated, and only then
+        // the check. Without it that first request of every instance was counted in the memory fallback instead
+        // of the shared bucket.
+        let result = tokio::time::timeout(Duration::from_millis(50), async {
+            if !self.warm.load(Ordering::Relaxed) {
+                if redis_ping(&mut conn).await.is_err() {
+                    redis_ping(&mut conn).await?;
+                }
+                self.warm.store(true, Ordering::Relaxed);
+            }
+            redis_fixed_window_check(&mut conn, &redis_key, limit, burst, window_secs).await
+        })
         .await;
 
         match result {
@@ -325,6 +342,12 @@ async fn redis_fixed_window_check(
         .await?;
 
     Ok(count <= limit.saturating_add(burst))
+}
+
+/// `PING`: changes nothing on the server, so it is safe to repeat. Used to bring a connection whose driver died
+/// back before the first rate-limit command is sent.
+async fn redis_ping(conn: &mut ConnectionManager) -> redis::RedisResult<()> {
+    redis::cmd("PING").query_async::<()>(conn).await
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -537,6 +560,62 @@ mod tests {
             !fallback_check_impl(&fallback, "site-a", "2.2.2.2", 1, 0, 60),
             "burst=0 must reject the 2nd request against limit=1, exactly like before #306"
         );
+    }
+
+    /// The connection is made in a throw-away runtime that is then dropped (as `conduit-server`'s bootstrap does), so
+    /// its driver is dead and the very first command would fail with a broken pipe. The request must still be
+    /// counted in Redis (the warm-up `PING` reconnects), not in the memory fallback: a real Redis holds the key
+    /// afterwards, counted once.
+    ///
+    /// Requires a real Redis at `REDIS_URL`; skips when unset.
+    #[test]
+    fn the_first_command_after_a_throw_away_runtime_is_counted_in_redis() {
+        let Ok(url) = std::env::var("REDIS_URL") else {
+            eprintln!("skipping the_first_command_after_a_throw_away_runtime: REDIS_URL not set");
+            return;
+        };
+        let limiter = {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(RedisRateLimiter::connect(&url))
+                .expect("connect")
+        }; // the runtime, and with it the connection's driver, is gone
+        let scope = format!("test-first-command-{}", std::process::id());
+        let key = build_redis_key(&scope, 60, "client");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut conn = redis::Client::open(url.as_str())
+                .unwrap()
+                .get_multiplexed_async_connection()
+                .await
+                .unwrap();
+            let _: () = redis::cmd("DEL")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await
+                .unwrap();
+            assert!(limiter.check(&scope, "client", 5, 0, 60).await);
+            let count: Option<i64> = redis::cmd("GET")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await
+                .unwrap();
+            assert_eq!(
+                count,
+                Some(1),
+                "counted once in Redis, not in the memory fallback"
+            );
+            let _: () = redis::cmd("DEL")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await
+                .unwrap();
+        });
     }
 
     /// Ported from `main`'s #345 fix: a key already leaked by the pre-atomic-

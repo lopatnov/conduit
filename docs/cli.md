@@ -853,14 +853,21 @@ Dependencies: `instant-acme = "0.8"`, `rcgen = "0.14"`
 
 ### `redis` — Redis-backed rate limiting and caching
 
-Enables `rateLimit.store: "redis://..."` and `cache.store: "redis://..."`.
+Enables `rateLimit.store: redis` and `cache.store: redis`; the address is set once in `global.redis.url`
+(or the `CONDUIT_REDIS_URL` environment variable).
 Falls back to in-memory on connection failure (fail-open, logged as warning).
 
 ```yaml
-rateLimit:
-  windowSecs: 60
-  limit: 1000
-  store: "redis://localhost:6379"
+global:
+  redis:
+    url: "redis://localhost:6379"
+sites:
+  - port: 8080
+    proxy: "http://127.0.0.1:4000"
+    rateLimit:
+      windowSecs: 60
+      limit: 1000
+      store: redis
 ```
 
 Dependencies: `redis = "1"` (tokio-comp + rustls features)

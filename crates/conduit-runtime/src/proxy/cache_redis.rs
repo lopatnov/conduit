@@ -30,7 +30,8 @@ fn redis_store_url(target: &ProxyRouteTarget) -> Option<&str> {
         return None;
     };
     let store = cfg.cache.as_ref()?.store.as_str();
-    conduit_config_core::scheme::is_redis_url(store).then_some(store)
+    // The bare `redis` is the operator's address (issue #760); a legacy URL names itself.
+    conduit_config_core::scheme::redis_address_for(store)
 }
 
 /// Every distinct `redis://`/`rediss://` `cache.store` URL configured

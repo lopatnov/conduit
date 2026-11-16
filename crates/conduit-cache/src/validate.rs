@@ -1,6 +1,7 @@
 //! Config validation for `cache`: called by the proxy route validation.
 
-use conduit_config_core::scheme::is_redis_url;
+use conduit_config_core::redact::redact_url;
+use conduit_config_core::scheme::is_redis_store;
 use conduit_config_core::validation::ValidationError;
 
 /// Validate the `cache` config block on a proxy route.
@@ -10,13 +11,15 @@ pub fn validate_cache_config(
     errors: &mut Vec<ValidationError>,
 ) {
     let store = &cache.store;
-    let valid = store == "memory" || is_redis_url(store) || store.starts_with("disk:");
+    let valid = store == "memory" || is_redis_store(store) || store.starts_with("disk:");
     if !valid {
         errors.push(ValidationError::new(
             format!("{prefix}.store"),
             format!(
-                "invalid store \"{store}\" — must be \"memory\", \
-                 a redis:// URL, a rediss:// URL (TLS), or disk:<path>"
+                "invalid store \"{}\" — must be \"memory\", \"redis\" \
+                 (the address is global.redis.url), a redis:// URL, a rediss:// URL (TLS), or disk:<path>",
+                // a mistyped value (`Redis://user:pass@host`) is echoed back: never with its credentials
+                redact_url(store)
             ),
         ));
     }

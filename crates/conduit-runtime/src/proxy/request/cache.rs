@@ -5,6 +5,8 @@
 //! Split out of the former monolithic `request_phase.rs` (issue #144 prep,
 //! PR 1 of 2) -- pure code relocation, no behavioral change.
 
+#[cfg(feature = "cache")]
+use conduit_config_core::redact::redact_url;
 use pingora_cache::CacheKey;
 use pingora_core::Result;
 use pingora_proxy::Session;
@@ -49,14 +51,16 @@ pub(crate) fn request_cache_filter(
         // Select storage backend based on store string.
         let storage: &'static (dyn CacheStorage + Sync) = if cfg.store == "memory" {
             proxy_cache::cache_storage()
-        } else if conduit_config_core::scheme::is_redis_url(&cfg.store) {
+        } else if conduit_config_core::scheme::is_redis_store(&cfg.store) {
             #[cfg(feature = "redis")]
             {
-                match cache_redis::get(&cfg.store) {
+                // The bare `redis` is the operator's address (issue #760); a legacy URL names itself.
+                let address = conduit_config_core::scheme::redis_address_for(&cfg.store);
+                match address.and_then(cache_redis::get) {
                     Some(s) => s,
                     None => {
                         tracing::warn!(
-                            store = %cfg.store,
+                            store = %redact_url(&cfg.store),
                             "Redis cache unavailable — caching disabled for this request"
                         );
                         return Ok(());
@@ -66,7 +70,7 @@ pub(crate) fn request_cache_filter(
             #[cfg(not(feature = "redis"))]
             {
                 tracing::warn!(
-                    store = %cfg.store,
+                    store = %redact_url(&cfg.store),
                     "Redis cache requires --features redis — caching disabled"
                 );
                 return Ok(());
@@ -82,14 +86,14 @@ pub(crate) fn request_cache_filter(
                 // Said once at start-up and on reload (`feature_warnings`, `disk_feature_warning`); here, per
                 // request, it is only a debug line.
                 tracing::debug!(
-                    store = %cfg.store,
+                    store = %redact_url(&cfg.store),
                     "disk cache requires --features disk-cache — caching disabled"
                 );
                 return Ok(());
             }
         } else {
             tracing::warn!(
-                store = %cfg.store,
+                store = %redact_url(&cfg.store),
                 "unsupported cache store — caching disabled for this route"
             );
             return Ok(());
@@ -112,7 +116,11 @@ pub(crate) fn request_cache_filter(
         // `maxSizeMb` (#520) is enforced by an LRU eviction manager that bounds the total the store holds. There is
         // deliberately no per-body cap (`set_max_file_size_bytes`): for a response without `Content-Length` Pingora
         // aborts the client mid-transfer once the cap is exceeded instead of serving it uncached.
-        let eviction = proxy_cache::eviction_manager(&cfg.store, cfg.max_size_mb);
+        // Routes that name the same Redis (the bare `redis`, or its URL) share one budget: the manager is keyed by
+        // the address the store resolves to, not by how a route wrote it.
+        let eviction_key = conduit_config_core::scheme::redis_address_for(&cfg.store)
+            .unwrap_or(cfg.store.as_str());
+        let eviction = proxy_cache::eviction_manager(eviction_key, cfg.max_size_mb);
         session.cache.enable(
             storage,
             eviction,

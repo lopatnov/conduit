@@ -129,7 +129,8 @@ pub async fn connect_and_register(url: &str) -> bool {
             finish(url, None);
             tracing::error!(
                 url = %redact_url(url),
-                "Redis proxy cache connect failed: {e} — caching disabled for this store"
+                "Redis proxy cache connect failed: {} — caching disabled for this store",
+                redact_url(&e.to_string())
             );
             false
         }
@@ -197,11 +198,20 @@ impl RedisCacheStorage {
         // `{e}` interpolation would otherwise carry the raw credentials
         // right back in, one level deeper (issue found reviewing #347/#330).
         let redacted = redact_url(url);
-        let client = redis::Client::open(url)
-            .map_err(|e| anyhow::anyhow!("invalid Redis URL ({redacted}): {e}"))?;
-        let conn = ConnectionManager::new(client)
-            .await
-            .map_err(|e| anyhow::anyhow!("cannot connect to Redis ({redacted}): {e}"))?;
+        // The error text is redacted as well: a parse failure can echo the input back, a connect failure can
+        // carry the address (the rate-limit connection does the same).
+        let client = redis::Client::open(url).map_err(|e| {
+            anyhow::anyhow!(
+                "invalid Redis URL ({redacted}): {}",
+                redact_url(&e.to_string())
+            )
+        })?;
+        let conn = ConnectionManager::new(client).await.map_err(|e| {
+            anyhow::anyhow!(
+                "cannot connect to Redis ({redacted}): {}",
+                redact_url(&e.to_string())
+            )
+        })?;
         Ok(Self { conn })
     }
 

@@ -296,7 +296,7 @@ instances.
 
 > **Requires** `--features redis`
 
-**Features:** `rateLimit.store: redis://`, multi-instance rate limiting
+**Features:** `global.redis.url`, `rateLimit.store: redis`, multi-instance rate limiting
 
 ---
 

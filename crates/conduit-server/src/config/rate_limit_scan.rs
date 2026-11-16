@@ -49,20 +49,38 @@ pub(crate) fn iter_rate_limit_configs(site: &SiteConfig) -> impl Iterator<Item =
         .chain(consumer_rate_limits(site))
 }
 
-/// Find the first `redis://`/`rediss://` `rateLimit.store` configured anywhere
-/// in `config` — site-level, per-route (`proxy.*.rateLimit` AND
-/// `routes[*].proxy.rateLimit`, issue #360), or per-consumer
-/// (`consumers.consumers[].rateLimit`) — so a Redis backend is connected at
-/// startup even when Redis is used *only* at the route/consumer layer (issue
-/// #322: previously only the site level was scanned, so a route/consumer-only
-/// Redis config silently fell back to the in-memory limiter forever, since
-/// `AppState.redis_rate_limiter` was never populated in the first place).
+/// The Redis address of this process for rate limiting, when any `rateLimit.store` anywhere in `config` selects
+/// Redis — site-level, per-route (`proxy.*.rateLimit` AND `routes[*].proxy.rateLimit`, issue #360), or
+/// per-consumer (`consumers.consumers[].rateLimit`) — so a backend is connected at startup even when Redis is
+/// used *only* at the route/consumer layer (issue #322).
 ///
-/// Scan order (site → `proxy` map → `routes[]` → consumer, across sites in
-/// declaration order) is shared with `config::validate`'s Redis-consistency
-/// checks via [`iter_rate_limit_configs`] —
+/// The address is the operator's ([`operator_redis_address`]: `global.redis.url`, else `CONDUIT_REDIS_URL`,
+/// issue #760), and it is connected as soon as it is set, even when no store uses it yet (a site added later
+/// would otherwise count per replica until a restart). A config without one falls back to the first legacy
+/// `redis://`/`rediss://` store URL found (site → `proxy` map → `routes[]` → consumer, across sites in declaration
+/// order; #357). A bare `store: redis` with no operator address is a validation error, so it never reaches the
+/// connection.
+///
+/// The scan order is shared with `config::validate`'s Redis-consistency checks via [`iter_rate_limit_configs`] —
 /// see that module for why the walk lives in exactly one place.
 pub(crate) fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> {
+    find_redis_rate_limit_store_in(
+        config,
+        conduit_config_core::scheme::redis_url_env().as_deref(),
+    )
+}
+
+/// [`find_redis_rate_limit_store`] with the value of `CONDUIT_REDIS_URL` given (the tests pass `None`).
+pub(crate) fn find_redis_rate_limit_store_in(
+    config: &AppConfig,
+    env_url: Option<&str>,
+) -> Option<String> {
+    // When the operator set an address it is connected whether or not a store uses it yet: the connection is
+    // made once, at start, and a `ConduitSite` that writes `store: redis` later (or a reload that adds the first
+    // one) must share the limit instead of silently counting per replica (review of #763).
+    if let Some(address) = operator_redis_address_in(config, env_url) {
+        return Some(address);
+    }
     config
         .sites
         .iter()
@@ -70,6 +88,28 @@ pub(crate) fn find_redis_rate_limit_store(config: &AppConfig) -> Option<String> 
         .filter_map(|rl| rl.store.as_deref())
         .find(|store| conduit_config_core::scheme::is_redis_url(store))
         .map(str::to_owned)
+}
+
+/// The operator's Redis address for `config`: `global.redis.url` when set, else `CONDUIT_REDIS_URL` (issue #760).
+#[cfg(feature = "redis")]
+pub(crate) fn operator_redis_address(config: &AppConfig) -> Option<String> {
+    operator_redis_address_in(
+        config,
+        conduit_config_core::scheme::redis_url_env().as_deref(),
+    )
+}
+
+/// [`operator_redis_address`] with the value of `CONDUIT_REDIS_URL` given.
+pub(crate) fn operator_redis_address_in(
+    config: &AppConfig,
+    env_url: Option<&str>,
+) -> Option<String> {
+    let global_url = config
+        .global
+        .as_ref()
+        .and_then(|g| g.redis.as_ref())
+        .and_then(|r| r.url.as_deref());
+    conduit_config_core::scheme::resolve_operator_redis_url(global_url, env_url)
 }
 
 /// The Redis rate-limit store the connection was made for at startup (`None` = none configured).
