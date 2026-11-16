@@ -6,11 +6,15 @@ name: CI
 # PRs targeted a branch other than main. So: a branch without a PR gets no CI until its pull request (a draft is
 # enough) is opened; a PR into a branch other than main gets none (add that base to `pull_request.branches`
 # first); and a PR with merge conflicts gets no `pull_request` run until the conflict is resolved.
+# `workflow_dispatch` is for dependabot-licenses.yml (#780): a commit it pushes with GITHUB_TOKEN to a Dependabot branch
+# starts no `pull_request` run, so it starts this workflow on the branch instead (the run tests the branch head, which
+# that job has just brought up to date with main).
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   # A PR run is superseded by its next push. On main every commit has a group of its own, so a merge neither cancels the

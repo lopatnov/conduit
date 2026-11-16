@@ -11,7 +11,11 @@ are in [`THIRD-PARTY-LICENSES.txt`](../THIRD-PARTY-LICENSES.txt), which is also 
 Debian package, the npm package (gzipped) and the Docker image (`/licenses/`), and is attached to every GitHub
 release. CI checks both: a
 dependency outside the allow-list in [`ci/license-policy.json`](../ci/license-policy.json) fails the build, and so does
-a row below whose licence differs from the one `Cargo.lock` says (`scripts/third_party_licenses.py --check`).
+a row below whose licence differs from the one `Cargo.lock` says (`scripts/third_party_licenses.py --check`). On a
+Dependabot Cargo PR the file is regenerated and committed by the `Dependabot licences` workflow
+(`scripts/ci/dependabot_licenses.sh`), with the same allow-list: a bump that brings in a licence outside it is left red. Dependabot stops rebasing a PR
+that workflow has committed to; when the workflow cannot bring such a PR up to date with main, comment
+`@dependabot recreate` on it.
 
 Apache-2.0 section 4(d) asks a redistributor to carry the attribution notices of a dependency's `NOTICE` file. At the
 time of writing none of the dependencies ships one (`scripts/third_party_licenses.py` looks for them in every package and
