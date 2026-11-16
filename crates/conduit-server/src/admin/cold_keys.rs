@@ -14,27 +14,25 @@ pub(super) fn tcp_by_port(
     out
 }
 
-/// The `tls.clientAuth` rule of every HTTP listener, by port: that of the first site on the port with a complete manual
-/// certificate and key, the site whose certificate the listener serves (as `bound_listeners` in `api.rs` decides it). The
-/// rule is loaded into the listener once, when it is built.
+/// The `tls.clientAuth` rules of every HTTP listener, by port: one entry per HTTP site on the port that can supply the
+/// listener's certificate (a manual cert and key, or `acme`), in config order. The listener takes the rule of the first
+/// of them that has a certificate when it is built (`classify_site_port` in `listeners.rs`; whether an ACME site has one
+/// is only known at run time), so every such site is watched: a change anywhere in the list is a cold change.
 pub(super) fn https_client_auth_by_port(
     cfg: &crate::config::schema::AppConfig,
-) -> std::collections::BTreeMap<u16, Option<&crate::config::schema::TlsClientAuth>> {
-    let mut out: std::collections::BTreeMap<u16, Option<&crate::config::schema::TlsClientAuth>> =
-        std::collections::BTreeMap::new();
-    let mut decided = std::collections::BTreeSet::new();
+) -> std::collections::BTreeMap<u16, Vec<Option<&crate::config::schema::TlsClientAuth>>> {
+    let mut out: std::collections::BTreeMap<
+        u16,
+        Vec<Option<&crate::config::schema::TlsClientAuth>>,
+    > = std::collections::BTreeMap::new();
     for site in cfg.sites.iter().filter(|s| s.tcp.is_none()) {
         let port = site
             .port
             .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
-        out.entry(port).or_insert(None);
-        if decided.contains(&port) {
-            continue;
-        }
+        let rules = out.entry(port).or_default();
         if let Some(t) = site.tls.as_ref() {
-            if t.cert.is_some() && t.key.is_some() {
-                out.insert(port, t.client_auth.as_ref());
-                decided.insert(port);
+            if t.acme.is_some() || (t.cert.is_some() && t.key.is_some()) {
+                rules.push(t.client_auth.as_ref());
             }
         }
     }

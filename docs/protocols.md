@@ -90,9 +90,12 @@ sites:
   `port`. A changed `tls` block needs a restart.
 - `maxConnections` and `maxConnectionsPerIp` count a connection **after** its handshake completes: a client that connects and
   never finishes the handshake is not counted, as on an HTTPS port. Keep the port behind a firewall or the load balancer.
+- Terminating TLS drops the TLS end-of-stream protection towards the upstream: a client that closes without `close_notify`
+  looks to a plaintext upstream like a normal close (Conduit logs it at debug level only). Do not put a protocol on such
+  a port that treats a closed connection as a complete message.
 
 Shown by `tests/tcp_tls.rs` (real TLS client: decrypted relay, plaintext refused, client certificates, header then handshake)
-and `scripts/e2e/tcp-tls.sh` (OpenSSL client and HAProxy in the Docker network).
+and `scripts/e2e/tcp-tls.sh` (Python TLS client and a plaintext echo upstream in the Docker network).
 
 ## Server-Sent Events (SSE)
 

@@ -409,8 +409,13 @@ impl ServerApp for TcpProxy {
                 // Broken pipe and connection reset are normal — don't warn. So is an end of the stream without the TLS
                 // close_notify alert (rustls reports it as an unexpected EOF): most clients just close the socket.
                 use std::io::ErrorKind::{BrokenPipe, ConnectionReset, UnexpectedEof};
-                if !matches!(e.kind(), BrokenPipe | ConnectionReset | UnexpectedEof) {
-                    tracing::warn!(target, "TCP proxy: relay error: {e}");
+                match e.kind() {
+                    BrokenPipe | ConnectionReset => {}
+                    // The upstream (plaintext) cannot tell this from a clean end, so leave a trace at debug level.
+                    UnexpectedEof => {
+                        tracing::debug!(target, "TCP proxy: client closed without TLS close_notify")
+                    }
+                    _ => tracing::warn!(target, "TCP proxy: relay error: {e}"),
                 }
             }
         }

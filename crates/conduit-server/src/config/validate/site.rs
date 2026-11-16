@@ -175,6 +175,14 @@ fn validate_tcp_site_tls(site: &SiteConfig, prefix: &str, errors: &mut Vec<Valid
             "a tcp site with tls needs an explicit port",
         ));
     }
+    // The header is read in a hook before the handshake and its policy is found by the local port: port 0 would refuse to
+    // start (fail closed), which `validate` should say first.
+    if site.port == Some(0) && site.proxy_protocol.is_some() {
+        errors.push(ValidationError::new(
+            format!("{prefix}.port"),
+            "proxyProtocol on a tcp site with tls needs a fixed port: port 0 binds an OS-assigned port, so the PROXY protocol policy cannot match it",
+        ));
+    }
 }
 
 /// Validate a TCP proxy site configuration.

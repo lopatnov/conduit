@@ -777,6 +777,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_client_auth_of_an_acme_https_listener_is_cold_too() {
+        // an ACME site decides the listener's rule as well, and a manual site behind it may take over when ACME fails
+        let acme = |auth: &str| {
+            cfg(&format!(
+                r#"{{"sites":[{{"port":443,"host":"a.example.com","tls":{{"acme":{{"email":"a@example.com","directory":"d","storage":"s"}}{auth}}}}},{{"port":443,"host":"b.test","tls":{{"cert":"c.pem","key":"k.pem"}}}}]}}"#
+            ))
+        };
+        let ca = r#","clientAuth":{"ca":"a.pem"}"#;
+        assert!(detect_cold_changes_in(&acme(ca), &acme(ca), None).is_empty());
+        let one = vec!["listeners[443].tls.clientAuth".to_string()];
+        assert_eq!(detect_cold_changes_in(&acme(""), &acme(ca), None), one);
+        assert_eq!(detect_cold_changes_in(&acme(ca), &acme(""), None), one);
+    }
+
     fn acme_site(email: &str, directory: &str, storage: &str) -> crate::config::schema::AppConfig {
         cfg(&format!(
             r#"{{"sites":[{{"port":443,"host":"a.example.com","tls":{{"acme":{{"email":"{email}","directory":"{directory}","storage":"{storage}"}}}}}}]}}"#

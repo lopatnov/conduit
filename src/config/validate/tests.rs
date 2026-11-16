@@ -2793,6 +2793,17 @@ fn what_belongs_to_an_http_listener_is_refused_on_a_tcp_site_with_tls() {
             .any(|e| e.path == "sites[0].port" && e.message.contains("explicit port")),
         "{no_port:?}"
     );
+    // the header is matched by the port a connection arrived on, so port 0 cannot work with it on a TLS site
+    let pp_port0 = errs(
+        r#"{ "port": 0, "tcp": { "targets": ["mail:143"] }, "tls": { "cert": "c.pem", "key": "k.pem" },
+             "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#,
+    );
+    assert!(
+        pp_port0
+            .iter()
+            .any(|e| e.path == "sites[0].port" && e.message.contains("fixed port")),
+        "{pp_port0:?}"
+    );
     // a tcp site without tls needs no port, as before
     assert!(errs(r#"{ "tcp": { "targets": ["db:3306"] } }"#)
         .iter()

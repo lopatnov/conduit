@@ -35,7 +35,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decrypted bytes to the upstream; `tls.clientAuth` (mutual TLS) keeps a client without a certificate of the CA from the
   upstream; `proxyProtocol` on such a site is read before the handshake, so the client address in the header is the one the
   caps count and `sendProxyProtocol` passes on. Refused on such a site: `tls.acme`, `tls.httpRedirectPort` and a missing
-  `port`. A changed `tls` block of a `tcp` site is a cold change (restart). Before, a `tls` block with a certificate on a
+  `port`, and `port: 0` together with `proxyProtocol`. A changed `tls` block of a `tcp` site is a cold change (restart), and so is a changed `tls.clientAuth` of an HTTPS port, ACME ones included (it was not detected before). Before, a `tls` block with a certificate on a
   `tcp` site was accepted and ignored, so the port served plaintext. Tests: `tests/tcp_tls.rs` (real TLS client) and
   `scripts/e2e/tcp-tls.sh`.
 - **The Redis address is set once, by the operator** (#760). `global.redis.url` in a file config, or the `CONDUIT_REDIS_URL`
