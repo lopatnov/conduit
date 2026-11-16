@@ -471,7 +471,10 @@ pub(crate) fn detect_cold_changes_in(
         .chain(new_p.keys())
         .collect::<std::collections::BTreeSet<_>>()
     {
-        if old_p.get(port) != new_p.get(port) {
+        if !crate::config::schema::ProxyProtocolConfig::same_policy(
+            old_p.get(port).copied(),
+            new_p.get(port).copied(),
+        ) {
             cold.push(format!("sites[port {port}].proxyProtocol"));
         }
     }
@@ -681,6 +684,18 @@ mod tests {
         };
         let cold = detect_cold_changes_in(&https(""), &https(&pp("10.0.0.0/8")), None);
         assert_eq!(cold, vec!["sites[port 443].proxyProtocol".to_string()]);
+        // the same policy written another way is not a change
+        let two = |a: &str, b: &str, extra: &str| {
+            https(&format!(
+                r#","proxyProtocol":{{"trustedSources":["{a}","{b}"]{extra}}}"#
+            ))
+        };
+        assert!(detect_cold_changes_in(
+            &two("10.0.0.0/8", "192.0.2.1", ""),
+            &two("192.0.2.1", "10.0.0.0/8", r#","timeoutMs":5000"#),
+            None
+        )
+        .is_empty());
     }
 
     // the environment is part of the address: the same file with a different environment value is not a change of

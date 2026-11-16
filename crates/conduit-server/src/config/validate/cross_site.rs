@@ -15,7 +15,7 @@ use conduit_config_core::scheme::is_redis_url;
 use conduit_auth_forward::validate::AdminEndpoint;
 
 use crate::config::defaults::DEFAULT_ADMIN_BIND;
-use crate::config::schema::{AppConfig, SiteConfig};
+use crate::config::schema::{AppConfig, ProxyProtocolConfig, SiteConfig};
 
 /// Warn (advisory, not fatal) when more than one distinct `redis://`/`rediss://`
 /// URL is configured across every site/route/consumer `rateLimit.store` in the
@@ -174,7 +174,10 @@ pub(super) fn validate_proxy_protocol_per_port(
             first.insert(port, i);
             continue;
         };
-        if config.sites[j].proxy_protocol != site.proxy_protocol {
+        if !ProxyProtocolConfig::same_policy(
+            config.sites[j].proxy_protocol.as_ref(),
+            site.proxy_protocol.as_ref(),
+        ) {
             errors.push(ValidationError::new(
                 format!("sites[{i}].proxyProtocol"),
                 format!(

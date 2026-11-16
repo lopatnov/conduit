@@ -2734,6 +2734,13 @@ fn proxy_protocol_sites_on_one_port_must_agree() {
             .any(|e| e.path == "sites[1].proxyProtocol" && e.message.contains("share port 443")),
         "{e:?}"
     );
+    // the same policy written another way (order, defaults written out): fine
+    let e = errs(&format!(
+        r#"{{ "sites": [
+            {{ "host": "a.test", "port": 443, {tls}, "proxyProtocol": {{ "trustedSources": ["10.0.0.0/8", "192.0.2.1"] }} }},
+            {{ "host": "b.test", "port": 443, {tls}, "proxyProtocol": {{ "trustedSources": ["192.0.2.1", "10.0.0.0/8"], "timeoutMs": 5000 }} }} ] }}"#
+    ));
+    assert!(!e.iter().any(|e| e.message.contains("share port")), "{e:?}");
     // the same block on both: fine
     let e = errs(&format!(
         r#"{{ "sites": [

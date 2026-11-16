@@ -85,6 +85,19 @@ impl ProxyProtocolConfig {
     /// The most `maxHeaderBytes`: a v2 header with the largest length its 16-bit field can declare.
     pub const MAX_HEADER_BYTES: usize = 16 + 65535;
 
+    /// `true` when `a` and `b` (either may be absent) ask for the same behaviour: the same sources whatever their order or
+    /// repetition, and the same deadline and cap once the defaults are filled in. Two sites on one port, and the two sides of
+    /// a reload, are compared this way, so writing a default out or reordering the list is not a difference.
+    pub fn same_policy(a: Option<&Self>, b: Option<&Self>) -> bool {
+        fn key(p: &ProxyProtocolConfig) -> (Vec<&str>, std::time::Duration, usize) {
+            let mut sources: Vec<&str> = p.trusted_sources.iter().map(String::as_str).collect();
+            sources.sort_unstable();
+            sources.dedup();
+            (sources, p.timeout(), p.header_cap())
+        }
+        a.map(key) == b.map(key)
+    }
+
     /// `true` when the header of a connection from `peer` is believed.
     pub fn trusts(&self, peer: &std::net::IpAddr) -> bool {
         self.trusted_sources
@@ -101,5 +114,47 @@ impl ProxyProtocolConfig {
     pub fn header_cap(&self) -> usize {
         self.max_header_bytes
             .unwrap_or(crate::proxy_protocol::DEFAULT_MAX_HEADER_BYTES)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pp(sources: &[&str], timeout: Option<u64>, max: Option<usize>) -> ProxyProtocolConfig {
+        ProxyProtocolConfig {
+            trusted_sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+            timeout_ms: timeout,
+            max_header_bytes: max,
+        }
+    }
+
+    #[test]
+    fn the_same_policy_written_differently_is_the_same() {
+        let base = pp(&["10.0.0.0/8", "192.0.2.1"], None, None);
+        let same = [
+            pp(&["192.0.2.1", "10.0.0.0/8"], None, None), // other order
+            pp(&["10.0.0.0/8", "192.0.2.1", "10.0.0.0/8"], None, None), // repeated
+            pp(&["10.0.0.0/8", "192.0.2.1"], Some(5000), Some(4096)), // defaults written out
+        ];
+        for other in &same {
+            assert!(ProxyProtocolConfig::same_policy(Some(&base), Some(other)));
+        }
+        assert!(ProxyProtocolConfig::same_policy(None, None));
+    }
+
+    #[test]
+    fn a_different_policy_is_different() {
+        let base = pp(&["10.0.0.0/8"], None, None);
+        for other in [
+            pp(&["10.0.0.0/16"], None, None),
+            pp(&["10.0.0.0/8", "192.0.2.1"], None, None),
+            pp(&["10.0.0.0/8"], Some(1000), None),
+            pp(&["10.0.0.0/8"], None, Some(200)),
+        ] {
+            assert!(!ProxyProtocolConfig::same_policy(Some(&base), Some(&other)));
+        }
+        assert!(!ProxyProtocolConfig::same_policy(Some(&base), None));
+        assert!(!ProxyProtocolConfig::same_policy(None, Some(&base)));
     }
 }
