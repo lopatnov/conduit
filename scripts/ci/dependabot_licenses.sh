@@ -38,6 +38,13 @@ note() { echo "::notice title=Dependabot licences::$*"; }
 fail() { echo "::error title=Dependabot licences::$*"; }
 
 auth_b64() { printf 'x-access-token:%s' "${GH_TOKEN:?GH_TOKEN is required}" | base64 -w0; }
+# The base64 form of the token is not masked by the runner on its own.
+if [ -n "${GH_TOKEN:-}" ] && [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::add-mask::$(auth_b64)"; fi
+
+# git with the token in its environment (GIT_CONFIG_*), not in its argv where any process on the runner could read it.
+git_auth() {
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(auth_b64)" git "$@"
+}
 
 # Paths a Dependabot Cargo PR may touch for this job to act on it.
 allowed_path() {
@@ -68,7 +75,7 @@ handle_pr() {
       note "#$n skipped: it changes $f, not only Cargo.toml / Cargo.lock (regenerate the file by hand)"
       return 0
     fi
-  done < <(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[].filename')
+  done < <(gh api --paginate "repos/$REPO/pulls/$n/files" --jq '.[] | .filename, (.previous_filename // empty)')
 
   # 2. Up to date with main, so the file is made for the Cargo.lock CI tests (the merge result).
   local behind updated=0
@@ -98,13 +105,13 @@ handle_pr() {
   local dir="$WORK/pr-$n"
   rm -rf "$dir"
   git init -q "$dir"
-  git -C "$dir" -c http.extraheader="AUTHORIZATION: basic $(auth_b64)" fetch -q --depth 1 \
-    "https://github.com/$REPO.git" "$sha"
+  git_auth -C "$dir" fetch -q --depth 1 "https://github.com/$REPO.git" "$sha"
   git -C "$dir" checkout -q FETCH_HEAD
   cp "$TRUSTED/scripts/third_party_licenses.py" "$dir/scripts/third_party_licenses.py"
   rm -rf "$dir/ci" && cp -R "$TRUSTED/ci" "$dir/ci"
-  (cd "$dir" && cargo fetch --locked -q)
-  if ! python3 "$dir/scripts/third_party_licenses.py" --write "$dir/$LICENSE_FILE"; then
+  # The token is not needed past this point until the push; keep it out of the processes that read the PR's manifests.
+  (cd "$dir" && env -u GH_TOKEN cargo fetch --locked -q)
+  if ! env -u GH_TOKEN python3 "$dir/scripts/third_party_licenses.py" --write "$dir/$LICENSE_FILE"; then
     fail "#$n: the licence policy rejects a crate in this bump; the file is not regenerated (see the log above)"
     return 1
   fi
@@ -123,7 +130,7 @@ handle_pr() {
     return 0
   fi
   # --force-with-lease against the sha just used: a push by Dependabot in between makes this fail instead of being lost.
-  git -C "$dir" -c http.extraheader="AUTHORIZATION: basic $(auth_b64)" push -q \
+  git_auth -C "$dir" push -q \
     --force-with-lease="refs/heads/$ref:$sha" "https://github.com/$REPO.git" "HEAD:refs/heads/$ref"
   note "#$n: $LICENSE_FILE regenerated and pushed to $ref"
   dispatch_ci "$n" "$ref"

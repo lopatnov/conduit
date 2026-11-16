@@ -72,6 +72,8 @@ jobs:
       - name: Regenerate on the Dependabot branch(es)
         env:
           GH_TOKEN: ${{ github.token }}
+          # The stable toolchain installed above, whatever a toolchain file in a checkout might say.
+          RUSTUP_TOOLCHAIN: stable
           # Untrusted values go through env, never into the script text.
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
         run: |
