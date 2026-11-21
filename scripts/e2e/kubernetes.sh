@@ -89,6 +89,12 @@ wait_for() {
 restarts() { kc get pods -l app=conduit -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}'; }
 ready_status() { kc get conduitsite "$1" -o jsonpath='{.status.ready}'; }
 message_status() { kc get conduitsite "$1" -o jsonpath='{.status.message}'; }
+ready_status_is() { [ "$(ready_status "$1")" = "$2" ]; }
+no_conduit_pods() {
+  local pod_names
+  pod_names=$(kc get pods -l app=conduit -o name) || return 1
+  [ -z "$pod_names" ]
+}
 
 e2e_cleanup_k8s() {
   local exit_status=$?
@@ -317,23 +323,29 @@ other_namespace_status=$(kc get conduitsite e2e-other-namespace -n e2e-other -o 
 [ "$(restarts)" = "$before" ] || fail "a conduit pod restarted during the live changes ($before -> $(restarts))"
 ok "no pod restarted during live changes"
 
-# Restart both pods and prove they load the latest valid object, keep invalid objects inactive, and still ignore
-# ConduitSites from outside their configured namespace.
+# Recreate both pods after clearing the objects' old status. Prove the new pods load the latest valid object, write
+# fresh status for valid and invalid objects, and still ignore ConduitSites from outside their configured namespace.
 old_uids=$(running_pod_uids)
-kc rollout restart deployment/conduit >/dev/null
-kc rollout status deployment/conduit --timeout=180s >/dev/null || fail "conduit did not recover after a rollout restart"
+kc scale deployment/conduit --replicas=0 >/dev/null
+wait_for 60 "old conduit pods did not terminate before clearing status" no_conduit_pods
+kc patch conduitsite e2e-live --subresource=status --type=merge -p '{"status":null}' >/dev/null
+kc patch conduitsite e2e-bad --subresource=status --type=merge -p '{"status":null}' >/dev/null
+[ -z "$(kc get conduitsite e2e-live -o jsonpath='{.status}')" ] || fail "could not clear the old status of e2e-live"
+[ -z "$(kc get conduitsite e2e-bad -o jsonpath='{.status}')" ] || fail "could not clear the old status of e2e-bad"
+kc scale deployment/conduit --replicas=2 >/dev/null
+kc rollout status deployment/conduit --timeout=180s >/dev/null || fail "conduit did not recover after restarting from zero replicas"
 new_uids=$(running_pod_uids)
-[ "$old_uids" != "$new_uids" ] || fail "the rollout restart did not replace the conduit pods"
+[ "$old_uids" != "$new_uids" ] || fail "scaling the deployment replaced no conduit pods"
 pod_ips=$(running_pod_ips)
 read -r -a pods <<< "$pod_ips"
-[ "$(wc -w <<< "$pod_ips")" -eq 2 ] || fail "expected two running conduit pods after restart"
+[ "$(wc -w <<< "$pod_ips")" -eq 2 ] || fail "expected two running conduit pods after recreation"
 wait_for 60 "new conduit pods did not load the latest valid ConduitSite" version_everywhere 3
-[ "$(ready_status e2e-live)" = true ] || fail "the restarted pods did not report the valid ConduitSite as ready"
-[ "$(ready_status e2e-bad)" = false ] || fail "the restarted pods did not report the invalid ConduitSite"
+wait_for 60 "new conduit pods did not report the valid ConduitSite as ready" ready_status_is e2e-live true
+wait_for 60 "new conduit pods did not report the invalid ConduitSite" ready_status_is e2e-bad false
 namespace_site_unmatched || fail "a restarted pod loaded a ConduitSite from another namespace"
 other_namespace_status=$(kc get conduitsite e2e-other-namespace -n e2e-other -o jsonpath='{.status.ready}')
 [ -z "$other_namespace_status" ] || fail "restarted Conduit pods wrote status outside their watched namespace"
-ok "new pods loaded the current config and kept other namespaces isolated"
+ok "new pods loaded the current config, wrote fresh status, and kept other namespaces isolated"
 
 # delete: the host is not served any more
 kc delete conduitsite e2e-live e2e-bad >/dev/null

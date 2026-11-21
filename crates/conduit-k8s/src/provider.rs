@@ -7,15 +7,11 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use futures::StreamExt as _;
 use kube::api::{Patch, PatchParams};
-use kube::runtime::watcher::{watcher, Config as WatcherConfig, Event};
+use kube::runtime::watcher::Event;
 use kube::{Api, Client};
-
-use conduit_config_core::provider::Provider;
 
 use crate::{ConduitSite, CrdConfigBuilder};
 
@@ -63,72 +59,37 @@ impl<B: CrdConfigBuilder> KubernetesProvider<B> {
     }
 }
 
-#[async_trait]
-impl<B: CrdConfigBuilder> Provider<B::Config> for KubernetesProvider<B> {
-    fn name(&self) -> &'static str {
-        "kubernetes"
-    }
+#[path = "provider/run.rs"]
+mod run;
 
-    async fn run(&self, tx: mpsc::Sender<B::Config>) -> Result<()> {
-        let client = Client::try_default().await?;
-        let api: Api<ConduitSite> = make_api(&client, &self.namespace);
+// ── Internal watch helpers ────────────────────────────────────────────────────
 
-        // Build and send the initial config from the current list of CRDs. A site that does not
-        // convert is left out and logged; it does not stop the others.
-        let mut set = SiteSet::<B>::new();
-        let list = api.list(&Default::default()).await?;
-        let (cfg, reports) = set.build(list.items.iter(), &self.admin_bind);
-        let mut status = StatusWriter::default();
-        status.write(&client, &list.items, &reports).await;
-        if tx.send(cfg).await.is_err() {
-            return Ok(());
+#[derive(Debug, Clone, Copy)]
+struct WatchRetry {
+    delay: Duration,
+}
+
+impl Default for WatchRetry {
+    fn default() -> Self {
+        Self {
+            delay: Duration::from_secs(1),
         }
-        tracing::info!(
-            provider = "kubernetes",
-            namespace = %self.namespace,
-            sites = list.items.len(),
-            "initial config loaded from ConduitSite CRDs"
-        );
-
-        // Watch for changes and rebuild the full config on every event.
-        let mut stream = watcher(api.clone(), WatcherConfig::default()).boxed();
-        let mut watch_retry_delay = Duration::from_secs(1);
-        while let Some(event) = stream.next().await {
-            match event {
-                Ok(event) if triggers_rebuild(&event) => {
-                    watch_retry_delay = Duration::from_secs(1);
-                    if !handle_watch_event::<B>(
-                        &client,
-                        &self.namespace,
-                        &self.admin_bind,
-                        &tx,
-                        &mut set,
-                        &mut status,
-                    )
-                    .await
-                    {
-                        return Ok(());
-                    }
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "ConduitSite watch error");
-                    tokio::time::sleep(watch_retry_delay).await;
-                    watch_retry_delay = watch_retry_delay
-                        .saturating_mul(2)
-                        .min(Duration::from_secs(30));
-                    // A failed stream may keep yielding the same transport error. Recreate the watcher so it
-                    // performs a fresh list and resumes from the current resource version after connectivity returns.
-                    stream = watcher(api.clone(), WatcherConfig::default()).boxed();
-                }
-            }
-        }
-
-        Ok(())
     }
 }
 
-// ── Internal watch helpers ────────────────────────────────────────────────────
+impl WatchRetry {
+    fn next_delay(&mut self) -> Duration {
+        let delay = self.delay;
+        self.delay = self.delay.saturating_mul(2).min(Duration::from_secs(30));
+        delay
+    }
+
+    fn observe<K>(&mut self, event: &Event<K>) {
+        if matches!(event, Event::Apply(_) | Event::Delete(_)) {
+            self.delay = Duration::from_secs(1);
+        }
+    }
+}
 
 /// Whether a watch event should trigger a re-list and config rebuild.
 ///
@@ -399,6 +360,7 @@ impl StatusWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use conduit_config_core::provider::Provider;
 
     /// #408: a resync's `Init` and per-object `InitApply` events must not each trigger a
     /// full re-list; only the events that change state, or complete the resync, do.
@@ -409,6 +371,32 @@ mod tests {
         assert!(triggers_rebuild::<u8>(&Event::InitDone));
         assert!(!triggers_rebuild::<u8>(&Event::Init));
         assert!(!triggers_rebuild(&Event::InitApply(1)));
+    }
+
+    #[test]
+    fn watch_retry_delay_grows_exponentially_and_caps_at_thirty_seconds() {
+        let mut retry = WatchRetry::default();
+
+        for expected_secs in [1, 2, 4, 8, 16, 30, 30] {
+            assert_eq!(retry.next_delay(), Duration::from_secs(expected_secs));
+        }
+    }
+
+    #[test]
+    fn only_applied_or_deleted_objects_reset_watch_backoff() {
+        let mut retry = WatchRetry::default();
+        assert_eq!(retry.next_delay(), Duration::from_secs(1));
+        assert_eq!(retry.next_delay(), Duration::from_secs(2));
+
+        retry.observe(&Event::<ConduitSite>::InitDone);
+        assert_eq!(retry.next_delay(), Duration::from_secs(4));
+
+        retry.observe(&Event::Apply(1));
+        assert_eq!(retry.next_delay(), Duration::from_secs(1));
+        assert_eq!(retry.next_delay(), Duration::from_secs(2));
+
+        retry.observe(&Event::Delete(1));
+        assert_eq!(retry.next_delay(), Duration::from_secs(1));
     }
 
     /// Minimal `CrdConfigBuilder` binding used only by this crate's own
