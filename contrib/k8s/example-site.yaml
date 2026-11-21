@@ -134,3 +134,19 @@ roleRef:
   kind: Role
   name: conduit-crd-reader
   apiGroup: rbac.authorization.k8s.io
+
+---
+# Service in front of the Deployment: a site listens on the `port` of its spec (8080 above), the Service forwards port 80
+# to it (docs/kubernetes.md, "Install", step 3)
+apiVersion: v1
+kind: Service
+metadata:
+  name: conduit
+  namespace: default
+spec:
+  selector:
+    app: conduit
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

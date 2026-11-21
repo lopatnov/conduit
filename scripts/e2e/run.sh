@@ -7,6 +7,9 @@
 # BINARY is a conduit built with the features the scenarios need (`--features standard` is enough for the ones here).
 # A scenario is a file `NAME.sh` in this directory that takes BINARY as its only argument; lib.sh describes the network
 # it runs in. A failing scenario does not stop the others, and the exit status is non-zero when any failed.
+#
+# Without names, every scenario runs except those of OWN_JOB: they need another build of the binary and run in a CI job of
+# their own (`kubernetes`: `--features kubernetes,redis`, a k3s cluster in Docker; job `e2e-kubernetes`). Name one to run it.
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -20,7 +23,7 @@ scenarios=("$@")
 if [ "${#scenarios[@]}" -eq 0 ]; then
   for f in "$here"/*.sh; do
     name=$(basename "$f" .sh)
-    case "$name" in lib | run) continue ;; esac
+    case "$name" in lib | run | kubernetes) continue ;; esac  # kubernetes: OWN_JOB above
     scenarios+=("$name")
   done
 fi
