@@ -12,7 +12,10 @@
 # What it checks, against docs/kubernetes.md:
 #   - the shipped manifests (contrib/k8s/conduitsite-crd.yaml and contrib/k8s/example-site.yaml: two sites, RBAC, a
 #     Deployment of two replicas and a Service) apply, and a request through the Service reaches the upstream;
-#   - a ConduitSite added, edited and deleted while Conduit runs: the change is live, no pod restarts;
+#   - a ConduitSite added, edited and deleted while Conduit runs: the change is live, and no pod restarts during hot
+#     changes;
+#   - one replica temporarily loses API access, keeps its last config, then reconnects and resyncs the latest objects;
+#   - a rollout reloads the current objects, and objects in another namespace stay out of the config;
 #   - `status.ready` / `status.message` are written back for a valid and an invalid object;
 #   - an invalid edit of a working site keeps its last good version; a new invalid object answers 503 for its host and
 #     holds back no other site;
@@ -46,6 +49,32 @@ code_svc() { curl_svc -o /dev/null -w '%{http_code}' "$@"; }
 running_pod_ips() {
   kc get pods -l app=conduit --field-selector=status.phase=Running \
     -o jsonpath='{range .items[*]}{.metadata.deletionTimestamp}|{.status.podIP}{"\n"}{end}' | sed -n 's/^|//p' | tr '\n' ' '
+}
+running_pod_names() {
+  kc get pods -l app=conduit --field-selector=status.phase=Running -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | tr '\n' ' '
+}
+running_pod_uids() {
+  kc get pods -l app=conduit --field-selector=status.phase=Running -o jsonpath='{range .items[*]}{.metadata.uid}{"\n"}{end}' | sort | tr '\n' ' '
+}
+# Interrupt one pod's in-cluster API connection; the k3s container is privileged and nsenter applies a rule inside
+# only that pod's network namespace.
+block_api_for_pod() {
+  local pod=$1 container_id pid
+  container_id=$(kc get pod "$pod" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's#^containerd://##')
+  pid=$(docker exec "$K3S" ctr -a /run/k3s/containerd/containerd.sock -n k8s.io tasks ls | awk -v id="$container_id" '$1 == id { print $2 }')
+  [[ "$pid" =~ ^[0-9]+$ ]] || fail "could not find the containerd task PID for $pod"
+  BLOCKED_PID=$pid
+  KUBE_API_IP=$(kc get service kubernetes -o jsonpath='{.spec.clusterIP}')
+  docker exec "$K3S" nsenter -t "$BLOCKED_PID" -n iptables -I OUTPUT 1 -d "$KUBE_API_IP" -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+}
+unblock_api_for_pod() {
+  docker exec "$K3S" nsenter -t "$BLOCKED_PID" -n iptables -D OUTPUT -d "$KUBE_API_IP" -p tcp --dport 443 -j REJECT --reject-with tcp-reset
+  if docker exec "$K3S" nsenter -t "$BLOCKED_PID" -n iptables -C OUTPUT -d "$KUBE_API_IP" -p tcp --dport 443 -j REJECT --reject-with tcp-reset >/dev/null 2>&1; then
+    fail "the API egress block remained after removal"
+  fi
+  local response
+  response=$(docker exec "$K3S" timeout 5 nsenter -t "$BLOCKED_PID" -n telnet "$KUBE_API_IP" 443 2>&1 || true)
+  grep -q 'Connected to' <<< "$response" || fail "the Kubernetes API was not reachable after removing the egress block: $response"
 }
 # wait_for SECONDS DESCRIPTION COMMAND...: poll COMMAND every second until it succeeds
 wait_for() {
@@ -198,6 +227,11 @@ version_everywhere() {
     grep -Fxi "x-e2e-version: $1" <<< "${headers//$'\r'/}" >/dev/null || return 1
   done
 }
+version_on_ip() {
+  local ip=$1 version=$2 headers
+  headers=$(curl_svc -fI -H 'Host: live.test' "http://$ip:8080/get") || return 1
+  printf '%s\n' "$headers" | tr -d '\r' | grep -Fxi "x-e2e-version: $version" >/dev/null
+}
 unmatched() {
   local code
   code=$(code_svc -H 'Host: live.test' "$1") || return 1
@@ -213,13 +247,27 @@ live_site 2
 wait_for 60 "an edit of a ConduitSite did not take effect" version_everywhere 2
 ok "an edit is live (X-E2E-Version 1 -> 2)"
 
+# Interrupt one replica's API connection, then update the CRD. The connected replica must update while the isolated
+# replica keeps its last config. After API access returns, the watcher must reconnect and resync the current list.
+blocked_pod=$(awk '{print $1}' <<< "$(running_pod_names)")
+blocked_ip=$(kc get pod "$blocked_pod" -o jsonpath='{.status.podIP}')
+healthy_ip=$(awk -v blocked="$blocked_ip" '{for (i = 1; i <= NF; i++) if ($i != blocked) {print $i; exit}}' <<< "$pod_ips")
+[ -n "$healthy_ip" ] || fail "could not find a second conduit pod to compare with $blocked_pod"
+block_api_for_pod "$blocked_pod"
+live_site 3
+wait_for 60 "the replica with API access did not apply the new site version" version_on_ip "$healthy_ip" 3
+version_on_ip "$blocked_ip" 2 || fail "the isolated replica changed config without access to the Kubernetes API"
+unblock_api_for_pod
+wait_for 120 "the isolated replica did not resync the current site version after API access returned" version_everywhere 3
+ok "a replica recovered from Kubernetes API/watch interruption and resynced the latest site version"
+
 # an edit that breaks the site (a host path is refused in a ConduitSite): the last good version keeps serving
-live_site 3 '  static: /etc'
+live_site 4 '  static: /etc'
 wait_for 30 "status.ready of an invalid edit is not false" sh -c "[ \"\$(docker exec $K3S kubectl get conduitsite e2e-live -o jsonpath='{.status.ready}')\" = false ]"
 msg=$(message_status e2e-live)
 echo "$msg" | grep -qi 'host file path' || fail "status.message of an invalid edit does not say why: $msg"
 sleep 3
-version_everywhere 2 || fail "after an invalid edit the site does not serve its last good version"
+version_everywhere 3 || fail "after an invalid edit the site does not serve its last good version"
 ok "an invalid edit: status.ready=false with the reason, the last good version keeps serving"
 
 # a new invalid object: its host answers 503 (the placeholder), the other sites are not held back
@@ -236,8 +284,56 @@ YAML
 wait_for 60 "a new invalid ConduitSite does not answer 503 for its host" sh -c "[ \"\$(docker exec $K3S kubectl exec client -- curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -H 'Host: bad.test' http://conduit/etc/passwd)\" = 503 ]"
 [ "$(ready_status e2e-bad)" = false ] || fail "status.ready of a new invalid object is '$(ready_status e2e-bad)'"
 [ "$(code_svc -H 'Host: app.example.com' http://conduit/api/get)" = 200 ] || fail "a new invalid object held back another site"
-version_everywhere 2 || fail "a new invalid object held back e2e-live"
+version_everywhere 3 || fail "a new invalid object held back e2e-live"
 ok "a new invalid ConduitSite: 503 for its host, status.ready=false, the other sites still served"
+
+# Restore a valid current CRD before restarting, so the new pods must load its latest version from the API.
+live_site 3
+wait_for 60 "the valid site edit was not restored" version_everywhere 3
+wait_for 30 "status.ready of the restored valid site" sh -c "[ \"\$(docker exec $K3S kubectl get conduitsite e2e-live -o jsonpath='{.status.ready}')\" = true ]"
+
+# A resource in another namespace is outside this deployment's watch scope.
+kc create namespace e2e-other >/dev/null
+kc apply -f - >/dev/null <<'YAML'
+apiVersion: conduit.lopatnov.github.io/v1
+kind: ConduitSite
+metadata: { name: e2e-other-namespace, namespace: e2e-other }
+spec:
+  port: 8080
+  host: other-namespace.test
+  proxy: http://api-svc:4000
+YAML
+namespace_site_unmatched() {
+  local ip code
+  for ip in "${pods[@]}"; do
+    code=$(code_svc -H 'Host: other-namespace.test' "http://$ip:8080/get") || return 1
+    [ "$code" = 404 ] || return 1
+  done
+}
+wait_for 60 "a ConduitSite from another namespace affected the default namespace config" namespace_site_unmatched
+other_namespace_status=$(kc get conduitsite e2e-other-namespace -n e2e-other -o jsonpath='{.status.ready}')
+[ -z "$other_namespace_status" ] || fail "Conduit wrote status for a ConduitSite outside its watched namespace"
+
+[ "$(restarts)" = "$before" ] || fail "a conduit pod restarted during the live changes ($before -> $(restarts))"
+ok "no pod restarted during live changes"
+
+# Restart both pods and prove they load the latest valid object, keep invalid objects inactive, and still ignore
+# ConduitSites from outside their configured namespace.
+old_uids=$(running_pod_uids)
+kc rollout restart deployment/conduit >/dev/null
+kc rollout status deployment/conduit --timeout=180s >/dev/null || fail "conduit did not recover after a rollout restart"
+new_uids=$(running_pod_uids)
+[ "$old_uids" != "$new_uids" ] || fail "the rollout restart did not replace the conduit pods"
+pod_ips=$(running_pod_ips)
+read -r -a pods <<< "$pod_ips"
+[ "$(wc -w <<< "$pod_ips")" -eq 2 ] || fail "expected two running conduit pods after restart"
+wait_for 60 "new conduit pods did not load the latest valid ConduitSite" version_everywhere 3
+[ "$(ready_status e2e-live)" = true ] || fail "the restarted pods did not report the valid ConduitSite as ready"
+[ "$(ready_status e2e-bad)" = false ] || fail "the restarted pods did not report the invalid ConduitSite"
+namespace_site_unmatched || fail "a restarted pod loaded a ConduitSite from another namespace"
+other_namespace_status=$(kc get conduitsite e2e-other-namespace -n e2e-other -o jsonpath='{.status.ready}')
+[ -z "$other_namespace_status" ] || fail "restarted Conduit pods wrote status outside their watched namespace"
+ok "new pods loaded the current config and kept other namespaces isolated"
 
 # delete: the host is not served any more
 kc delete conduitsite e2e-live e2e-bad >/dev/null
@@ -249,8 +345,6 @@ gone() {
 }
 wait_for 60 "a deleted ConduitSite is still served" gone
 ok "a deleted ConduitSite is no longer served"
-[ "$(restarts)" = "$before" ] || fail "a conduit pod restarted during the live changes ($before -> $(restarts))"
-ok "no pod restarted: every change above was applied live"
 
 # ── 3. a Role without the new apiGroups: the pod says why and exits ──
 kc apply -f - >/dev/null <<'YAML'

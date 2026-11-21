@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -90,10 +91,12 @@ impl<B: CrdConfigBuilder> Provider<B::Config> for KubernetesProvider<B> {
         );
 
         // Watch for changes and rebuild the full config on every event.
-        let mut stream = watcher(api, WatcherConfig::default()).boxed();
+        let mut stream = watcher(api.clone(), WatcherConfig::default()).boxed();
+        let mut watch_retry_delay = Duration::from_secs(1);
         while let Some(event) = stream.next().await {
             match event {
                 Ok(event) if triggers_rebuild(&event) => {
+                    watch_retry_delay = Duration::from_secs(1);
                     if !handle_watch_event::<B>(
                         &client,
                         &self.namespace,
@@ -110,6 +113,13 @@ impl<B: CrdConfigBuilder> Provider<B::Config> for KubernetesProvider<B> {
                 Ok(_) => {}
                 Err(e) => {
                     tracing::warn!(error = %e, "ConduitSite watch error");
+                    tokio::time::sleep(watch_retry_delay).await;
+                    watch_retry_delay = watch_retry_delay
+                        .saturating_mul(2)
+                        .min(Duration::from_secs(30));
+                    // A failed stream may keep yielding the same transport error. Recreate the watcher so it
+                    // performs a fresh list and resumes from the current resource version after connectivity returns.
+                    stream = watcher(api.clone(), WatcherConfig::default()).boxed();
                 }
             }
         }

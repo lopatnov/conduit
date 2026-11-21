@@ -41,6 +41,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Kubernetes startup now installs rustls's `ring` provider before creating the Kubernetes client.** Builds that include
   both rustls providers previously panicked before loading their initial `ConduitSite` configuration.
 
+- **The Kubernetes provider retries a failed watch with exponential backoff and reloads the current ConduitSite list after
+  reconnecting.** A transport error could otherwise leave a replica serving stale configuration indefinitely.
+
 ### Added
 
 - **`contrib/k8s/example-site.yaml` has a `Service`** in front of its Deployment (port 80 to the sites' port 8080), as

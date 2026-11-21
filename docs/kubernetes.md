@@ -350,7 +350,7 @@ has a token that a writer does not know. In practice:
 | A field of the spec has no effect                                    | `unknown key` warning in the log: the field name is misspelled (field names are camelCase, as in a config file) |
 | `cold field changed — restart required`                              | See [what does not apply live](#what-does-not-apply-live)                                              |
 | `READY` is `false`, or empty                                         | `false`: the spec is invalid, and `kubectl get conduitsites -o jsonpath='{.status.message}'` says why and whether the last valid version still serves. Empty: Conduit may not write the status (see the RBAC above); the log says so once |
-| `ConduitSite watch error` in the log                                 | The watch on the API server failed; Conduit keeps the config it has                                   |
+| `ConduitSite watch error` in the log                                 | The watch on the API server failed; the current config stays active, retries use exponential backoff, and reconnection triggers a namespace relist |
 
 **Upgrading from a release that used the group `conduit.io`.** The API group is `conduit.lopatnov.github.io` since this
 version (`conduit.io` is a domain the project does not own). Objects of the old group are not read. Keep the manifests you
