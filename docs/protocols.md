@@ -386,7 +386,7 @@ These are gaps rather than choices; each is a candidate feature:
 - UDP proxying (WebRTC media, QUIC, DNS, syslog).
 - An access filter (IP allow/deny) on TCP sites, and TLS **to** the upstream of a TCP site (TLS termination on the client side
   works, see [TLS on a TCP site](#tls-on-a-tcp-site)).
-- The PROXY protocol on plain-HTTP ports, and writing it to an HTTP upstream (it works on TLS ports and on `tcp` sites, see
+- Writing the PROXY protocol to an HTTP upstream (receiving it works on plain HTTP, TLS and `tcp` sites, see
   [PROXY protocol](configuration.md#proxy-protocol)).
 - Port ranges (FTP passive ports need one site each).
 - Active health probes that speak h2c or TLS (a TLS upstream is probed by connecting only), or a TCP-level probe for TCP sites.

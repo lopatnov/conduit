@@ -1,16 +1,16 @@
-//! The PROXY protocol on the HTTPS listeners (issue #757).
+//! The PROXY protocol on the HTTP and HTTPS listeners (issues #42 and #757).
 //!
-//! Pingora runs one callback per listener collection after a connection is accepted and before the TLS handshake
-//! ([`PreTlsProcess`]). Conduit serves every HTTP(S) site from one service, so the callback looks at the local port of the
-//! connection to find the `proxyProtocol` block of the sites on it, and does nothing on a port that has none.
+//! Pingora's [`PreTlsProcess`] callback reads the header before a TLS handshake. For plain HTTP, Conduit wraps Pingora's
+//! [`ServerApp`] and reads the header before delegating to the HTTP parser. Both look at the local port of the connection to
+//! find the `proxyProtocol` block, and do nothing on a port that has none.
 //!
 //! For a port that has one the header is required and is believed only from `trustedSources`: any other connection is
-//! dropped before the handshake. The client address in the header then replaces the socket's peer address in the socket
+//! dropped before the handshake or HTTP parsing. The client address in the header then replaces the socket's peer address in the socket
 //! digest, which is what `session.client_addr()` reads: `ipFilter`, rate limits, `X-Forwarded-For` and the access log all
-//! follow with no change of their own. Bytes read after the header are put back for the TLS handshake.
+//! follow with no change of their own. Bytes read after the header are put back for the TLS handshake or HTTP parser.
 //!
-//! Pingora logs a connection dropped here as a downstream handshake error (one line per connection, at `error`); the
-//! text names the reason.
+//! Pingora logs TLS connections dropped by the callback as downstream handshake errors (`error`); the HTTP wrapper logs
+//! refused connections at `warn`. Both messages include the reason.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -19,12 +19,19 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use conduit_tcp::proxy_protocol::{read_header, Header, ReadError};
 use conduit_tcp::ProxyProtocolConfig;
+use pingora_core::apps::ServerApp;
 use pingora_core::listeners::PreTlsProcess;
 use pingora_core::protocols::l4::stream::Stream as L4Stream;
-use pingora_core::protocols::{GetSocketDigest, SocketDigest};
+use pingora_core::protocols::{GetSocketDigest, SocketDigest, Stream};
+use pingora_core::server::ShutdownWatch;
 use pingora_core::{Error, ErrorType, Result};
 
 use crate::config::schema::SiteConfig;
+
+pub(super) type SiteProxyProtocolHooks = (
+    Option<Arc<PreTlsProxyProtocol>>,
+    Option<Arc<PreHttpProxyProtocol>>,
+);
 
 /// The `proxyProtocol` block of each HTTPS port that has one, found by the port a connection arrived on.
 pub(super) struct PreTlsProxyProtocol {
@@ -40,8 +47,10 @@ impl PreTlsProxyProtocol {
     pub(super) fn for_sites(
         sites: &[SiteConfig],
         has_tls_listener: impl Fn(u16) -> bool,
-    ) -> anyhow::Result<Option<Arc<Self>>> {
-        let mut ports = HashMap::new();
+        has_plain_http_listener: impl Fn(u16) -> bool,
+    ) -> anyhow::Result<SiteProxyProtocolHooks> {
+        let mut tls_ports = HashMap::new();
+        let mut http_ports = HashMap::new();
         for (i, site) in sites.iter().enumerate().filter(|(_, s)| s.tcp.is_none()) {
             let Some(pp) = &site.proxy_protocol else {
                 continue;
@@ -54,15 +63,22 @@ impl PreTlsProxyProtocol {
                 port != 0,
                 "sites[{i}] has proxyProtocol on port 0, which binds a port the policy cannot be found by"
             );
-            anyhow::ensure!(
-                has_tls_listener(port),
-                "sites[{i}] has proxyProtocol, but port {port} has no TLS listener (its certificate is missing or its \
-                 ACME order failed): not serving it without the header it requires"
-            );
-            // sites that share a port must agree (validated), so the first one is the port's
-            ports.entry(port).or_insert_with(|| pp.clone());
+            if has_tls_listener(port) {
+                // Sites that share a port must agree (validated), so the first one is the port's policy.
+                tls_ports.entry(port).or_insert_with(|| pp.clone());
+            } else if has_plain_http_listener(port) && site.tls.is_none() {
+                http_ports.entry(port).or_insert_with(|| pp.clone());
+            } else {
+                anyhow::bail!(
+                    "sites[{i}] has proxyProtocol, but port {port} has no matching HTTP or TLS listener (its \
+                     certificate is missing or its ACME order failed): not serving it without the header it requires"
+                );
+            }
         }
-        Ok((!ports.is_empty()).then(|| Arc::new(Self { ports })))
+        Ok((
+            (!tls_ports.is_empty()).then(|| Arc::new(Self { ports: tls_ports })),
+            (!http_ports.is_empty()).then(|| Arc::new(PreHttpProxyProtocol { ports: http_ports })),
+        ))
     }
 
     /// The callback for one `tcp` site that terminates TLS: the header comes before the handshake, so the relay (which
@@ -86,6 +102,92 @@ impl PreTlsProxyProtocol {
     }
 }
 
+/// The `proxyProtocol` blocks on plain HTTP ports. The header is read before Pingora parses the request, and the stream is
+/// handed to the HTTP proxy only after its client address has been replaced.
+pub(super) struct PreHttpProxyProtocol {
+    ports: HashMap<u16, ProxyProtocolConfig>,
+}
+
+impl PreHttpProxyProtocol {
+    /// The HTTP ports with a `proxyProtocol`, sorted (for the start-up log).
+    pub(super) fn ports(&self) -> Vec<u16> {
+        let mut ports: Vec<u16> = self.ports.keys().copied().collect();
+        ports.sort_unstable();
+        ports
+    }
+
+    /// Read and remove the required header before the HTTP parser sees the stream.
+    async fn process(&self, stream: Stream) -> Option<Stream> {
+        let Some(digest) = stream.get_socket_digest() else {
+            tracing::warn!(
+                "plain HTTP connection has no socket digest; refusing PROXY protocol handling"
+            );
+            return None;
+        };
+        let Some(local) = inet(digest.local_addr()) else {
+            tracing::warn!(
+                "plain HTTP connection has no local address; refusing PROXY protocol handling"
+            );
+            return None;
+        };
+        let Some(cfg) = self.ports.get(&local.port()) else {
+            return Some(stream);
+        };
+
+        let Ok(mut stream) = stream.into_any().downcast::<L4Stream>() else {
+            tracing::warn!(
+                port = local.port(),
+                "plain HTTP stream is not a Pingora TCP stream"
+            );
+            return None;
+        };
+        if let Err(error) = read_proxy_header(&mut stream, cfg, local.port()).await {
+            tracing::warn!(port = local.port(), error = %error, "plain HTTP connection refused by PROXY protocol");
+            return None;
+        }
+        let stream: Stream = stream;
+        Some(stream)
+    }
+}
+
+/// The HTTP listener wrapper. `HttpProxy` normally starts parsing as soon as Pingora accepts a stream; this wrapper handles
+/// PROXY protocol first on the configured plain HTTP ports, then delegates to the unchanged HTTP proxy.
+pub(super) struct HttpProxyWithProxyProtocol<A> {
+    inner: Arc<A>,
+    plain_http: Option<Arc<PreHttpProxyProtocol>>,
+}
+
+impl<A> HttpProxyWithProxyProtocol<A> {
+    pub(super) fn new(inner: A, plain_http: Option<Arc<PreHttpProxyProtocol>>) -> Self {
+        Self {
+            inner: Arc::new(inner),
+            plain_http,
+        }
+    }
+}
+
+#[async_trait]
+impl<A> ServerApp for HttpProxyWithProxyProtocol<A>
+where
+    A: ServerApp + Send + Sync + 'static,
+{
+    async fn process_new(
+        self: &Arc<Self>,
+        stream: Stream,
+        shutdown: &ShutdownWatch,
+    ) -> Option<Stream> {
+        let stream = match &self.plain_http {
+            Some(hook) => hook.process(stream).await?,
+            None => stream,
+        };
+        self.inner.process_new(stream, shutdown).await
+    }
+
+    async fn cleanup(&self) {
+        self.inner.cleanup().await;
+    }
+}
+
 fn refuse(why: impl Into<String>) -> Box<Error> {
     Error::explain(ErrorType::Custom("ProxyProtocol"), why.into())
 }
@@ -106,18 +208,32 @@ impl PreTlsProcess for PreTlsProxyProtocol {
         let Some(cfg) = self.ports.get(&local.port()) else {
             return Ok(()); // a port without proxyProtocol
         };
-        let peer = inet(digest.peer_addr()).ok_or_else(|| {
-            refuse("the peer has no IP address, so it cannot be a trusted source")
-        })?;
-        if !cfg.trusts(&peer.ip()) {
-            return Err(refuse(format!(
-                "{} is not in proxyProtocol.trustedSources of port {}",
-                peer.ip(),
-                local.port()
-            )));
-        }
-        let read = read_header(stream, cfg.header_cap(), cfg.timeout()).await;
-        let (header, rest) = read.map_err(|e| {
+        read_proxy_header(stream, cfg, local.port()).await
+    }
+}
+
+/// Require a trusted peer to send one valid header, restore bytes read past it, and replace the socket peer when the header
+/// contains a PROXY address. Used before TLS and before plain HTTP parsing.
+async fn read_proxy_header(
+    stream: &mut L4Stream,
+    cfg: &ProxyProtocolConfig,
+    port: u16,
+) -> Result<()> {
+    let Some(digest) = stream.get_socket_digest() else {
+        return Err(refuse("the connection has no socket digest"));
+    };
+    let peer = inet(digest.peer_addr())
+        .ok_or_else(|| refuse("the peer has no IP address, so it cannot be a trusted source"))?;
+    if !cfg.trusts(&peer.ip()) {
+        return Err(refuse(format!(
+            "{} is not in proxyProtocol.trustedSources of port {}",
+            peer.ip(),
+            port
+        )));
+    }
+    let (header, rest) = read_header(stream, cfg.header_cap(), cfg.timeout())
+        .await
+        .map_err(|e| {
             refuse(match e {
                 ReadError::Refused(why) => why.to_owned(),
                 ReadError::Timeout => {
@@ -126,13 +242,12 @@ impl PreTlsProcess for PreTlsProxyProtocol {
                 ReadError::Io(e) => format!("PROXY protocol header: {e}"),
             })
         })?;
-        // The bytes after the header belong to the TLS handshake.
-        stream.rewind(&rest);
-        if let Header::Proxy { source, .. } = header {
-            replace_peer(stream, &digest, source);
-        }
-        Ok(())
+    // Bytes after the header belong to the TLS handshake or HTTP parser.
+    stream.rewind(&rest);
+    if let Header::Proxy { source, .. } = header {
+        replace_peer(stream, &digest, source);
     }
+    Ok(())
 }
 
 /// Give `stream` a socket digest whose peer address is `peer` (the cell of a digest cannot be changed once it is set).
@@ -280,31 +395,96 @@ mod tests {
         assert_eq!(&data, b"hello", "nothing was consumed");
     }
 
+    #[tokio::test]
+    async fn a_plain_http_header_replaces_the_peer_and_hands_back_the_request_bytes() {
+        let (mut client, stream, port) = pair().await;
+        let request = b"GET / HTTP/1.1\r\nHost: example.test\r\n\r\n";
+        client
+            .write_all(b"PROXY TCP4 203.0.113.9 192.0.2.1 51000 80\r\n")
+            .await
+            .unwrap();
+        client.write_all(request).await.unwrap();
+
+        let hook = PreHttpProxyProtocol {
+            ports: HashMap::from([(
+                port,
+                ProxyProtocolConfig {
+                    trusted_sources: vec!["127.0.0.0/8".to_owned()],
+                    timeout_ms: Some(300),
+                    ..Default::default()
+                },
+            )]),
+        };
+        let stream: Stream = Box::new(stream);
+        let mut stream = hook.process(stream).await.expect("a trusted HTTP header");
+        let peer = inet(stream.get_socket_digest().unwrap().peer_addr()).unwrap();
+        assert_eq!(peer, "203.0.113.9:51000".parse().unwrap());
+        let mut after = vec![0; request.len()];
+        tokio::io::AsyncReadExt::read_exact(&mut stream, &mut after)
+            .await
+            .unwrap();
+        assert_eq!(
+            after, request,
+            "the HTTP parser receives every byte after the header"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plain_http_header_from_an_untrusted_peer_is_dropped() {
+        let (mut client, stream, port) = pair().await;
+        client
+            .write_all(b"PROXY TCP4 203.0.113.9 192.0.2.1 51000 80\r\n")
+            .await
+            .unwrap();
+        let hook = PreHttpProxyProtocol {
+            ports: HashMap::from([(
+                port,
+                ProxyProtocolConfig {
+                    trusted_sources: vec!["192.0.2.0/24".to_owned()],
+                    timeout_ms: Some(300),
+                    ..Default::default()
+                },
+            )]),
+        };
+        let stream: Stream = Box::new(stream);
+        assert!(hook.process(stream).await.is_none());
+    }
+
     fn site(json: &str) -> SiteConfig {
         serde_json::from_str(json).unwrap()
     }
 
     #[test]
-    fn the_hook_is_built_only_for_ports_that_have_a_tls_listener() {
+    fn the_hooks_are_built_for_the_actual_http_or_tls_listener() {
         let with = site(
             r#"{ "port": 8443, "tls": { "cert": "c", "key": "k" },
                  "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#,
         );
+        let plain =
+            site(r#"{ "port": 8080, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#);
         let without = site(r#"{ "port": 9000 }"#);
-        let hook = PreTlsProxyProtocol::for_sites(&[without.clone(), with.clone()], |p| p == 8443)
-            .unwrap()
-            .expect("one port has it");
-        assert_eq!(hook.ports(), vec![8443]);
+        let (tls_hook, http_hook) = PreTlsProxyProtocol::for_sites(
+            &[without.clone(), with.clone(), plain.clone()],
+            |p| p == 8443,
+            |p| p == 8080,
+        )
+        .unwrap();
+        assert_eq!(tls_hook.expect("one TLS port has it").ports(), vec![8443]);
+        assert_eq!(http_hook.expect("one HTTP port has it").ports(), vec![8080]);
         // no site asks for it: no hook
-        assert!(PreTlsProxyProtocol::for_sites(&[without], |_| true)
-            .unwrap()
-            .is_none());
-        // a site that asks for it but ends up on a plain listener stops the start
-        let err = PreTlsProxyProtocol::for_sites(&[with], |_| false)
+        assert!(
+            PreTlsProxyProtocol::for_sites(&[without], |_| true, |_| true)
+                .unwrap()
+                .0
+                .is_none()
+        );
+        // A TLS-configured site that falls back to a plain listener still refuses to start.
+        let err = PreTlsProxyProtocol::for_sites(&[with], |_| false, |_| true)
             .err()
             .expect("refused");
         assert!(
-            err.to_string().contains("port 8443 has no TLS listener"),
+            err.to_string()
+                .contains("port 8443 has no matching HTTP or TLS listener"),
             "{err}"
         );
     }

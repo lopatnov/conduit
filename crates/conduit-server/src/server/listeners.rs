@@ -2,11 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use pingora_core::apps::HttpServerOptions;
 use pingora_core::services::listening::Service as ListeningService;
-use pingora_proxy::HttpProxy;
 
 use crate::config::schema::SiteConfig;
 use crate::server::tls as tls_util;
-use conduit_runtime::proxy::service::ConduitProxy;
 
 /// Maps a TCP port to `(cert_path, key_path, h2_enabled)` for TLS-enabled ports.
 /// (cert_path, key_path, http2_enabled, optional_client_auth)
@@ -118,8 +116,8 @@ pub(super) fn build_http_server_options(sites: &[SiteConfig]) -> Option<HttpServ
 }
 
 /// Add TLS listeners to the proxy service for every TLS-enabled port.
-pub(super) fn add_tls_listeners(
-    proxy_service: &mut ListeningService<HttpProxy<ConduitProxy>>,
+pub(super) fn add_tls_listeners<A>(
+    proxy_service: &mut ListeningService<A>,
     port_tls: &TlsPortMap,
 ) -> anyhow::Result<()> {
     for (port, (cert, key, enable_h2, client_auth)) in port_tls {
