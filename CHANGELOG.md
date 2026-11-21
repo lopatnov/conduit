@@ -36,6 +36,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Role`'s `apiGroups` to `conduit.lopatnov.github.io`, and apply the manifests again (the sites are gone until you do).
   Without the new `apiGroups`, the pod gets a 403 on the list and says so in its log.
 
+### Fixed
+
+- **Kubernetes startup now installs rustls's `ring` provider before creating the Kubernetes client.** Builds that include
+  both rustls providers previously panicked before loading their initial `ConduitSite` configuration.
+
 ### Added
 
 - **`contrib/k8s/example-site.yaml` has a `Service`** in front of its Deployment (port 80 to the sites' port 8080), as

@@ -5,9 +5,9 @@
 #
 # run.sh does not pick this scenario by itself: it needs a binary with the kubernetes feature, so CI runs it in its own
 # job (`e2e-kubernetes`). The cluster is k3s in one privileged container (rancher/k3s pinned by digest; kubectl is in the
-# image, so nothing else is downloaded). Every image the cluster runs is pulled by digest on the host and imported, so
-# the cluster pulls nothing itself. Conduit runs from an image built here around BINARY, the way contrib/Dockerfile
-# builds the real one (UID 65534, entrypoint the binary).
+# image, so nothing else is downloaded). Every image the cluster runs is pulled by digest on the host and staged for
+# k3s to import before kubelet starts, so the cluster pulls nothing itself. Conduit runs from an image built here around
+# BINARY, the way contrib/Dockerfile builds the real one (UID 65534, entrypoint the binary).
 #
 # What it checks, against docs/kubernetes.md:
 #   - the shipped manifests (contrib/k8s/conduitsite-crd.yaml and contrib/k8s/example-site.yaml: two sites, RBAC, a
@@ -97,12 +97,17 @@ ENTRYPOINT ["/conduit"]
 EOF
 docker build -q -t e2e/conduit:1 "$WORK/image" >/dev/null
 
+# K3s imports archives from this directory before starting kubelet. Stage every image in one tarball so the bundled
+# CoreDNS workload cannot begin its IfNotPresent pull before its pinned image is imported.
+mkdir -p "$WORK/k3s-images"
+docker save -o "$WORK/k3s-images/e2e-images.tar" \
+  "$TAG_PAUSE" "$TAG_COREDNS" e2e/httpbin:1 e2e/redis:1 e2e/client:1 e2e/conduit:1 >/dev/null
+
 # ── the cluster ──
-docker run -d --name "$K3S" --privileged "$E2E_K3S" server \
+docker run -d --name "$K3S" --privileged \
+  -v "$WORK/k3s-images:/var/lib/rancher/k3s/agent/images:ro" "$E2E_K3S" server \
   --disable traefik --disable metrics-server --disable local-storage >/dev/null
 wait_for 120 "the k3s API server does not answer" kc get --raw /readyz
-docker save "$TAG_PAUSE" "$TAG_COREDNS" e2e/httpbin:1 e2e/redis:1 e2e/client:1 e2e/conduit:1 \
-  | docker exec -i "$K3S" ctr images import - >/dev/null
 wait_for 120 "the node is not Ready" sh -c "docker exec $K3S kubectl get nodes --no-headers | grep -qw Ready"
 wait_for 120 "the default service account does not exist" kc get serviceaccount default
 ok "k3s is up, every image is imported"
