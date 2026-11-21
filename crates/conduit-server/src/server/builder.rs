@@ -108,6 +108,13 @@ fn refuse_invalid_config(config: &AppConfig) -> anyhow::Result<()> {
     anyhow::bail!("config validation errors:\n{}", messages.join("\n"))
 }
 
+/// Install the process-wide rustls crypto provider before creating any TLS clients or listeners.
+///
+/// Conduit selects `ring`; if another provider is already installed, rustls keeps that provider.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Start the Conduit server.
 ///
 /// - `config` — initial [`AppConfig`] to serve
@@ -123,9 +130,7 @@ pub fn run_server(
 ) -> anyhow::Result<()> {
     refuse_invalid_config(&config)?;
 
-    // Install the ring crypto provider for rustls before any TLS initialization.
-    // This is a no-op if another provider was already installed (e.g., in tests).
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    install_crypto_provider();
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),

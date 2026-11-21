@@ -57,6 +57,9 @@ pub fn run_kubernetes(namespace: &str) {
     use conduit_server::config::kubernetes::KubernetesProvider;
     use conduit_server::config::provider::Provider;
 
+    // The Kubernetes client initializes rustls before the server starts.
+    builder::install_crypto_provider();
+
     let (tx, mut rx) = tokio::sync::mpsc::channel::<conduit_config::schema::AppConfig>(4);
     let ns = namespace.to_owned();
 
