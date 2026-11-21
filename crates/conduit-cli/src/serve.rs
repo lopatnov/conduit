@@ -57,13 +57,19 @@ pub fn run_kubernetes(namespace: &str) {
     use conduit_server::config::kubernetes::KubernetesProvider;
     use conduit_server::config::provider::Provider;
 
+    // The Kubernetes client initializes rustls before the server starts.
+    builder::install_crypto_provider();
+
     let (tx, mut rx) = tokio::sync::mpsc::channel::<conduit_config::schema::AppConfig>(4);
+    // Keep the channel alive until the provider has logged a startup error; otherwise the receiver can exit first.
+    let tx_guard = tx.clone();
     let ns = namespace.to_owned();
 
     // Spawn the provider in its own thread with a dedicated Tokio runtime.
     std::thread::Builder::new()
         .name("kubernetes-provider".into())
         .spawn(move || {
+            let _tx_guard = tx_guard;
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()

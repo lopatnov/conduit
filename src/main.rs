@@ -14,6 +14,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 fn main() {
+    // Install rustls's process-wide provider before any command can create a TLS client.
+    conduit_server::server::builder::install_crypto_provider();
+
     // Initialise tracing with an env-filter so that RUST_LOG controls output.
     // Defaults to "warn" when RUST_LOG is unset; set RUST_LOG=conduit=info
     // (or =debug) for verbose output.

@@ -36,7 +36,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Role`'s `apiGroups` to `conduit.lopatnov.github.io`, and apply the manifests again (the sites are gone until you do).
   Without the new `apiGroups`, the pod gets a 403 on the list and says so in its log.
 
+### Fixed
+
+- **Kubernetes startup now installs rustls's `ring` provider before creating the Kubernetes client.** Builds that include
+  both rustls providers previously panicked before loading their initial `ConduitSite` configuration.
+
+- **The Kubernetes provider retries a failed watch with exponential backoff and reloads the current ConduitSite list after
+  reconnecting.** A transport error could otherwise leave a replica serving stale configuration indefinitely.
+
 ### Added
+
+- **`contrib/k8s/example-site.yaml` has a `Service`** in front of its Deployment (port 80 to the sites' port 8080), as
+  `docs/kubernetes.md` describes; before, the example applied cleanly but nothing routed to the pods.
+- **An end-to-end test on a real Kubernetes API server** (#764; CI job `e2e-kubernetes`, `scripts/e2e/kubernetes.sh`): k3s
+  in Docker runs the shipped CRD and example manifests with the CI binary, and checks requests through the Service,
+  `ConduitSite` objects added, edited, broken and deleted while Conduit runs (no pod restart, last good version kept, `503`
+  for a new invalid site), `status.ready` written back, the exit with `kubernetes provider error` on a Role for the old API
+  group, and `CONDUIT_REDIS_URL` from a `Secret` sharing one rate limit between two replicas.
 
 - **TLS termination on `tcp` sites** (#757, item 3 of 5): a `tcp` site with `tls: { cert, key }` terminates TLS and relays the
   decrypted bytes to the upstream; `tls.clientAuth` (mutual TLS) keeps a client without a certificate of the CA from the
