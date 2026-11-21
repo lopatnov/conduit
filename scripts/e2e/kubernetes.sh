@@ -39,9 +39,14 @@ TAG_PAUSE=rancher/mirrored-pause:3.6
 TAG_COREDNS=rancher/mirrored-coredns-coredns:1.13.1
 
 kc() { docker exec -i "$K3S" kubectl "$@"; }
-# curl_svc ARGS...: curl from the client pod, inside the cluster, to the Service `conduit` (port 80)
+# curl_svc ARGS...: curl from the client pod to the Service or a Conduit pod IP
 curl_svc() { kc exec client -- curl -sS --max-time 10 "$@"; }
-code_svc() { curl_svc -o /dev/null -w '%{http_code}' "$@" 2>/dev/null || true; }
+code_svc() { curl_svc -o /dev/null -w '%{http_code}' "$@"; }
+# Exclude pods from the old ReplicaSet that are still terminating after a rollout.
+running_pod_ips() {
+  kc get pods -l app=conduit --field-selector=status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.deletionTimestamp}|{.status.podIP}{"\n"}{end}' | sed -n 's/^|//p' | tr '\n' ' '
+}
 # wait_for SECONDS DESCRIPTION COMMAND...: poll COMMAND every second until it succeeds
 wait_for() {
   local secs=$1 what=$2
@@ -57,8 +62,8 @@ ready_status() { kc get conduitsite "$1" -o jsonpath='{.status.ready}'; }
 message_status() { kc get conduitsite "$1" -o jsonpath='{.status.message}'; }
 
 e2e_cleanup_k8s() {
-  status=$?
-  if [ "$status" -ne 0 ] && docker inspect "$K3S" >/dev/null 2>&1; then
+  local exit_status=$?
+  if [ "$exit_status" -ne 0 ] && docker inspect "$K3S" >/dev/null 2>&1; then
     echo "--- pods"
     kc get pods -A -o wide 2>&1 | tail -20 || true
     echo "--- conduit log"
@@ -66,8 +71,8 @@ e2e_cleanup_k8s() {
     echo "--- conduitsites"
     kc get conduitsites -o wide 2>&1 || true
   fi
-  (exit "$status")
-  e2e_cleanup
+  e2e_cleanup || true
+  exit "$exit_status"
 }
 trap e2e_cleanup_k8s EXIT
 
@@ -155,6 +160,19 @@ ok "requests through the Service reach the upstream of each example site; status
 
 # ── 2. a site added, edited and deleted while Conduit runs ──
 before=$(restarts)
+# Give unmatched hosts a stable response regardless of the order of the example sites.
+kc apply -f - >/dev/null <<'YAML'
+apiVersion: conduit.lopatnov.github.io/v1
+kind: ConduitSite
+metadata: { name: e2e-unmatched, namespace: default }
+spec:
+  port: 8080
+  healthCheck: true
+  fallback: { status: 404 }
+YAML
+pod_ips=$(running_pod_ips)
+read -r -a pods <<< "$pod_ips"
+[ "${#pods[@]}" -eq 2 ] || fail "expected two running conduit pods, found ${#pods[@]}"
 live_site() { # live_site VERSION [EXTRA_SPEC_LINE]
   kc apply -f - >/dev/null <<YAML
 apiVersion: conduit.lopatnov.github.io/v1
@@ -168,10 +186,19 @@ spec:
 ${2:-}
 YAML
 }
-version_is() { curl_svc -sI -H 'Host: live.test' http://conduit/get | tr -d '\r' | grep -qi "^x-e2e-version: $1\$"; }
-# both replicas must have it: several requests in a row, the Service spreads them
-version_everywhere() { for _ in 1 2 3 4 5 6; do version_is "$1" || return 1; done; }
-[ "$(code_svc -H 'Host: live.test' http://conduit/get)" != 200 ] || fail "live.test is served before its ConduitSite exists"
+version_everywhere() {
+  local ip headers
+  for ip in "${pods[@]}"; do
+    headers=$(curl_svc -fI -H 'Host: live.test' "http://$ip:8080/get") || return 1
+    grep -Fxi "x-e2e-version: $1" <<< "${headers//$'\r'/}" >/dev/null || return 1
+  done
+}
+unmatched() {
+  local code
+  code=$(code_svc -H 'Host: live.test' "$1") || return 1
+  [ "$code" = 404 ]
+}
+wait_for 60 "live.test did not return HTTP 404 through the Service before creation" unmatched http://conduit/get
 live_site 1
 wait_for 60 "a new ConduitSite was not served" version_everywhere 1
 wait_for 30 "status.ready of a new valid site" sh -c "[ \"\$(docker exec $K3S kubectl get conduitsite e2e-live -o jsonpath='{.status.ready}')\" = true ]"
@@ -209,7 +236,12 @@ ok "a new invalid ConduitSite: 503 for its host, status.ready=false, the other s
 
 # delete: the host is not served any more
 kc delete conduitsite e2e-live e2e-bad >/dev/null
-gone() { ! version_is 2 && ! version_is 2 && ! version_is 2; }
+gone() {
+  local ip
+  for ip in "${pods[@]}"; do
+    unmatched "http://$ip:8080/get" || return 1
+  done
+}
 wait_for 60 "a deleted ConduitSite is still served" gone
 ok "a deleted ConduitSite is no longer served"
 [ "$(restarts)" = "$before" ] || fail "a conduit pod restarted during the live changes ($before -> $(restarts))"
@@ -286,18 +318,18 @@ kc patch deployment conduit --type=json -p '[{"op":"add","path":"/spec/template/
 kc rollout status deployment/conduit --timeout=180s >/dev/null || fail "conduit did not come back with CONDUIT_REDIS_URL from the Secret"
 wait_for 60 "limited.test is not served after the rollout" sh -c "[ \"\$(docker exec $K3S kubectl exec client -- curl -sS --max-time 10 -o /dev/null -w '%{http_code}' -H 'Host: limited.test' http://conduit/status/200)\" = 200 ]"
 # 12 requests, sent to each replica in turn by pod address (not through the Service, whose choice is random): with one
-# bucket per replica each would serve its 6 and all 12 would pass, so the count below can fail; the shared bucket
-# serves 6 in all. (The wait above asks for /status/200, which the limit skips, so it spends nothing.)
-# (a pod of the old ReplicaSet that is still terminating has a deletionTimestamp and is left out)
-read -r -a pods <<< "$(kc get pods -l app=conduit --field-selector=status.phase=Running \
-  -o jsonpath='{range .items[*]}{.metadata.deletionTimestamp}|{.status.podIP}{"\n"}{end}' | sed -n 's/^|//p' | tr '\n' ' ')"
+# bucket per replica each would serve its 6 and all 12 would pass; the shared bucket serves only the first 6.
+# (The wait above asks for /status/200, which the limit skips, so it spends nothing.)
+pod_ips=$(running_pod_ips)
+read -r -a pods <<< "$pod_ips"
 [ "${#pods[@]}" -eq 2 ] || fail "expected two running conduit pods, found ${#pods[@]}"
-served=0
 for i in $(seq 1 12); do
   ip=${pods[$((i % 2))]}
-  [ "$(code_svc -H 'Host: limited.test' "http://$ip:8080/get")" = 200 ] && served=$((served + 1))
+  expected=200
+  if [ "$i" -gt 6 ]; then expected=429; fi
+  code=$(code_svc -H 'Host: limited.test' "http://$ip:8080/get") || fail "rate-limit request $i to $ip failed"
+  [ "$code" = "$expected" ] || fail "rate-limit request $i to $ip returned HTTP $code, expected $expected"
 done
-[ "$served" -eq 6 ] || fail "with the Redis limit of 6 shared by two replicas, $served of 12 requests were served"
 keys=$(kc exec deploy/redis -- redis-cli --scan | wc -l)
 [ "$keys" -ge 1 ] || fail "the Redis holds no rate-limit key"
 ok "CONDUIT_REDIS_URL from a Secret: two replicas served 6 of 12 requests (limit 6), the buckets are in Redis"
