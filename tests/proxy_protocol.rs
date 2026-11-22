@@ -71,7 +71,7 @@ fn http_get_after(port: u16, preamble: &[u8]) -> std::io::Result<String> {
 }
 
 /// Reads one HTTP/1.1 response (head and body) from `tcp` and leaves the connection open. The body ends by its
-/// `Content-Length`, or by the last chunk.
+/// `Content-Length`, or by the last chunk; the server closing before that is an `UnexpectedEof` error.
 fn read_one_response(tcp: &mut TcpStream) -> std::io::Result<String> {
     let mut out = Vec::new();
     let mut chunk = [0u8; 1024];
@@ -92,7 +92,8 @@ fn read_one_response(tcp: &mut TcpStream) -> std::io::Result<String> {
         }
         let n = tcp.read(&mut chunk)?;
         if n == 0 {
-            break;
+            // the server closed before the declared body was complete: that is not a response
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
         out.extend_from_slice(&chunk[..n]);
     }
