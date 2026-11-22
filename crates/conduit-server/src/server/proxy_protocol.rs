@@ -33,54 +33,55 @@ pub(super) type SiteProxyProtocolHooks = (
     Option<Arc<PreHttpProxyProtocol>>,
 );
 
+/// The hooks for the HTTPS ports and for the plain HTTP ports of `sites`; each is `None` when no site asks for the PROXY
+/// protocol on such a port.
+///
+/// `has_tls_listener` says which ports really get a TLS listener. A site whose certificate is missing (or whose ACME
+/// order failed) falls back to plain HTTP, where this hook never runs: serving it that way would accept connections
+/// without the header the operator required, so start-up is refused instead.
+pub(super) fn hooks_for_sites(
+    sites: &[SiteConfig],
+    has_tls_listener: impl Fn(u16) -> bool,
+    has_plain_http_listener: impl Fn(u16) -> bool,
+) -> anyhow::Result<SiteProxyProtocolHooks> {
+    let mut tls_ports = HashMap::new();
+    let mut http_ports = HashMap::new();
+    for (i, site) in sites.iter().enumerate().filter(|(_, s)| s.tcp.is_none()) {
+        let Some(pp) = &site.proxy_protocol else {
+            continue;
+        };
+        let port = site
+            .port
+            .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
+        // Port 0 binds an OS-assigned port that no connection's local port could look up here: refused, as in `validate`.
+        anyhow::ensure!(
+            port != 0,
+            "sites[{i}] has proxyProtocol on port 0, which binds a port the policy cannot be found by"
+        );
+        if has_tls_listener(port) {
+            // Sites that share a port must agree (validated), so the first one is the port's policy.
+            tls_ports.entry(port).or_insert_with(|| pp.clone());
+        } else if has_plain_http_listener(port) && site.tls.is_none() {
+            http_ports.entry(port).or_insert_with(|| pp.clone());
+        } else {
+            anyhow::bail!(
+                "sites[{i}] has proxyProtocol, but port {port} has no matching HTTP or TLS listener (its \
+                 certificate is missing or its ACME order failed): not serving it without the header it requires"
+            );
+        }
+    }
+    Ok((
+        (!tls_ports.is_empty()).then(|| Arc::new(PreTlsProxyProtocol { ports: tls_ports })),
+        (!http_ports.is_empty()).then(|| Arc::new(PreHttpProxyProtocol { ports: http_ports })),
+    ))
+}
+
 /// The `proxyProtocol` block of each HTTPS port that has one, found by the port a connection arrived on.
 pub(super) struct PreTlsProxyProtocol {
     ports: HashMap<u16, ProxyProtocolConfig>,
 }
 
 impl PreTlsProxyProtocol {
-    /// The callback for the HTTPS ports of `sites`, or `None` when no site asks for the PROXY protocol on one.
-    ///
-    /// `has_tls_listener` says which ports really get a TLS listener. A site whose certificate is missing (or whose ACME
-    /// order failed) falls back to plain HTTP, where this hook never runs: serving it that way would accept connections
-    /// without the header the operator required, so start-up is refused instead.
-    pub(super) fn for_sites(
-        sites: &[SiteConfig],
-        has_tls_listener: impl Fn(u16) -> bool,
-        has_plain_http_listener: impl Fn(u16) -> bool,
-    ) -> anyhow::Result<SiteProxyProtocolHooks> {
-        let mut tls_ports = HashMap::new();
-        let mut http_ports = HashMap::new();
-        for (i, site) in sites.iter().enumerate().filter(|(_, s)| s.tcp.is_none()) {
-            let Some(pp) = &site.proxy_protocol else {
-                continue;
-            };
-            let port = site
-                .port
-                .unwrap_or(if site.tls.is_some() { 443 } else { 80 });
-            // Port 0 binds an OS-assigned port that no connection's local port could look up here: refused, as in `validate`.
-            anyhow::ensure!(
-                port != 0,
-                "sites[{i}] has proxyProtocol on port 0, which binds a port the policy cannot be found by"
-            );
-            if has_tls_listener(port) {
-                // Sites that share a port must agree (validated), so the first one is the port's policy.
-                tls_ports.entry(port).or_insert_with(|| pp.clone());
-            } else if has_plain_http_listener(port) && site.tls.is_none() {
-                http_ports.entry(port).or_insert_with(|| pp.clone());
-            } else {
-                anyhow::bail!(
-                    "sites[{i}] has proxyProtocol, but port {port} has no matching HTTP or TLS listener (its \
-                     certificate is missing or its ACME order failed): not serving it without the header it requires"
-                );
-            }
-        }
-        Ok((
-            (!tls_ports.is_empty()).then(|| Arc::new(Self { ports: tls_ports })),
-            (!http_ports.is_empty()).then(|| Arc::new(PreHttpProxyProtocol { ports: http_ports })),
-        ))
-    }
-
     /// The callback for one `tcp` site that terminates TLS: the header comes before the handshake, so the relay (which
     /// only sees the decrypted bytes) cannot read it. The site is its own listener, so the callback has one port.
     #[cfg(feature = "tcp")]
@@ -124,6 +125,8 @@ impl PreHttpProxyProtocol {
             );
             return None;
         };
+        // Fail closed: without a local address the port, and so whether this connection must carry a header, is unknown.
+        // Letting it through would skip the policy on a port that requires one.
         let Some(local) = inet(digest.local_addr()) else {
             tracing::warn!(
                 "plain HTTP connection has no local address; refusing PROXY protocol handling"
@@ -628,7 +631,7 @@ mod tests {
         let plain =
             site(r#"{ "port": 8080, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#);
         let without = site(r#"{ "port": 9000 }"#);
-        let (tls_hook, http_hook) = PreTlsProxyProtocol::for_sites(
+        let (tls_hook, http_hook) = hooks_for_sites(
             &[without.clone(), with.clone(), plain.clone()],
             |p| p == 8443,
             |p| p == 8080,
@@ -637,14 +640,12 @@ mod tests {
         assert_eq!(tls_hook.expect("one TLS port has it").ports(), vec![8443]);
         assert_eq!(http_hook.expect("one HTTP port has it").ports(), vec![8080]);
         // no site asks for it: no hook
-        assert!(
-            PreTlsProxyProtocol::for_sites(&[without], |_| true, |_| true)
-                .unwrap()
-                .0
-                .is_none()
-        );
+        assert!(hooks_for_sites(&[without], |_| true, |_| true)
+            .unwrap()
+            .0
+            .is_none());
         // A TLS-configured site that falls back to a plain listener still refuses to start.
-        let err = PreTlsProxyProtocol::for_sites(&[with], |_| false, |_| true)
+        let err = hooks_for_sites(&[with], |_| false, |_| true)
             .err()
             .expect("refused");
         assert!(
@@ -652,5 +653,20 @@ mod tests {
                 .contains("port 8443 has no matching HTTP or TLS listener"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_tls_site_and_a_plain_site_on_one_port_share_the_tls_policy() {
+        // Sites on one port must agree on proxyProtocol (validated), and the port is a TLS port when any site has a
+        // certificate: the policy then belongs to the TLS hook only, never to the plain HTTP hook.
+        let pp = r#""proxyProtocol": { "trustedSources": ["10.0.0.0/8"] }"#;
+        let tls = site(&format!(
+            r#"{{ "port": 8443, "tls": {{ "cert": "c", "key": "k" }}, {pp} }}"#
+        ));
+        let plain = site(&format!(r#"{{ "port": 8443, {pp} }}"#));
+        let (tls_hook, http_hook) =
+            hooks_for_sites(&[tls, plain], |p| p == 8443, |_| false).unwrap();
+        assert_eq!(tls_hook.expect("the TLS port has it").ports(), vec![8443]);
+        assert!(http_hook.is_none(), "no plain HTTP listener on that port");
     }
 }

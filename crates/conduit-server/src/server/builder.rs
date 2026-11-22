@@ -22,7 +22,9 @@ use conduit_runtime::upload::UploadService;
 use super::acme_certs::{obtain_acme_certs, plan_acme_renewals};
 use super::config_watch::spawn_config_update_watcher;
 use super::listeners::{add_tls_listeners, build_http_server_options, classify_ports, TlsPortMap};
-use super::proxy_protocol::{HttpProxyWithProxyProtocol, PreTlsProxyProtocol};
+#[cfg(feature = "tcp")]
+use super::proxy_protocol::PreTlsProxyProtocol;
+use super::proxy_protocol::{hooks_for_sites, HttpProxyWithProxyProtocol};
 #[cfg(feature = "redis")]
 use super::redis_bootstrap::connect_redis_rate_limiter_if_configured;
 
@@ -124,7 +126,7 @@ fn build_http_proxy_service<A>(
 ) -> anyhow::Result<ListeningService<HttpProxyWithProxyProtocol<A>>> {
     // Read PROXY headers at the right transport boundary: before TLS handshakes, or before plain HTTP parsing (issues
     // #42 and #757).
-    let (tls_proxy_protocol, http_proxy_protocol) = PreTlsProxyProtocol::for_sites(
+    let (tls_proxy_protocol, http_proxy_protocol) = hooks_for_sites(
         sites,
         |p| port_tls.contains_key(&p),
         |p| port_plain.contains(&p) && !port_tls.contains_key(&p),
