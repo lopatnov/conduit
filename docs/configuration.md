@@ -4256,11 +4256,11 @@ Limits of this version:
 - A site with `proxyProtocol` that has a `tls` block must have a live TLS listener. If it ends up on a plain listener at start
   (its certificate is missing or its ACME order failed), Conduit does not start.
 - A connection refused on an HTTPS port is logged by the server as `Downstream handshake error from <address>:
-  ProxyProtocol context: <reason>`, one line per connection at `error` level. Plain HTTP refusals are logged at `warn`, one
-  line per connection. On a plaintext `tcp` site (no `tls`) refusals are logged as one `warn` line per port every 10 seconds,
-  with their count. The HTTP and HTTPS lines are not rate-limited, and a `tcp` site with `tls` reads the header the same way as
-  an HTTPS port (before the handshake), so its refusals are not rate-limited either: let only the load balancer reach such a
-  port (a firewall or security group): a scanner that can reach it fills the log.
+  ProxyProtocol context: <reason>`, one line per connection at `error` level. Plain HTTP refusals are logged at `debug`, one
+  line per connection, so they are not visible at the default level. On a plaintext `tcp` site (no `tls`) refusals are logged
+  as one `warn` line per port every 10 seconds, with their count. The HTTPS lines are not rate-limited, and a `tcp` site with
+  `tls` reads the header the same way as an HTTPS port (before the handshake), so its refusals are not rate-limited either: let
+  only the load balancer reach such a port (a firewall or security group): a scanner that can reach it fills the log.
 - The separate `tls.httpRedirectPort` listener is plain HTTP and does not read the header: a load balancer that sends the
   header to every port needs that port left out, or its redirect done by the load balancer.
 - Writing a header to an HTTP upstream is not supported (only `tcp.sendProxyProtocol`).

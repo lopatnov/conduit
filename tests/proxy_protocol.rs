@@ -70,6 +70,35 @@ fn http_get_after(port: u16, preamble: &[u8]) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
+/// Reads one HTTP/1.1 response (head and body) from `tcp` and leaves the connection open. The body ends by its
+/// `Content-Length`, or by the last chunk.
+fn read_one_response(tcp: &mut TcpStream) -> std::io::Result<String> {
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        if let Some(head_end) = out.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&out[..head_end]).to_ascii_lowercase();
+            let body = &out[head_end + 4..];
+            let complete = match head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+            {
+                Some(len) => body.len() >= len.trim().parse::<usize>().expect("a numeric length"),
+                None => body.ends_with(b"0\r\n\r\n"),
+            };
+            if complete {
+                break;
+            }
+        }
+        let n = tcp.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&chunk[..n]);
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
 /// A refusal must be the server closing the connection or ending the handshake: EOF, a reset or abort, or a handshake the
 /// server broke off. Anything else (a read timing out on a connection it left open, an unrelated I/O error) proves nothing
 /// about the header being checked, so it fails the test.
@@ -196,6 +225,30 @@ fn a_plain_http_header_is_consumed_and_its_client_is_used_by_the_filter_and_x_fo
     )
     .expect("the IP filter returns an HTTP response");
     assert!(filtered.starts_with("HTTP/1.1 403"), "{filtered}");
+}
+
+#[test]
+#[serial]
+fn a_plain_http_connection_is_reused_for_more_requests_after_one_header() {
+    let s = setup();
+    let mut tcp = TcpStream::connect(("127.0.0.1", s.pp_http_port)).expect("connect");
+    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    // One header opens the connection; the requests after it must not be taken for a second header, and the client of the
+    // header stays the client of each of them.
+    tcp.write_all(b"PROXY TCP4 203.0.113.9 192.0.2.1 51000 80\r\n")
+        .unwrap();
+    for n in 1..=3 {
+        tcp.write_all(b"GET /who HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let resp = read_one_response(&mut tcp)
+            .unwrap_or_else(|e| panic!("request {n} on the kept-alive connection: {e}"));
+        assert!(resp.starts_with("HTTP/1.1 200"), "request {n}: {resp}");
+        assert!(
+            resp.to_ascii_lowercase()
+                .contains(r#""x-forwarded-for":"203.0.113.9""#),
+            "request {n} keeps the client of the header: {resp}"
+        );
+    }
 }
 
 #[test]
