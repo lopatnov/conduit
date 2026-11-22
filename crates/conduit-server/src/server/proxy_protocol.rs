@@ -10,7 +10,7 @@
 //! follow with no change of their own. Bytes read after the header are put back for the TLS handshake or HTTP parser.
 //!
 //! Pingora logs TLS connections dropped by the callback as downstream handshake errors (`error`); the HTTP wrapper logs
-//! refused connections at `warn`. Both messages include the reason.
+//! refused connections at `debug` (one line per scanner connection would flood the log). Both messages include the reason.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -142,7 +142,7 @@ impl PreHttpProxyProtocol {
             return None;
         };
         if let Err(error) = read_proxy_header(&mut stream, cfg, local.port()).await {
-            tracing::warn!(port = local.port(), error = %error, "plain HTTP connection refused by PROXY protocol");
+            tracing::debug!(port = local.port(), error = %error, "plain HTTP connection refused by PROXY protocol");
             return None;
         }
         let stream: Stream = stream;
@@ -267,21 +267,31 @@ fn replace_peer(stream: &mut L4Stream, old: &SocketDigest, peer: SocketAddr) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// A connection to a loopback listener: the client end, and the server end the way Pingora hands it to the
     /// callback (a layer-4 stream whose socket digest carries the peer address). Also returns the listener's port.
-    async fn pair() -> (tokio::net::TcpStream, L4Stream, u16) {
+    async fn raw_pair() -> (tokio::net::TcpStream, L4Stream, u16, SocketAddr) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let client = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .unwrap();
         let (server, peer) = listener.accept().await.unwrap();
-        let mut stream = L4Stream::from(server);
+        (client, L4Stream::from(server), port, peer)
+    }
+
+    async fn pair() -> (tokio::net::TcpStream, L4Stream, u16) {
+        let (client, mut stream, port, peer) = raw_pair().await;
         let digest = SocketDigest::from_raw_fd(std::os::fd::AsRawFd::as_raw_fd(&stream));
         digest.peer_addr.set(Some(peer.into())).expect("new cell");
         stream.set_socket_digest(digest);
+        (client, stream, port)
+    }
+
+    async fn pair_without_digest() -> (tokio::net::TcpStream, L4Stream, u16) {
+        let (client, stream, port, _) = raw_pair().await;
         (client, stream, port)
     }
 
@@ -295,6 +305,41 @@ mod tests {
                     ..Default::default()
                 },
             )]),
+        }
+    }
+
+    fn http_hook(port: u16, sources: &[&str]) -> PreHttpProxyProtocol {
+        PreHttpProxyProtocol {
+            ports: HashMap::from([(
+                port,
+                ProxyProtocolConfig {
+                    trusted_sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+                    timeout_ms: Some(300),
+                    ..Default::default()
+                },
+            )]),
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestServerApp {
+        process_calls: Arc<AtomicUsize>,
+        cleanup_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ServerApp for TestServerApp {
+        async fn process_new(
+            self: &Arc<Self>,
+            stream: Stream,
+            _shutdown: &ShutdownWatch,
+        ) -> Option<Stream> {
+            self.process_calls.fetch_add(1, Ordering::Relaxed);
+            Some(stream)
+        }
+
+        async fn cleanup(&self) {
+            self.cleanup_calls.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -448,6 +493,126 @@ mod tests {
         };
         let stream: Stream = Box::new(stream);
         assert!(hook.process(stream).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_plain_http_connection_without_a_socket_digest_is_dropped() {
+        let (_client, stream, port) = pair_without_digest().await;
+        let stream: Stream = Box::new(stream);
+
+        assert!(http_hook(port, &["127.0.0.0/8"])
+            .process(stream)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_plain_http_connection_without_a_local_address_is_dropped() {
+        let (_client, stream, port) = pair().await;
+        stream
+            .get_socket_digest()
+            .unwrap()
+            .local_addr
+            .set(None)
+            .expect("the local address has not been read yet");
+        let stream: Stream = Box::new(stream);
+
+        assert!(http_hook(port, &["127.0.0.0/8"])
+            .process(stream)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn an_http_port_without_a_proxy_protocol_policy_passes_the_stream_unchanged() {
+        let (mut client, stream, port) = pair().await;
+        client.write_all(b"hello").await.unwrap();
+        let hook = PreHttpProxyProtocol {
+            ports: HashMap::from([(port.wrapping_add(1), ProxyProtocolConfig::default())]),
+        };
+        let stream: Stream = Box::new(stream);
+        let mut stream = hook.process(stream).await.expect("unconfigured HTTP port");
+        let mut received = [0; 5];
+        stream.read_exact(&mut received).await.unwrap();
+
+        assert_eq!(&received, b"hello");
+    }
+
+    #[tokio::test]
+    async fn the_http_proxy_wrapper_processes_the_header_then_delegates_and_cleans_up() {
+        let (mut client, stream, port) = pair().await;
+        client
+            .write_all(b"PROXY TCP4 203.0.113.9 192.0.2.1 51000 80\r\n")
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let wrapper = Arc::new(HttpProxyWithProxyProtocol::new(
+            TestServerApp {
+                process_calls: calls.clone(),
+                cleanup_calls: cleanups.clone(),
+            },
+            Some(Arc::new(http_hook(port, &["127.0.0.0/8"]))),
+        ));
+        let (_shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
+
+        let stream = wrapper
+            .process_new(Box::new(stream), &shutdown)
+            .await
+            .expect("trusted PROXY header is delegated");
+        let peer = inet(stream.get_socket_digest().unwrap().peer_addr()).unwrap();
+        assert_eq!(peer, "203.0.113.9:51000".parse().unwrap());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        wrapper.cleanup().await;
+        assert_eq!(cleanups.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn the_http_proxy_wrapper_delegates_unchanged_when_no_hook_is_configured() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let wrapper = Arc::new(HttpProxyWithProxyProtocol::new(
+            TestServerApp {
+                process_calls: calls.clone(),
+                cleanup_calls: cleanups.clone(),
+            },
+            None,
+        ));
+        let (_shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
+        let (stream, _peer) = tokio::io::duplex(8);
+
+        assert!(wrapper
+            .process_new(Box::new(stream), &shutdown)
+            .await
+            .is_some());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        wrapper.cleanup().await;
+        assert_eq!(cleanups.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn read_proxy_header_refuses_a_stream_without_a_socket_digest() {
+        let (_client, mut stream, port) = pair_without_digest().await;
+        let err = read_proxy_header(&mut stream, &ProxyProtocolConfig::default(), port)
+            .await
+            .expect_err("a connection without a digest cannot be trusted");
+
+        assert!(err.to_string().contains("socket digest"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn read_proxy_header_refuses_a_peer_without_an_ip_address() {
+        let (_client, mut stream, port, _) = raw_pair().await;
+        let digest = SocketDigest::from_raw_fd(std::os::fd::AsRawFd::as_raw_fd(&stream));
+        digest.peer_addr.set(None).expect("new cell");
+        stream.set_socket_digest(digest);
+        let err = read_proxy_header(&mut stream, &ProxyProtocolConfig::default(), port)
+            .await
+            .expect_err("a peer without an IP address cannot be trusted");
+
+        assert!(err.to_string().contains("peer has no IP address"), "{err}");
     }
 
     fn site(json: &str) -> SiteConfig {

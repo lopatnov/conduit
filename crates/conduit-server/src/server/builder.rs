@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,7 +13,7 @@ use crate::admin::api::AdminApiService;
 // but is no longer a fallback for the server-side HTTP binding.
 #[allow(unused_imports)]
 use crate::config::defaults::{DEFAULT_ADMIN_BIND, DEFAULT_SHUTDOWN_TIMEOUT_SECS};
-use crate::config::schema::AppConfig;
+use crate::config::schema::{AppConfig, SiteConfig};
 use conduit_runtime::proxy::service::{AppState, ConduitProxy};
 #[cfg(feature = "upload")]
 use conduit_runtime::upload::UploadService;
@@ -20,7 +21,7 @@ use conduit_runtime::upload::UploadService;
 #[cfg(feature = "acme")]
 use super::acme_certs::{obtain_acme_certs, plan_acme_renewals};
 use super::config_watch::spawn_config_update_watcher;
-use super::listeners::{add_tls_listeners, build_http_server_options, classify_ports};
+use super::listeners::{add_tls_listeners, build_http_server_options, classify_ports, TlsPortMap};
 use super::proxy_protocol::{HttpProxyWithProxyProtocol, PreTlsProxyProtocol};
 #[cfg(feature = "redis")]
 use super::redis_bootstrap::connect_redis_rate_limiter_if_configured;
@@ -113,6 +114,42 @@ fn refuse_invalid_config(config: &AppConfig) -> anyhow::Result<()> {
 /// Conduit selects `ring`; if another provider is already installed, rustls keeps that provider.
 pub fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+fn build_http_proxy_service<A>(
+    inner_proxy: A,
+    sites: &[SiteConfig],
+    port_tls: &TlsPortMap,
+    port_plain: &HashSet<u16>,
+) -> anyhow::Result<ListeningService<HttpProxyWithProxyProtocol<A>>> {
+    // Read PROXY headers at the right transport boundary: before TLS handshakes, or before plain HTTP parsing (issues
+    // #42 and #757).
+    let (tls_proxy_protocol, http_proxy_protocol) = PreTlsProxyProtocol::for_sites(
+        sites,
+        |p| port_tls.contains_key(&p),
+        |p| port_plain.contains(&p) && !port_tls.contains_key(&p),
+    )?;
+    let mut proxy_service = ListeningService::new(
+        "Conduit HTTP Proxy".to_owned(),
+        HttpProxyWithProxyProtocol::new(inner_proxy, http_proxy_protocol.clone()),
+    );
+    if let Some(hook) = tls_proxy_protocol {
+        tracing::info!(ports = ?hook.ports(), "PROXY protocol required on HTTPS ports");
+        proxy_service.endpoints().set_pre_tls_callback(hook);
+    }
+    if let Some(hook) = http_proxy_protocol {
+        tracing::info!(ports = ?hook.ports(), "PROXY protocol required on plain HTTP ports");
+    }
+    add_tls_listeners(&mut proxy_service, port_tls)?;
+
+    // Add plain TCP listeners for ports that are not TLS.
+    for port in port_plain {
+        if !port_tls.contains_key(port) {
+            proxy_service.add_tcp(&format!("0.0.0.0:{port}"));
+        }
+    }
+
+    Ok(proxy_service)
 }
 
 /// Start the Conduit server.
@@ -209,33 +246,8 @@ pub fn run_server(
     inner_proxy.handle_init_modules();
 
     let (port_tls, port_plain) = classify_ports(&config.sites, &acme_certs);
-    // Read PROXY headers at the right transport boundary: before TLS handshakes, or before plain HTTP parsing (issues
-    // #42 and #757).
-    let (tls_proxy_protocol, http_proxy_protocol) = PreTlsProxyProtocol::for_sites(
-        &config.sites,
-        |p| port_tls.contains_key(&p),
-        |p| port_plain.contains(&p) && !port_tls.contains_key(&p),
-    )?;
-    let mut proxy_service = ListeningService::new(
-        "Conduit HTTP Proxy".to_owned(),
-        HttpProxyWithProxyProtocol::new(inner_proxy, http_proxy_protocol.clone()),
-    );
-    if let Some(hook) = tls_proxy_protocol {
-        tracing::info!(ports = ?hook.ports(), "PROXY protocol required on HTTPS ports");
-        proxy_service.endpoints().set_pre_tls_callback(hook);
-    }
-    if let Some(hook) = http_proxy_protocol {
-        tracing::info!(ports = ?hook.ports(), "PROXY protocol required on plain HTTP ports");
-    }
-    add_tls_listeners(&mut proxy_service, &port_tls)?;
-
-    // Add plain TCP listeners for ports that are not TLS.
-    for port in &port_plain {
-        if !port_tls.contains_key(port) {
-            proxy_service.add_tcp(&format!("0.0.0.0:{port}"));
-        }
-    }
-
+    let proxy_service =
+        build_http_proxy_service(inner_proxy, &config.sites, &port_tls, &port_plain)?;
     server.add_service(proxy_service);
 
     // Raw TCP proxy services.
@@ -406,6 +418,21 @@ mod tests {
     use crate::config::schema::GlobalConfig;
 
     #[test]
+    fn builds_plain_http_proxy_service_with_its_proxy_protocol_policy() {
+        let config = crate::config::from_str(
+            r#"[{ "port": 8080, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }]"#,
+        )
+        .expect("valid HTTP PROXY protocol config");
+        let (port_tls, port_plain) =
+            classify_ports(&config.sites, &std::collections::HashMap::new());
+
+        let mut service = build_http_proxy_service((), &config.sites, &port_tls, &port_plain)
+            .expect("build HTTP service");
+
+        assert_eq!(service.endpoints().addresses(), vec!["0.0.0.0:8080"]);
+    }
+
+    #[test]
     fn a_config_with_hard_validation_errors_is_refused_and_a_valid_one_is_not() {
         let duplicate = crate::config::from_str(r#"[{ "port": 8080 }, { "port": 8080 }]"#).unwrap();
         let err = refuse_invalid_config(&duplicate).unwrap_err().to_string();
@@ -474,6 +501,29 @@ mod tests {
             cert_path.to_string_lossy().into_owned(),
             key_path.to_string_lossy().into_owned(),
         )
+    }
+
+    #[cfg(feature = "tcp")]
+    #[test]
+    fn builds_https_proxy_service_with_a_tls_proxy_protocol_callback() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = write_cert(&dir);
+        let config = crate::config::from_str(
+            &serde_json::json!([{
+                "port": 8443,
+                "tls": { "cert": cert, "key": key },
+                "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] }
+            }])
+            .to_string(),
+        )
+        .expect("valid HTTPS PROXY protocol config");
+        let (port_tls, port_plain) =
+            classify_ports(&config.sites, &std::collections::HashMap::new());
+        let mut service = build_http_proxy_service((), &config.sites, &port_tls, &port_plain)
+            .expect("build HTTPS service");
+
+        assert_eq!(service.endpoints().addresses(), vec!["0.0.0.0:8443"]);
     }
 
     #[cfg(feature = "tcp")]

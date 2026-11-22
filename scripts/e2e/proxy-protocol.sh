@@ -214,7 +214,7 @@ s = socket.create_connection(("app.test", 8080), timeout=5)
 s.settimeout(5)
 s.sendall(b"PROXY TCP4 192.0.2.60 192.0.2.20 1 8080\r\nGET /headers HTTP/1.1\r\nHost: app.test\r\nConnection: close\r\n\r\n")
 try:
-    print("served" if s.recv(128).startswith(b"HTTP/") else "refused")
+    print("refused" if not s.recv(1) else "served")
 except socket.timeout:
     print("open")
 except OSError:

@@ -769,8 +769,8 @@ proxy fairly.
   support in Pingora.
 - **TLS versions and cipher suites are not configurable.** `tls.versions` and `tls.ciphers` are
   rejected by `conduit validate` because the TLS layer offers no way to apply them.
-- **Some settings need a restart:** `port`, `tls.cert` / `tls.key`, `workers`,
-  `global.shutdownTimeoutSecs` and `global.admin.bind`. Everything else reloads in place.
+- **Some settings need a restart:** `port`, `tls.cert` / `tls.key`, `proxyProtocol` listener policies,
+  `workers`, `global.shutdownTimeoutSecs` and `global.admin.bind`. Other settings reload in place.
 - **Certificates are loaded at start.** ACME renewals and files written through the Admin API
   reach the disk but are only served after a restart, so restart before the loaded certificate
   expires.
