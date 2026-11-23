@@ -76,14 +76,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   caps are a validation error. The `TcpConfig` block is now in `schema/conduit.schema.json`. Proven by unit tests
   (`crates/conduit-tcp`), real sockets through `process_new`, and the e2e scenario `scripts/e2e/tcp-limits.sh`.
 - **The PROXY protocol, versions 1 and 2** (#757, item 2 of 5): `sites[].proxyProtocol` reads the header of a load balancer in
-  front of Conduit on `tcp` sites and on TLS ports (before the TLS handshake), and `tcp.sendProxyProtocol: v1 | v2` writes one
+  front of Conduit on plain HTTP ports (before HTTP parsing), TLS ports (before the TLS handshake) and `tcp` sites, and
+  `tcp.sendProxyProtocol: v1 | v2` writes one
   to the upstream. The header is required and believed only from `trustedSources`; any other connection, a missing or invalid
   header and one that is not complete within `timeoutMs` is closed. The client of the header is the client for `ipFilter`, rate
-  limits, `tcp.maxConnectionsPerIp`, logs and `X-Forwarded-For`. Plain-HTTP ports are refused at validation (not supported
-  yet), a change is a cold change, and sites on one HTTPS port must agree. The CIDR matcher of `ipFilter` moved into
+  limits, `tcp.maxConnectionsPerIp`, logs and `X-Forwarded-For`. A change is a cold change, and sites sharing an HTTP or
+  HTTPS port must agree. The CIDR matcher of `ipFilter` moved into
   `conduit-config-core` to be shared. Proven by unit tests (the parser against truncated, oversized and malicious input),
-  real sockets, a real server with a real TLS client (`tests/proxy_protocol.rs`, `tests/tcp_proxy.rs`) and the e2e scenario
-  `scripts/e2e/proxy-protocol.sh` with HAProxy.
+  real sockets, a real server with HTTP and TLS clients (`tests/proxy_protocol.rs`), a TCP client (`tests/tcp_proxy.rs`) and
+  the e2e scenario `scripts/e2e/proxy-protocol.sh` with HAProxy.
 - A Kubernetes guide, `docs/kubernetes.md` (#573): the CRD, RBAC and Deployment, a first site, what a `ConduitSite` may
   contain, what is checked on each change and what a rejected update leaves (the whole previous config), what needs a
   restart (a new port, `tls.acme`), who may write the objects, and troubleshooting. Every `ConduitSite` in the guide, in

@@ -769,8 +769,8 @@ proxy fairly.
   support in Pingora.
 - **TLS versions and cipher suites are not configurable.** `tls.versions` and `tls.ciphers` are
   rejected by `conduit validate` because the TLS layer offers no way to apply them.
-- **Some settings need a restart:** `port`, `tls.cert` / `tls.key`, `workers`,
-  `global.shutdownTimeoutSecs` and `global.admin.bind`. Everything else reloads in place.
+- **Some settings need a restart:** `port`, `tls.cert` / `tls.key`, `proxyProtocol` listener policies,
+  `workers`, `global.shutdownTimeoutSecs` and `global.admin.bind`. Other settings reload in place.
 - **Certificates are loaded at start.** ACME renewals and files written through the Admin API
   reach the disk but are only served after a restart, so restart before the loaded certificate
   expires.
@@ -778,8 +778,8 @@ proxy fairly.
 - **Scripts and plugins fail open.** If a Rhai script or a WASM plugin cannot be loaded or errors
   at run time, the problem is logged and the request continues. Do not rely on a script or plugin
   as your only access check.
-- **The PROXY protocol** is read on `tcp` sites and TLS ports and written to `tcp` upstreams only: not on plain-HTTP ports and
-  not to an HTTP upstream yet (see [PROXY protocol](docs/configuration.md#proxy-protocol)).
+- **The PROXY protocol** is read on plain HTTP, TLS and `tcp` sites and written to `tcp` upstreams only; writing it to an
+  HTTP upstream is not supported (see [PROXY protocol](docs/configuration.md#proxy-protocol)).
 
 ## Editor integration (JSON Schema)
 
