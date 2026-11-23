@@ -47,17 +47,8 @@ fn validate_site_transport(site: &SiteConfig, prefix: &str, errors: &mut Vec<Val
     }
     if let Some(pp) = &site.proxy_protocol {
         validate_proxy_protocol(pp, prefix, errors);
-        // The header is read before the TLS handshake (HTTPS) or before the relay (tcp). A plain-HTTP listener has no
-        // such hook yet, and a key that is silently ignored would leave the operator believing the client address is
-        // the real one, so it is refused (issue #757).
-        if site.tcp.is_none() && site.tls.is_none() {
-            errors.push(ValidationError::new(
-                format!("{prefix}.proxyProtocol"),
-                "proxyProtocol needs tls or tcp on the same site: plain HTTP ports do not read the PROXY protocol yet",
-            ));
-        }
-        // An HTTPS port finds its policy by the port a connection arrived on; port 0 binds an OS-assigned port, so no
-        // connection would match and the header would not be required (fail open).
+        // HTTP and TLS listeners find their policy by the local port. Port 0 binds an OS-assigned port, so the required
+        // header policy would not match (fail open). Plain TCP proxy sites read their policy from the site directly.
         if site.tcp.is_none() && site.port == Some(0) {
             errors.push(ValidationError::new(
                 format!("{prefix}.port"),

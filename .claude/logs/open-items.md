@@ -45,4 +45,4 @@ exits 1 when the ledger, the PR's "Found while here" table and the open `fast-fo
 | #651 | half-open: the probe offer should be claimed by the pick that selects the upstream | balancer work (#631) | open (predates the ledger) |
 | #653 | health checking fully configurable (`timeoutMs` done in #683; method, pass criteria, request-driven probing, per-upstream off, half-open timings remain) | balancer work (#631) | open (partly done) |
 | #655 | SIGTERM: exit as soon as in-flight requests are done instead of sleeping the whole grace period | #489 | open (predates the ledger) |
-| #757 | TCP, пункты 3-5: TLS на tcp-сайтах, диапазоны портов, UDP (у каждого свой PR и prior-art комментарий в #757); PROXY protocol для обычного HTTP отдельно | PR #770 | open (п. 1 влит в #769, п. 2 в #770, п. 3 в работе: TLS на tcp-сайтах) |
+| #757 | TCP, пункты 4-5: диапазоны портов и UDP (отдельные PR с prior-art комментариями); #42: приём PROXY protocol на обычном HTTP остаётся после #770 | PR #769, #770, #778 | open (обновлено 2026-11-21: п. 1 #769 и п. 3 #778 готовы; п. 2 частично готов — TCP/HTTPS и TCP-апстрим в #770, HTTP-приём ведётся в #42; п. 4-5 открыты) |

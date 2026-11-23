@@ -489,9 +489,9 @@ pub(crate) fn detect_cold_changes_in(
         }
     }
 
-    // `proxyProtocol`: the pre-handshake hook of the HTTPS listeners and the accept side of the tcp services are built at
-    // start, so a new list of trusted sources would keep the old one (and a removed block would keep requiring the
-    // header) until a restart (issue #757).
+    // `proxyProtocol`: the pre-handshake hook of HTTPS listeners, the pre-HTTP hook of plain listeners and the accept side
+    // of tcp services are built at start, so a new list of trusted sources would keep the old one (and a removed block
+    // would keep requiring the header) until a restart (issues #42 and #757).
     let old_p = proxy_protocol_by_port(old);
     let new_p = proxy_protocol_by_port(new);
     for port in old_p
@@ -692,6 +692,11 @@ mod tests {
         ] {
             assert_eq!(detect_cold_changes_in(&old, &new, None), one);
         }
+        let http = |extra: &str| cfg(&format!(r#"{{"sites":[{{"port":8080{extra}}}]}}"#));
+        assert_eq!(
+            detect_cold_changes_in(&http(""), &http(&pp("10.0.0.0/8")), None),
+            vec!["sites[port 8080].proxyProtocol".to_string()]
+        );
         // an HTTPS port counts too, under its own default port
         let https = |extra: &str| {
             cfg(&format!(
