@@ -16,7 +16,7 @@ path = "src/lib.rs"
 lopatnov-conduit-config-core = { workspace = true }
 # TcpConfig itself is always compiled — see src/lib.rs doc comment.
 serde = { workspace = true }
-# The PROXY protocol parser (`src/proxy_protocol.rs`) is always compiled, so that the HTTPS listeners in
+# The PROXY protocol parser (`src/proxy_protocol.rs`) is always compiled, so the HTTP and HTTPS listeners in
 # `conduit-server` can read the header without the `tcp` feature (decision #31: light logic stays always-on).
 tokio = { workspace = true }
 

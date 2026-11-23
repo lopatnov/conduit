@@ -2699,7 +2699,11 @@ fn pp_errs(json: &str) -> Vec<ValidationError> {
 }
 
 #[test]
-fn proxy_protocol_is_accepted_on_a_tls_site_and_on_a_tcp_site() {
+fn proxy_protocol_is_accepted_on_http_tls_and_tcp_sites() {
+    assert!(
+        pp_errs(r#"{ "port": 8080, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#)
+            .is_empty()
+    );
     assert!(pp_errs(
         r#"{ "port": 443, "tls": { "cert": "c.pem", "key": "k.pem" },
             "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#
@@ -2811,11 +2815,13 @@ fn what_belongs_to_an_http_listener_is_refused_on_a_tcp_site_with_tls() {
 }
 
 #[test]
-fn proxy_protocol_on_a_plain_http_site_is_refused() {
-    let e = pp_errs(r#"{ "port": 8080, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#);
+fn proxy_protocol_on_an_http_site_needs_a_fixed_port() {
+    let e: Vec<_> = errs(r#"{ "port": 0, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } }"#)
+        .into_iter()
+        .filter(|e| e.path == "sites[0].port")
+        .collect();
     assert_eq!(e.len(), 1, "{e:?}");
-    assert_eq!(e[0].path, "sites[0].proxyProtocol");
-    assert!(e[0].message.contains("tls or tcp"), "{}", e[0].message);
+    assert!(e[0].message.contains("fixed port"), "{}", e[0].message);
 }
 
 #[test]
@@ -2846,6 +2852,18 @@ fn proxy_protocol_sites_on_one_port_must_agree() {
             {{ "host": "b.test", "port": 443, {tls}, "proxyProtocol": {{ "trustedSources": ["10.0.0.0/8"] }} }} ] }}"#
     ));
     assert!(!e.iter().any(|e| e.message.contains("share port")), "{e:?}");
+
+    // Plain HTTP ports read the header before HTTP parsing and have one policy per port too.
+    let e = errs(
+        r#"{ "sites": [
+            { "host": "a.test", "port": 8080, "proxyProtocol": { "trustedSources": ["10.0.0.0/8"] } },
+            { "host": "b.test", "port": 8080 } ] }"#,
+    );
+    assert!(
+        e.iter()
+            .any(|e| e.path == "sites[1].proxyProtocol" && e.message.contains("share port 8080")),
+        "{e:?}"
+    );
 }
 
 #[test]
