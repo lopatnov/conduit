@@ -157,9 +157,9 @@ pub(super) fn validate_no_duplicate_host_port(
     }
 }
 
-/// Sites that share a port share its listener, and the PROXY protocol is read before the site is known (before the TLS
-/// handshake names a host), so they must agree on it: one with `proxyProtocol` and one without, or two different
-/// blocks, could not both be honoured (issue #757).
+/// Sites that share a port share its listener, and the PROXY protocol is read before the site is known (before TLS or HTTP
+/// parsing), so they must agree on it: one with `proxyProtocol` and one without, or two different blocks, could not both
+/// be honoured (issues #42 and #757).
 pub(super) fn validate_proxy_protocol_per_port(
     config: &AppConfig,
     errors: &mut Vec<ValidationError>,
@@ -182,7 +182,7 @@ pub(super) fn validate_proxy_protocol_per_port(
                 format!("sites[{i}].proxyProtocol"),
                 format!(
                     "sites[{i}] and sites[{j}] share port {port}, so they must have the same proxyProtocol: it is read \
-                     before the TLS handshake, when the site is not known yet"
+                     before TLS or HTTP parsing, when the site is not known yet"
                 ),
             ));
         }

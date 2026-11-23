@@ -109,7 +109,8 @@ pub struct SiteConfig {
     pub tcp: Option<TcpConfig>,
     /// Accept the PROXY protocol (v1 and v2) on this site's port: the load balancer in front of Conduit sends the
     /// real client address and Conduit uses it for `ipFilter`, rate limits, connection caps, logs and
-    /// `X-Forwarded-For`. Needs `tls` or `tcp` on the site (see [`ProxyProtocolConfig`]).
+    /// `X-Forwarded-For` (see [`ProxyProtocolConfig`]). The header is read before HTTP parsing, the TLS handshake or TCP
+    /// relay, and is required on every connection to the port.
     ///
     /// ```yaml
     /// sites:
