@@ -81,8 +81,8 @@ chacha20 0.10.2  [MIT OR Apache-2.0]  https://github.com/RustCrypto/stream-ciphe
 chrono 0.4.45  [MIT OR Apache-2.0]  https://github.com/chronotope/chrono
 clap 4.6.9  [MIT OR Apache-2.0]  https://github.com/clap-rs/clap
 clap_builder 4.6.7  [MIT OR Apache-2.0]  https://github.com/clap-rs/clap
-clap_derive 4.6.9  [MIT OR Apache-2.0]  https://github.com/clap-rs/clap
 clap_complete 4.6.12  [MIT OR Apache-2.0]  https://github.com/clap-rs/clap
+clap_derive 4.6.9  [MIT OR Apache-2.0]  https://github.com/clap-rs/clap
 clap_lex 1.1.1  [MIT OR Apache-2.0]  https://github.com/clap-rs/clap
 clap_mangen 0.3.3  [MIT OR Apache-2.0]  https://github.com/clap-rs/clap
 cmov 0.5.4  [Apache-2.0 OR MIT]  https://github.com/RustCrypto/utils
@@ -1712,7 +1712,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 
 ==============================================================================
-Applies to: annotate-snippets 0.12.16, anstream 1.0.0, anstyle 1.0.14, anstyle-parse 1.0.0, anstyle-query 1.1.5, anstyle-wincon 3.0.11, clap 4.6.7, clap_builder 4.6.7, clap_complete 4.6.12, clap_derive 4.6.7, clap_lex 1.1.1, clap_mangen 0.3.3, colorchoice 1.0.5, is_terminal_polyfill 1.70.2, once_cell_polyfill 1.70.2, roff 1.1.1
+Applies to: annotate-snippets 0.12.16, anstream 1.0.0, anstyle 1.0.14, anstyle-parse 1.0.0, anstyle-query 1.1.5, anstyle-wincon 3.0.11, clap 4.6.9, clap_builder 4.6.7, clap_complete 4.6.12, clap_derive 4.6.9, clap_lex 1.1.1, clap_mangen 0.3.3, colorchoice 1.0.5, is_terminal_polyfill 1.70.2, once_cell_polyfill 1.70.2, roff 1.1.1
 Files: LICENSE-MIT
 ==============================================================================
 
