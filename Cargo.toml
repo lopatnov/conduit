@@ -151,7 +151,7 @@ rhai = { version = "1", features = ["sync"] }
 # ---
 # Verifies HS256 (HMAC secret) and RS256/ES256 (JWKS/PEM). Also used by the
 # root crate's own [dev-dependencies] (tests/auth.rs generates test tokens).
-jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
 
 # --- JWT crypto backend: `aws_lc_rs`, not `rust_crypto`. aws-lc-rs is already in
 # the tree for rustls, so the JWT guard adds no crypto crates of its own and the
