@@ -74,7 +74,7 @@ brotli-decompressor 2.5.1  [BSD-3-Clause/MIT]  https://github.com/dropbox/rust-b
 brotli-decompressor 6.0.1  [BSD-3-Clause/MIT]  https://github.com/dropbox/rust-brotli-decompressor
 bstr 1.13.1  [MIT OR Apache-2.0]  https://github.com/BurntSushi/bstr
 bumpalo 3.20.3  [MIT OR Apache-2.0]  https://github.com/fitzgen/bumpalo
-bytes 1.12.1  [MIT]  https://github.com/tokio-rs/bytes
+bytes 1.12.2  [MIT]  https://github.com/tokio-rs/bytes
 castaway 0.2.4  [MIT]  https://github.com/sagebind/castaway
 cfg-if 1.0.5  [MIT OR Apache-2.0]  https://github.com/rust-lang/cfg-if
 chacha20 0.10.2  [MIT OR Apache-2.0]  https://github.com/RustCrypto/stream-ciphers
@@ -4271,7 +4271,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Applies to: bytes 1.12.1
+Applies to: bytes 1.12.2
 Files: LICENSE
 ==============================================================================
 
