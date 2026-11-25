@@ -104,15 +104,15 @@ core_detect 1.0.0  [MIT/Apache-2.0]  https://github.com/thomcc/core_detect
 cpp_demangle 0.5.1  [MIT OR Apache-2.0]  https://github.com/gimli-rs/cpp_demangle
 cpufeatures 0.2.17  [MIT OR Apache-2.0]  https://github.com/RustCrypto/utils
 cpufeatures 0.3.1  [MIT OR Apache-2.0]  https://github.com/RustCrypto/utils
-cranelift-assembler-x64 0.137.1  [Apache-2.0 WITH LLVM-exception]  (no repository given)
-cranelift-bforest 0.137.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-cranelift-bitset 0.137.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-cranelift-codegen 0.137.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-cranelift-codegen-shared 0.137.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-cranelift-control 0.137.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-cranelift-entity 0.137.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-cranelift-frontend 0.137.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-cranelift-native 0.137.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+cranelift-assembler-x64 0.138.0  [Apache-2.0 WITH LLVM-exception]  (no repository given)
+cranelift-bforest 0.138.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+cranelift-bitset 0.138.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+cranelift-codegen 0.138.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+cranelift-codegen-shared 0.138.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+cranelift-control 0.138.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+cranelift-entity 0.138.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+cranelift-frontend 0.138.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+cranelift-native 0.138.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
 crc32fast 1.5.2  [MIT OR Apache-2.0]  https://github.com/srijs/rust-crc32fast
 crossbeam-queue 0.3.14  [MIT OR Apache-2.0]  https://github.com/crossbeam-rs/crossbeam
 crossbeam-utils 0.8.23  [MIT OR Apache-2.0]  https://github.com/crossbeam-rs/crossbeam
@@ -219,7 +219,6 @@ inotify-sys 0.1.8  [ISC]  https://github.com/hannobraun/inotify-sys
 instant-acme 0.8.5  [Apache-2.0]  https://github.com/djc/instant-acme
 ipnet 2.12.2  [MIT OR Apache-2.0]  https://github.com/krisprice/ipnet
 is_terminal_polyfill 1.70.2  [MIT OR Apache-2.0]  https://github.com/polyfill-rs/is_terminal_polyfill
-itertools 0.13.0  [MIT OR Apache-2.0]  https://github.com/rust-itertools/itertools
 itertools 0.14.0  [MIT OR Apache-2.0]  https://github.com/rust-itertools/itertools
 itoa 1.0.18  [MIT OR Apache-2.0]  https://github.com/dtolnay/itoa
 jiff 0.2.38  [Unlicense OR MIT]  https://github.com/BurntSushi/jiff
@@ -342,8 +341,8 @@ prost-types 0.14.4  [Apache-2.0]  https://github.com/tokio-rs/prost
 protobuf 3.7.2  [MIT]  https://github.com/stepancheg/rust-protobuf/
 protobuf-support 3.7.2  [MIT]  https://github.com/stepancheg/rust-protobuf/
 psm 0.1.24  [MIT OR Apache-2.0]  https://github.com/rust-lang/stacker/
-pulley-interpreter 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley
-pulley-macros 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley/macros
+pulley-interpreter 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley
+pulley-macros 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley/macros
 quinn 0.11.12  [MIT OR Apache-2.0]  https://github.com/quinn-rs/quinn
 quinn-proto 0.11.19  [MIT OR Apache-2.0]  https://github.com/quinn-rs/quinn
 quinn-udp 0.5.16  [MIT OR Apache-2.0]  https://github.com/quinn-rs/quinn
@@ -503,19 +502,20 @@ wasm-bindgen-futures 0.4.79  [MIT OR Apache-2.0]  https://github.com/wasm-bindge
 wasm-bindgen-macro 0.2.129  [MIT OR Apache-2.0]  https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/macro
 wasm-bindgen-macro-support 0.2.129  [MIT OR Apache-2.0]  https://github.com/wasm-bindgen/wasm-bindgen/tree/main/crates/macro-support
 wasm-bindgen-shared 0.2.129  [MIT OR Apache-2.0]  https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/shared
-wasm-encoder 0.261.0  [Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasm-encoder
+wasm-encoder 0.263.0  [Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasm-encoder
 wasmparser 0.261.0  [Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser
-wasmprinter 0.261.0  [Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmprinter
-wasmtime 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-environ 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-component-util 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-core 50.0.1  [Apache-2.0 WITH LLVM-exception]  (no repository given)
-wasmtime-internal-cranelift 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-fiber 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-jit-debug 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-jit-icache-coherence 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-unwinder 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-versioned-export-macros 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmparser 0.263.0  [Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmparser
+wasmprinter 0.263.0  [Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT]  https://github.com/bytecodealliance/wasm-tools/tree/main/crates/wasmprinter
+wasmtime 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-environ 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-component-util 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-core 51.0.0  [Apache-2.0 WITH LLVM-exception]  (no repository given)
+wasmtime-internal-cranelift 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-fiber 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-jit-debug 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-jit-icache-coherence 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-unwinder 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-versioned-export-macros 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
 web-sys 0.3.106  [MIT OR Apache-2.0]  https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/web-sys
 web-time 1.1.0  [MIT OR Apache-2.0]  https://github.com/daxpedda/web-time
 webpki-root-certs 1.0.11  [CDLA-Permissive-2.0]  https://github.com/rustls/webpki-roots
@@ -563,8 +563,8 @@ CRATES WITHOUT A LICENCE FILE IN THEIR PACKAGE (36)
 The licence is the one the SPDX identifier names; the copyright holders are named in the repository. The standard text of that licence follows each group.
 
 asn1-rs-impl 0.2.0  [MIT/Apache-2.0]  https://github.com/rusticata/asn1-rs.git
-cranelift-assembler-x64 0.137.1  [Apache-2.0 WITH LLVM-exception]  (no repository given)
-cranelift-bitset 0.137.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+cranelift-assembler-x64 0.138.0  [Apache-2.0 WITH LLVM-exception]  (no repository given)
+cranelift-bitset 0.138.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
 defmt-parser 1.0.0  [MIT OR Apache-2.0]  https://github.com/knurling-rs/defmt
 fs_at 0.2.1  [Apache-2.0]  https://github.com/rbtcollins/fs_at.git
 gloo-timers 0.3.0  [MIT OR Apache-2.0]  https://github.com/rustwasm/gloo/tree/master/crates/timers
@@ -583,17 +583,17 @@ opentelemetry-http 0.33.1  [Apache-2.0]  https://github.com/open-telemetry/opent
 opentelemetry-otlp 0.33.1  [Apache-2.0]  https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-otlp
 opentelemetry-proto 0.33.1  [Apache-2.0]  https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-proto
 opentelemetry_sdk 0.33.1  [Apache-2.0]  https://github.com/open-telemetry/opentelemetry-rust/tree/main/opentelemetry-sdk
-pulley-interpreter 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley
-pulley-macros 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley/macros
+pulley-interpreter 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley
+pulley-macros 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime/tree/main/pulley/macros
 r-efi 5.3.0  [MIT OR Apache-2.0 OR LGPL-2.1-or-later]  https://github.com/r-efi/r-efi
 r-efi 6.0.0  [MIT OR Apache-2.0 OR LGPL-2.1-or-later]  https://github.com/r-efi/r-efi
 rhai_codegen 3.3.0  [MIT OR Apache-2.0]  https://github.com/rhaiscript/rhai
 rustls-platform-verifier-android 0.2.0  [MIT OR Apache-2.0]  https://github.com/rustls/rustls-platform-verifier
-wasmtime-internal-component-util 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-core 50.0.1  [Apache-2.0 WITH LLVM-exception]  (no repository given)
-wasmtime-internal-jit-debug 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-jit-icache-coherence 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
-wasmtime-internal-versioned-export-macros 50.0.1  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-component-util 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-core 51.0.0  [Apache-2.0 WITH LLVM-exception]  (no repository given)
+wasmtime-internal-jit-debug 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-jit-icache-coherence 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
+wasmtime-internal-versioned-export-macros 51.0.0  [Apache-2.0 WITH LLVM-exception]  https://github.com/bytecodealliance/wasmtime
 
 Standard Apache-2.0 text for the crates above:
 
@@ -896,7 +896,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Applies to: addr2line 0.26.1, ahash 0.8.12, aligned 0.4.3, arbitrary 1.5.0, arc-swap 1.9.5, arrayvec 0.7.8, as-slice 0.2.1, asn1-rs 0.6.2, asn1-rs 0.7.2, asn1-rs-derive 0.5.1, asn1-rs-derive 0.6.0, async-channel 2.5.0, async-compression 0.4.52, async-lock 3.4.2, atomic-waker 1.1.2, base64 0.22.1, base64 0.23.1, bitflags 1.3.2, bitflags 2.13.2, bstr 1.13.1, bumpalo 3.20.3, cfg-if 1.0.5, compression-codecs 0.4.47, compression-core 0.4.34, concurrent-queue 2.5.0, const-random 0.1.18, const-random-macro 0.1.16, core-foundation 0.10.1, core-foundation 0.9.4, core-foundation-sys 0.8.7, core_detect 1.0.0, cpp_demangle 0.5.1, crossbeam-queue 0.3.14, crossbeam-utils 0.8.23, daggy 0.8.1, der-parser 10.0.0, der-parser 9.0.0, derivative 2.2.0, displaydoc 0.2.7, either 1.19.0, embedded-io 0.4.0, embedded-io 0.6.1, encoding_rs_io 0.1.8, equivalent 1.0.2, errno 0.3.14, event-listener 5.4.2, event-listener-strategy 0.5.4, fastrand 2.5.0, fixedbitset 0.5.7, flate2 1.1.10, fnv 1.0.7, form_urlencoded 1.2.2, gimli 0.33.0, hashbrown 0.12.3, hashbrown 0.14.5, hashbrown 0.16.1, hashbrown 0.17.1, heck 0.4.1, heck 0.5.0, hermit-abi 0.5.3, httparse 1.10.1, hyper-rustls 0.27.10, hyper-timeout 0.5.2, idna 1.1.0, idna_adapter 1.2.2, indexmap 1.9.3, indexmap 2.14.2, itertools 0.13.0, itertools 0.14.0, js-sys 0.3.106, lazy_static 1.5.1, leb128fmt 0.1.0, libz-ng-sys 1.1.29, linux-raw-sys 0.12.1, lock_api 0.4.14, lock_api 0.5.0, log 0.4.34, mime 0.3.17, num-bigint 0.4.8, num-integer 0.1.47, num-traits 0.2.19, num_cpus 1.17.0, object 0.40.0, oid-registry 0.7.1, oid-registry 0.8.1, once_cell 1.21.4, openssl-probe 0.1.6, openssl-probe 0.2.1, parking 2.2.1, parking_lot 0.12.5, parking_lot 0.13.0, parking_lot_core 0.10.0, parking_lot_core 0.9.12, percent-encoding 2.3.2, pest 2.9.3, pest_derive 2.9.3, pest_generator 2.9.3, pest_meta 2.9.3, petgraph 0.7.1, postcard 1.1.3, prost 0.14.6, prost-derive 0.14.6, prost-types 0.14.4, regex 1.13.1, regex-automata 0.4.18, regex-syntax 0.8.11, rustc-demangle 0.1.28, rusticata-macros 4.1.0, rustix 1.1.6, rustls 0.23.46, rustls-native-certs 0.7.3, rustls-native-certs 0.8.4, rustls-pemfile 2.2.0, scopeguard 1.2.0, security-framework 2.11.1, security-framework 3.7.0, security-framework-sys 2.17.0, sfv 0.10.4, signal-hook-registry 1.4.8, simd_cesu8 1.2.0, smallvec 1.15.2, socket2 0.6.5, stable_deref_trait 1.2.1, stacker 0.1.25, syn 1.0.109, tempfile 3.27.0, thread_local 1.1.10, tikv-jemalloc-sys 0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7, tikv-jemallocator 0.6.1, ucd-trie 0.1.7, unicase 2.10.0, unicode-width 0.2.2, url 2.5.8, uuid 1.29.2, wasi 0.11.1+wasi-snapshot-preview1, wasip2 1.0.4+wasi-0.2.12, wasm-bindgen 0.2.129, wasm-bindgen-futures 0.4.79, wasm-bindgen-macro 0.2.129, wasm-bindgen-macro-support 0.2.129, wasm-bindgen-shared 0.2.129, wasm-encoder 0.261.0, wasmparser 0.261.0, wasmprinter 0.261.0, web-sys 0.3.106, wit-bindgen 0.57.1, x509-parser 0.16.0, x509-parser 0.18.1, yasna 0.6.0
+Applies to: addr2line 0.26.1, ahash 0.8.12, aligned 0.4.3, arbitrary 1.5.0, arc-swap 1.9.5, arrayvec 0.7.8, as-slice 0.2.1, asn1-rs 0.6.2, asn1-rs 0.7.2, asn1-rs-derive 0.5.1, asn1-rs-derive 0.6.0, async-channel 2.5.0, async-compression 0.4.52, async-lock 3.4.2, atomic-waker 1.1.2, base64 0.22.1, base64 0.23.1, bitflags 1.3.2, bitflags 2.13.2, bstr 1.13.1, bumpalo 3.20.3, cfg-if 1.0.5, compression-codecs 0.4.47, compression-core 0.4.34, concurrent-queue 2.5.0, const-random 0.1.18, const-random-macro 0.1.16, core-foundation 0.10.1, core-foundation 0.9.4, core-foundation-sys 0.8.7, core_detect 1.0.0, cpp_demangle 0.5.1, crossbeam-queue 0.3.14, crossbeam-utils 0.8.23, daggy 0.8.1, der-parser 10.0.0, der-parser 9.0.0, derivative 2.2.0, displaydoc 0.2.7, either 1.19.0, embedded-io 0.4.0, embedded-io 0.6.1, encoding_rs_io 0.1.8, equivalent 1.0.2, errno 0.3.14, event-listener 5.4.2, event-listener-strategy 0.5.4, fastrand 2.5.0, fixedbitset 0.5.7, flate2 1.1.10, fnv 1.0.7, form_urlencoded 1.2.2, gimli 0.33.0, hashbrown 0.12.3, hashbrown 0.14.5, hashbrown 0.16.1, hashbrown 0.17.1, heck 0.4.1, heck 0.5.0, hermit-abi 0.5.3, httparse 1.10.1, hyper-rustls 0.27.10, hyper-timeout 0.5.2, idna 1.1.0, idna_adapter 1.2.2, indexmap 1.9.3, indexmap 2.14.2, itertools 0.14.0, js-sys 0.3.106, lazy_static 1.5.1, leb128fmt 0.1.0, libz-ng-sys 1.1.29, linux-raw-sys 0.12.1, lock_api 0.4.14, lock_api 0.5.0, log 0.4.34, mime 0.3.17, num-bigint 0.4.8, num-integer 0.1.47, num-traits 0.2.19, num_cpus 1.17.0, object 0.40.0, oid-registry 0.7.1, oid-registry 0.8.1, once_cell 1.21.4, openssl-probe 0.1.6, openssl-probe 0.2.1, parking 2.2.1, parking_lot 0.12.5, parking_lot 0.13.0, parking_lot_core 0.10.0, parking_lot_core 0.9.12, percent-encoding 2.3.2, pest 2.9.3, pest_derive 2.9.3, pest_generator 2.9.3, pest_meta 2.9.3, petgraph 0.7.1, postcard 1.1.3, prost 0.14.6, prost-derive 0.14.6, prost-types 0.14.4, regex 1.13.1, regex-automata 0.4.18, regex-syntax 0.8.11, rustc-demangle 0.1.28, rusticata-macros 4.1.0, rustix 1.1.6, rustls 0.23.46, rustls-native-certs 0.7.3, rustls-native-certs 0.8.4, rustls-pemfile 2.2.0, scopeguard 1.2.0, security-framework 2.11.1, security-framework 3.7.0, security-framework-sys 2.17.0, sfv 0.10.4, signal-hook-registry 1.4.8, simd_cesu8 1.2.0, smallvec 1.15.2, socket2 0.6.5, stable_deref_trait 1.2.1, stacker 0.1.25, syn 1.0.109, tempfile 3.27.0, thread_local 1.1.10, tikv-jemalloc-sys 0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7, tikv-jemallocator 0.6.1, ucd-trie 0.1.7, unicase 2.10.0, unicode-width 0.2.2, url 2.5.8, uuid 1.29.2, wasi 0.11.1+wasi-snapshot-preview1, wasip2 1.0.4+wasi-0.2.12, wasm-bindgen 0.2.129, wasm-bindgen-futures 0.4.79, wasm-bindgen-macro 0.2.129, wasm-bindgen-macro-support 0.2.129, wasm-bindgen-shared 0.2.129, wasm-encoder 0.263.0, wasmparser 0.261.0, wasmparser 0.263.0, wasmprinter 0.263.0, web-sys 0.3.106, wit-bindgen 0.57.1, x509-parser 0.16.0, x509-parser 0.18.1, yasna 0.6.0
 Files: LICENSE, LICENSE-APACHE
 ==============================================================================
 
@@ -1103,7 +1103,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ==============================================================================
-Applies to: adler2 2.0.1, allocator-api2 0.2.21, anyhow 1.0.104, async-channel 2.5.0, async-lock 3.4.2, async-trait 0.1.92, atomic-waker 1.1.2, concurrent-queue 2.5.0, displaydoc 0.2.7, dyn-clone 1.0.20, event-listener 5.4.2, event-listener-strategy 0.5.4, fastrand 2.5.0, hermit-abi 0.5.3, itoa 1.0.18, lazy_static 1.5.1, leb128fmt 0.1.0, linux-raw-sys 0.12.1, minimal-lexical 0.2.1, once_cell 1.21.4, parking 2.2.1, pest 2.9.3, pest_derive 2.9.3, pest_generator 2.9.3, pest_meta 2.9.3, pin-project 1.1.13, pin-project-internal 1.1.13, pin-project-lite 0.2.17, portable-atomic 1.15.0, portable-atomic-util 0.2.8, proc-macro2 1.0.107, quote 1.0.47, ref-cast 1.0.27, ref-cast-impl 1.0.27, rhai 1.27.0, rustc-hash 2.1.3, rustix 1.1.6, rustversion 1.0.23, semver 1.0.28, serde 1.0.229, serde-saphyr 2.1.1, serde_core 1.0.229, serde_derive 1.0.229, serde_derive_internals 0.30.0, serde_json 1.0.154, serde_path_to_error 0.1.20, serde_yaml 0.9.34+deprecated, simd_cesu8 1.2.0, syn 1.0.109, syn 2.0.119, syn 3.0.7, thin-vec 0.2.21, thiserror 1.0.69, thiserror 2.0.21, thiserror-impl 1.0.69, thiserror-impl 2.0.21, unicode-ident 1.0.26, unsafe-libyaml 0.2.11, wasi 0.11.1+wasi-snapshot-preview1, wasip2 1.0.4+wasi-0.2.12, wasm-encoder 0.261.0, wasmparser 0.261.0, wasmprinter 0.261.0, wit-bindgen 0.57.1, zmij 1.0.23
+Applies to: adler2 2.0.1, allocator-api2 0.2.21, anyhow 1.0.104, async-channel 2.5.0, async-lock 3.4.2, async-trait 0.1.92, atomic-waker 1.1.2, concurrent-queue 2.5.0, displaydoc 0.2.7, dyn-clone 1.0.20, event-listener 5.4.2, event-listener-strategy 0.5.4, fastrand 2.5.0, hermit-abi 0.5.3, itoa 1.0.18, lazy_static 1.5.1, leb128fmt 0.1.0, linux-raw-sys 0.12.1, minimal-lexical 0.2.1, once_cell 1.21.4, parking 2.2.1, pest 2.9.3, pest_derive 2.9.3, pest_generator 2.9.3, pest_meta 2.9.3, pin-project 1.1.13, pin-project-internal 1.1.13, pin-project-lite 0.2.17, portable-atomic 1.15.0, portable-atomic-util 0.2.8, proc-macro2 1.0.107, quote 1.0.47, ref-cast 1.0.27, ref-cast-impl 1.0.27, rhai 1.27.0, rustc-hash 2.1.3, rustix 1.1.6, rustversion 1.0.23, semver 1.0.28, serde 1.0.229, serde-saphyr 2.1.1, serde_core 1.0.229, serde_derive 1.0.229, serde_derive_internals 0.30.0, serde_json 1.0.154, serde_path_to_error 0.1.20, serde_yaml 0.9.34+deprecated, simd_cesu8 1.2.0, syn 1.0.109, syn 2.0.119, syn 3.0.7, thin-vec 0.2.21, thiserror 1.0.69, thiserror 2.0.21, thiserror-impl 1.0.69, thiserror-impl 2.0.21, unicode-ident 1.0.26, unsafe-libyaml 0.2.11, wasi 0.11.1+wasi-snapshot-preview1, wasip2 1.0.4+wasi-0.2.12, wasm-encoder 0.263.0, wasmparser 0.261.0, wasmparser 0.263.0, wasmprinter 0.263.0, wit-bindgen 0.57.1, zmij 1.0.23
 Files: LICENSE-MIT, LICENSE-MIT.txt
 ==============================================================================
 
@@ -5373,7 +5373,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Applies to: cranelift-bforest 0.137.1, cranelift-codegen 0.137.1, cranelift-codegen-shared 0.137.1, cranelift-control 0.137.1, cranelift-entity 0.137.1, cranelift-frontend 0.137.1, cranelift-native 0.137.1, linux-raw-sys 0.12.1, regalloc2 0.15.2, rustix 1.1.6, target-lexicon 0.13.5, wasi 0.11.1+wasi-snapshot-preview1, wasip2 1.0.4+wasi-0.2.12, wasm-encoder 0.261.0, wasmparser 0.261.0, wasmprinter 0.261.0, wasmtime 50.0.1, wasmtime-environ 50.0.1, wasmtime-internal-cranelift 50.0.1, wasmtime-internal-fiber 50.0.1, wasmtime-internal-unwinder 50.0.1, wit-bindgen 0.57.1
+Applies to: cranelift-bforest 0.138.0, cranelift-codegen 0.138.0, cranelift-codegen-shared 0.138.0, cranelift-control 0.138.0, cranelift-entity 0.138.0, cranelift-frontend 0.138.0, cranelift-native 0.138.0, linux-raw-sys 0.12.1, regalloc2 0.15.2, rustix 1.1.6, target-lexicon 0.13.5, wasi 0.11.1+wasi-snapshot-preview1, wasip2 1.0.4+wasi-0.2.12, wasm-encoder 0.263.0, wasmparser 0.261.0, wasmparser 0.263.0, wasmprinter 0.263.0, wasmtime 51.0.0, wasmtime-environ 51.0.0, wasmtime-internal-cranelift 51.0.0, wasmtime-internal-fiber 51.0.0, wasmtime-internal-unwinder 51.0.0, wit-bindgen 0.57.1
 Files: LICENSE, LICENSE-Apache-2.0_WITH_LLVM-exception
 ==============================================================================
 
@@ -5997,7 +5997,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
-Applies to: daggy 0.8.1, either 1.19.0, itertools 0.13.0, itertools 0.14.0, petgraph 0.7.1
+Applies to: daggy 0.8.1, either 1.19.0, itertools 0.14.0, petgraph 0.7.1
 Files: LICENSE-MIT
 ==============================================================================
 
