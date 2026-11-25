@@ -223,7 +223,7 @@ prost       = { version = "0.14" }
 # and `Config` only): the compile cache (which carried `zstd` 0.13 and `zstd-safe` 7.3, 13 advisories that a 0.13
 # release fixed only on 2026-11-01), the component model, async, profiling and debugging, parallel compilation,
 # `wat` text input.
-wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "gc", "gc-drc", "threads"] }
+wasmtime = { version = "51", default-features = false, features = ["cranelift", "runtime", "std", "anyhow", "gc", "gc-drc", "threads"] }
 # The module reader wasmtime itself uses, pinned to its minor version so that the lock holds one copy of it (issue
 # #565): `conduit validate` and the plugin loader read the memory section of a module, which wasmtime does not expose.
 wasmparser = { version = "0.261", default-features = false, features = ["std"] }
